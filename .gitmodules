@@ -1,0 +1,12 @@
+[submodule "vendors/veraPDF-library"]
+	path = vendors/veraPDF-library
+	url = https://github.com/veraPDF/veraPDF-library
+[submodule "vendors/veraPDF-parser"]
+	path = vendors/veraPDF-parser
+	url = https://github.com/veraPDF/veraPDF-parser
+[submodule "vendors/veraPDF-validation"]
+	path = vendors/veraPDF-validation
+	url = https://github.com/veraPDF/veraPDF-validation
+[submodule "vendors/veraPDF-apps"]
+	path = vendors/veraPDF-apps
+	url = https://github.com/veraPDF/veraPDF-apps
