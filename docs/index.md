@@ -1,5 +1,10 @@
 # Documentation Index
 
+## User-Facing
+
+- [JSON and Config Examples](json-examples.md)
+- [Conformance Fixture Matrix](conformance-fixture-matrix.md)
+
 ## Research
 
 - [Study: veraPDF Validator Architecture for a Rust Library and CLI](research/study-verapdf-validator-architecture.md)

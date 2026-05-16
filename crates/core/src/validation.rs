@@ -648,8 +648,15 @@ impl ModelObject for DocumentModel<'_> {
             "headerOffset" => Ok(ModelValue::Number(u64_to_f64(header_offset(
                 self.document,
             ))?)),
-            "encrypted" => Ok(ModelValue::Bool(self.document.is_encrypted())),
+            "postEOFDataSize" => Ok(ModelValue::Number(u64_to_f64(post_eof_data_size(
+                self.document,
+            ))?)),
+            "encrypted" | "isEncrypted" => Ok(ModelValue::Bool(self.document.is_encrypted())),
             "hasCatalog" => Ok(ModelValue::Bool(self.document.catalog.is_some())),
+            "containsXRefStream" => Ok(ModelValue::Bool(contains_xref_stream(self.document))),
+            "nrIndirects" => Ok(ModelValue::Number(usize_to_f64(
+                self.document.objects.len(),
+            )?)),
             _ => Err(crate::ProfileError::UnknownProperty {
                 property: BoundedText::unchecked(name.as_str()),
             }
@@ -1447,6 +1454,18 @@ impl ModelObject for StreamModel<'_> {
             "discoveredLength" => Ok(ModelValue::Number(u64_to_f64(
                 self.stream.discovered_length,
             )?)),
+            "streamKeywordCRLFCompliant" => {
+                Ok(ModelValue::Bool(self.stream.stream_keyword_crlf_compliant))
+            }
+            "endstreamKeywordEOLCompliant" => Ok(ModelValue::Bool(
+                self.stream.endstream_keyword_eol_compliant,
+            )),
+            "F" | "FFilter" | "FDecodeParms" => Ok(self
+                .stream
+                .dictionary
+                .get(name.as_str())
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from)),
             _ => Err(crate::ProfileError::UnknownProperty {
                 property: BoundedText::unchecked(name.as_str()),
             }
@@ -1707,6 +1726,30 @@ fn header_offset(document: &ParsedDocument) -> u64 {
             _ => None,
         })
         .unwrap_or(0)
+}
+
+fn post_eof_data_size(document: &ParsedDocument) -> u64 {
+    document
+        .parse_facts
+        .iter()
+        .find_map(|fact| match fact {
+            crate::ParseFact::PostEofData { bytes } => Some(*bytes),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+fn contains_xref_stream(document: &ParsedDocument) -> bool {
+    document.parse_facts.iter().any(|fact| {
+        matches!(
+            fact,
+            crate::ParseFact::Xref {
+                fact: crate::XrefFact::XrefStreamParsed { .. }
+                    | crate::XrefFact::XrefStreamUnsupported,
+                ..
+            }
+        )
+    })
 }
 
 fn u64_to_f64(value: u64) -> Result<f64> {

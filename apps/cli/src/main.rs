@@ -1,11 +1,18 @@
 #![forbid(unsafe_code)]
 #![warn(rust_2024_compatibility, missing_docs, missing_debug_implementations)]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "the CLI is a synchronous adapter per spec; Tokio is reserved for future async \
+              service integration"
+)]
 //! Command-line entrypoint for pdfv.
 
 use std::{
+    fs::File,
     io::{self, Write},
     num::NonZeroU32,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
     time::Instant,
 };
@@ -13,9 +20,12 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pdfv_core::{
-    BatchReport, FlavourSelection, MaxDisplayedFailures, PdfvError, ReportFormat,
-    ValidationFlavour, ValidationOptions, ValidationStatus, Validator,
+    BatchReport, BoundedText, BuiltinProfileRepository, FlavourSelection, MaxDisplayedFailures,
+    PdfvError, ReportFormat, ResourceLimits, ValidationFlavour, ValidationOptions,
+    ValidationStatus, ValidationWarning, Validator,
 };
+use rayon::prelude::*;
+use serde::Deserialize;
 
 const EXIT_VALID: u8 = 0;
 const EXIT_INVALID: u8 = 1;
@@ -24,6 +34,16 @@ const EXIT_ENCRYPTED: u8 = 3;
 const EXIT_INCOMPLETE: u8 = 4;
 const EXIT_USAGE: u8 = 64;
 const EXIT_INTERNAL: u8 = 70;
+const MAX_CLI_JOBS: u32 = 256;
+const HARD_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+const HARD_MAX_OBJECTS: u64 = 8_388_607;
+const HARD_MAX_OBJECT_DEPTH: u32 = 512;
+const HARD_MAX_ARRAY_LEN: u64 = 1_000_000;
+const HARD_MAX_DICT_ENTRIES: u64 = 100_000;
+const HARD_MAX_NAME_BYTES: usize = 4096;
+const HARD_MAX_STRING_BYTES: usize = 16 * 1024 * 1024;
+const HARD_MAX_STREAM_BYTES: u64 = 1024 * 1024 * 1024;
+const HARD_MAX_PARSE_FACTS: usize = 1_000_000;
 
 /// Command-line arguments for the pdfv binary.
 #[derive(Debug, Parser)]
@@ -38,6 +58,19 @@ struct Cli {
 enum Command {
     /// Validate one or more PDF files.
     Validate(ValidateArgs),
+    /// Inspect built-in validation profiles.
+    Profiles {
+        /// Profile catalog command.
+        #[command(subcommand)]
+        command: ProfilesCommand,
+    },
+}
+
+/// `pdfv profiles` subcommands.
+#[derive(Debug, Subcommand)]
+enum ProfilesCommand {
+    /// List available built-in validation profiles.
+    List,
 }
 
 /// Arguments for `pdfv validate`.
@@ -47,17 +80,35 @@ struct ValidateArgs {
     #[arg(value_name = "PATH", required = true)]
     paths: Vec<PathBuf>,
     /// Output format.
-    #[arg(long, value_enum, default_value_t = FormatArg::Json)]
-    format: FormatArg,
+    #[arg(long, value_enum)]
+    format: Option<FormatArg>,
     /// Built-in validation flavour or `auto`.
-    #[arg(long, default_value = "auto", value_parser = parse_flavour_selection)]
-    flavour: FlavourSelection,
+    #[arg(long, value_parser = parse_flavour_selection)]
+    flavour: Option<FlavourSelection>,
     /// Custom profile path. Custom profile loading is not available in M0.
     #[arg(long, value_name = "PATH", conflicts_with = "flavour")]
     profile: Option<PathBuf>,
     /// Maximum failed assertion details retained per rule. Use -1 for no practical cap.
-    #[arg(long, allow_hyphen_values = true, default_value = "1", value_parser = parse_max_failures)]
-    max_failures: MaxDisplayedFailures,
+    #[arg(long, allow_hyphen_values = true, value_parser = parse_max_failures)]
+    max_failures: Option<MaxDisplayedFailures>,
+    /// Recursively discover PDF files under directories.
+    #[arg(long)]
+    recursive: bool,
+    /// Maximum concurrent validation jobs.
+    #[arg(long, default_value = "1", value_parser = parse_jobs)]
+    jobs: NonZeroU32,
+    /// YAML config file. CLI flags override values from this file.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+    /// Write the report to a file instead of stdout.
+    #[arg(long, value_name = "PATH")]
+    output: Option<PathBuf>,
+    /// Omit input paths from reports.
+    #[arg(long)]
+    redact_paths: bool,
+    /// Record passed assertions.
+    #[arg(long)]
+    record_passes: bool,
 }
 
 /// CLI output format values.
@@ -78,6 +129,12 @@ impl From<FormatArg> for ReportFormat {
             FormatArg::JsonPretty => Self::JsonPretty,
             FormatArg::Text => Self::Text,
         }
+    }
+}
+
+impl FormatArg {
+    fn into_report_format(self) -> ReportFormat {
+        ReportFormat::from(self)
     }
 }
 
@@ -111,78 +168,130 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<CliExit> {
     match cli.command {
         Command::Validate(args) => run_validate(&args),
+        Command::Profiles {
+            command: ProfilesCommand::List,
+        } => run_profiles_list(),
     }
 }
 
 fn run_validate(args: &ValidateArgs) -> Result<CliExit> {
     let started = Instant::now();
-    let format = ReportFormat::from(args.format);
-    reject_m0_custom_profile(args.profile.as_ref())?;
-    let options = validation_options(args);
+    let config = args
+        .config
+        .as_ref()
+        .map(|path| load_cli_config(path))
+        .transpose()?
+        .unwrap_or_default();
+    let format = args
+        .format
+        .map_or(config.output.format, FormatArg::into_report_format);
+    let options = validation_options(args, &config)?;
     let validator = Validator::new(options).context("failed to initialize validator")?;
-    let reports = args
-        .paths
-        .iter()
-        .map(|path| {
-            validator
-                .validate_path(path)
-                .with_context(|| format!("failed to validate {}", path.display()))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let paths = discover_inputs(&args.paths, args.recursive)?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(usize::try_from(args.jobs.get()).unwrap_or(usize::MAX))
+        .build()
+        .context("failed to build validation worker pool")?;
+    let mut batch = pool.install(|| validate_paths(&validator, &paths));
+    let reports = &mut batch.reports;
+    if args.redact_paths || config.output.redact_paths {
+        redact_report_paths(reports);
+    }
     let exit = reports
         .iter()
         .map(|report| CliExit::from_status(report.status))
         .fold(CliExit::Valid, CliExit::worst);
+    let exit = if batch.internal_errors > 0 {
+        CliExit::worst(exit, CliExit::Internal)
+    } else {
+        exit
+    };
 
+    if let Some(output_path) = args.output.as_ref().or(config.output.path.as_ref()) {
+        let mut output = File::create(output_path)
+            .with_context(|| format!("failed to create {}", output_path.display()))?;
+        write_reports(format, batch, started, args.recursive, &mut output)?;
+        output.flush().context("failed to flush report output")?;
+    } else {
+        let stdout = io::stdout();
+        let mut handle = stdout.lock();
+        write_reports(format, batch, started, args.recursive, &mut handle)?;
+        handle.flush().context("failed to flush report output")?;
+    }
+    Ok(exit)
+}
+
+fn run_profiles_list() -> Result<CliExit> {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
-    if reports.len() == 1 {
+    for entry in BuiltinProfileRepository::new()
+        .list_profiles()
+        .context("failed to list profiles")?
+    {
+        writeln!(
+            handle,
+            "{}\tpdfa-{}{}\t{}",
+            entry.identity.id.as_str(),
+            entry.flavour.part,
+            entry.flavour.conformance.as_str(),
+            entry.identity.name.as_str(),
+        )
+        .context("failed to write profile list")?;
+    }
+    handle.flush().context("failed to flush profile list")?;
+    Ok(CliExit::Valid)
+}
+
+fn write_reports<W: Write>(
+    format: ReportFormat,
+    batch: ValidationBatch,
+    started: Instant,
+    force_batch: bool,
+    output: &mut W,
+) -> Result<()> {
+    if batch.reports.len() == 1 && batch.internal_errors == 0 && !force_batch {
+        let reports = batch.reports;
         let Some(report) = reports.first() else {
             return Err(anyhow::anyhow!("validation produced no reports"));
         };
         format
-            .write_report(report, &mut handle)
+            .write_report(report, output)
             .context("failed to write validation report")?;
     } else {
-        let batch = BatchReport::from_items(reports, Vec::new(), started.elapsed());
-        format
-            .write_batch(&batch, &mut handle)
-            .context("failed to write batch report")?;
-    }
-    handle.flush().context("failed to flush report output")?;
-    Ok(exit)
-}
-
-fn reject_m0_custom_profile(profile: Option<&PathBuf>) -> Result<()> {
-    if let Some(path) = profile {
-        return Err(
-            PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
-                field: "profile",
-                reason: pdfv_core::BoundedText::new(
-                    format!(
-                        "custom profile loading is not available in M0: {}",
-                        path.display()
-                    ),
-                    512,
-                )?,
-            })
-            .into(),
+        let report = BatchReport::from_items_with_internal_errors(
+            batch.reports,
+            batch.warnings,
+            started.elapsed(),
+            batch.internal_errors,
         );
+        format
+            .write_batch(&report, output)
+            .context("failed to write batch report")?;
     }
     Ok(())
 }
 
-fn validation_options(args: &ValidateArgs) -> ValidationOptions {
+fn validation_options(args: &ValidateArgs, config: &CliConfig) -> Result<ValidationOptions> {
     let flavour = args.profile.as_ref().map_or_else(
-        || args.flavour.clone(),
-        |profile_path| FlavourSelection::CustomProfile {
-            profile_path: profile_path.clone(),
+        || config.validation.flavour_selection(args.flavour.clone()),
+        |profile_path| {
+            Ok(FlavourSelection::CustomProfile {
+                profile_path: profile_path.clone(),
+            })
         },
-    );
-    ValidationOptions::builder()
+    )?;
+    Ok(ValidationOptions::builder()
         .flavour(flavour)
-        .max_failed_assertions_per_rule(args.max_failures)
-        .build()
+        .resource_limits(validated_resource_limits(
+            config.resources.clone().unwrap_or_default(),
+        )?)
+        .max_failed_assertions_per_rule(
+            args.max_failures
+                .or(config.validation.max_failed_assertions_per_rule)
+                .unwrap_or_default(),
+        )
+        .record_passed_assertions(args.record_passes || config.validation.record_passed_assertions)
+        .build())
 }
 
 fn parse_max_failures(value: &str) -> std::result::Result<MaxDisplayedFailures, String> {
@@ -203,6 +312,18 @@ fn parse_max_failures(value: &str) -> std::result::Result<MaxDisplayedFailures, 
             u32::MAX
         )),
     }
+}
+
+fn parse_jobs(value: &str) -> std::result::Result<NonZeroU32, String> {
+    let jobs = value
+        .parse::<u32>()
+        .map_err(|_| String::from("jobs must be a positive integer"))?;
+    let jobs =
+        NonZeroU32::new(jobs).ok_or_else(|| String::from("jobs must be greater than zero"))?;
+    if jobs.get() > MAX_CLI_JOBS {
+        return Err(format!("jobs must be in 1..={MAX_CLI_JOBS}"));
+    }
+    Ok(jobs)
 }
 
 fn parse_flavour_selection(value: &str) -> std::result::Result<FlavourSelection, String> {
@@ -236,6 +357,257 @@ fn parse_flavour(value: &str) -> std::result::Result<ValidationFlavour, String> 
         .map_err(|error| format!("invalid PDF/A flavour: {error}"))
 }
 
+fn load_cli_config(path: &Path) -> Result<CliConfig> {
+    config::Config::builder()
+        .add_source(config::File::from(path).required(true))
+        .build()
+        .with_context(|| format!("failed to read config {}", path.display()))?
+        .try_deserialize()
+        .with_context(|| format!("failed to parse config {}", path.display()))
+}
+
+fn discover_inputs(paths: &[PathBuf], recursive: bool) -> Result<Vec<PathBuf>> {
+    let mut discovered = Vec::new();
+    for path in paths {
+        if recursive && path.is_dir() {
+            discover_directory(path, &mut discovered)?;
+        } else {
+            discovered.push(path.clone());
+        }
+    }
+    if discovered.is_empty() {
+        return Err(
+            PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
+                field: "paths",
+                reason: pdfv_core::BoundedText::new("no PDF inputs discovered", 256)?,
+            })
+            .into(),
+        );
+    }
+    Ok(discovered)
+}
+
+fn discover_directory(root: &Path, discovered: &mut Vec<PathBuf>) -> Result<()> {
+    const MAX_DISCOVERED_FILES: usize = 100_000;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        for entry in std::fs::read_dir(&path)
+            .with_context(|| format!("failed to read directory {}", path.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("failed to read directory entry in {}", path.display()))?;
+            let entry_path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", entry_path.display()))?;
+            if file_type.is_dir() {
+                stack.push(entry_path);
+            } else if file_type.is_file() && is_pdf_path(&entry_path) {
+                if discovered.len() >= MAX_DISCOVERED_FILES {
+                    return Err(
+                        PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
+                            field: "paths",
+                            reason: pdfv_core::BoundedText::new(
+                                "recursive discovery exceeded file limit",
+                                256,
+                            )?,
+                        })
+                        .into(),
+                    );
+                }
+                discovered.push(entry_path);
+            }
+        }
+    }
+    discovered.sort();
+    Ok(())
+}
+
+fn is_pdf_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+}
+
+fn validate_paths(validator: &Validator, paths: &[PathBuf]) -> ValidationBatch {
+    let results = paths
+        .par_iter()
+        .map(|path| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                validator
+                    .validate_path(path)
+                    .with_context(|| format!("failed to validate {}", path.display()))
+            }));
+            match result {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => Err(format!(
+                    "validation worker panicked while processing {}",
+                    path.display()
+                )),
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut batch = ValidationBatch::default();
+    for result in results {
+        match result {
+            Ok(report) => batch.reports.push(report),
+            Err(message) => {
+                batch.internal_errors = batch.internal_errors.saturating_add(1);
+                batch.warnings.push(ValidationWarning::General {
+                    message: BoundedText::new(message, 512).unwrap_or_else(|_| {
+                        BoundedText::new("internal validation error", 128)
+                            .unwrap_or_else(|_| unreachable_bounded_text())
+                    }),
+                });
+            }
+        }
+    }
+    batch
+}
+
+fn redact_report_paths(reports: &mut [pdfv_core::ValidationReport]) {
+    for report in reports {
+        report.source.path = None;
+    }
+}
+
+fn validated_resource_limits(limits: ResourceLimits) -> Result<ResourceLimits> {
+    ensure_limit("maxFileBytes", limits.max_file_bytes, HARD_MAX_FILE_BYTES)?;
+    ensure_limit("maxObjects", limits.max_objects, HARD_MAX_OBJECTS)?;
+    ensure_limit_u32(
+        "maxObjectDepth",
+        limits.max_object_depth,
+        HARD_MAX_OBJECT_DEPTH,
+    )?;
+    ensure_limit("maxArrayLen", limits.max_array_len, HARD_MAX_ARRAY_LEN)?;
+    ensure_limit(
+        "maxDictEntries",
+        limits.max_dict_entries,
+        HARD_MAX_DICT_ENTRIES,
+    )?;
+    ensure_limit_usize("maxNameBytes", limits.max_name_bytes, HARD_MAX_NAME_BYTES)?;
+    ensure_limit_usize(
+        "maxStringBytes",
+        limits.max_string_bytes,
+        HARD_MAX_STRING_BYTES,
+    )?;
+    ensure_limit(
+        "maxStreamDeclaredBytes",
+        limits.max_stream_declared_bytes,
+        HARD_MAX_STREAM_BYTES,
+    )?;
+    ensure_limit(
+        "maxStreamDecodeBytes",
+        limits.max_stream_decode_bytes,
+        HARD_MAX_STREAM_BYTES,
+    )?;
+    ensure_limit_usize(
+        "maxParseFacts",
+        limits.max_parse_facts,
+        HARD_MAX_PARSE_FACTS,
+    )?;
+    Ok(limits)
+}
+
+fn ensure_limit(field: &'static str, value: u64, max: u64) -> Result<()> {
+    if value <= max {
+        Ok(())
+    } else {
+        Err(config_limit_error(field, max).into())
+    }
+}
+
+fn ensure_limit_u32(field: &'static str, value: u32, max: u32) -> Result<()> {
+    ensure_limit(field, u64::from(value), u64::from(max))
+}
+
+fn ensure_limit_usize(field: &'static str, value: usize, max: usize) -> Result<()> {
+    let value = u64::try_from(value).unwrap_or(u64::MAX);
+    let max = u64::try_from(max).unwrap_or(u64::MAX);
+    ensure_limit(field, value, max)
+}
+
+fn config_limit_error(field: &'static str, max: u64) -> PdfvError {
+    PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
+        field,
+        reason: BoundedText::new(format!("value exceeds hard cap {max}"), 128)
+            .unwrap_or_else(|_| unreachable_bounded_text()),
+    })
+}
+
+fn unreachable_bounded_text() -> BoundedText {
+    BoundedText::new("bounded diagnostic unavailable", 128)
+        .unwrap_or_else(|_| std::process::abort())
+}
+
+#[derive(Debug, Default)]
+struct ValidationBatch {
+    reports: Vec<pdfv_core::ValidationReport>,
+    warnings: Vec<ValidationWarning>,
+    internal_errors: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CliConfig {
+    #[serde(default)]
+    validation: ValidationConfig,
+    #[serde(default)]
+    resources: Option<pdfv_core::ResourceLimits>,
+    #[serde(default)]
+    output: OutputConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ValidationConfig {
+    #[serde(default)]
+    flavour: Option<String>,
+    #[serde(default)]
+    max_failed_assertions_per_rule: Option<MaxDisplayedFailures>,
+    #[serde(default)]
+    record_passed_assertions: bool,
+}
+
+impl ValidationConfig {
+    fn flavour_selection(&self, cli_flavour: Option<FlavourSelection>) -> Result<FlavourSelection> {
+        if let Some(flavour) = cli_flavour {
+            return Ok(flavour);
+        }
+        self.flavour
+            .as_deref()
+            .map(parse_flavour_selection)
+            .transpose()
+            .map_err(|message| anyhow::anyhow!("invalid config validation.flavour: {message}"))?
+            .map_or_else(|| Ok(FlavourSelection::default()), Ok)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OutputConfig {
+    #[serde(default = "default_report_format")]
+    format: ReportFormat,
+    #[serde(default)]
+    path: Option<PathBuf>,
+    #[serde(default)]
+    redact_paths: bool,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            format: default_report_format(),
+            path: None,
+            redact_paths: false,
+        }
+    }
+}
+
+fn default_report_format() -> ReportFormat {
+    ReportFormat::Json
+}
+
 fn exit_for_error(error: Option<&PdfvError>) -> u8 {
     match error {
         Some(PdfvError::Profile(pdfv_core::ProfileError::UnsupportedSelection)) => EXIT_INCOMPLETE,
@@ -257,6 +629,8 @@ enum CliExit {
     Encrypted,
     /// At least one input could not be parsed.
     ParseFailed,
+    /// At least one internal processing error occurred.
+    Internal,
 }
 
 impl CliExit {
@@ -285,6 +659,7 @@ impl CliExit {
             Self::ParseFailed => EXIT_PARSE_FAILED,
             Self::Encrypted => EXIT_ENCRYPTED,
             Self::Incomplete => EXIT_INCOMPLETE,
+            Self::Internal => EXIT_INTERNAL,
         }
     }
 
@@ -295,6 +670,7 @@ impl CliExit {
             Self::ParseFailed => EXIT_PARSE_FAILED,
             Self::Encrypted => EXIT_ENCRYPTED,
             Self::Incomplete => EXIT_INCOMPLETE,
+            Self::Internal => EXIT_INTERNAL,
         }
     }
 }

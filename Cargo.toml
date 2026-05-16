@@ -16,7 +16,10 @@ readme = "README.md"
 anyhow = "1.0.102"
 assert_cmd = "2.2.2"
 clap = { version = "4.6.1", features = ["derive"] }
+config = { version = "0.15.23", default-features = false, features = ["yaml"] }
 predicates = "3.1.4"
+quick-xml = "0.40.1"
+rayon = "1.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tempfile = "3.27.0"

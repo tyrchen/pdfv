@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeMap,
-    io::{Cursor, Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
     num::NonZeroU32,
     sync::Arc,
 };
@@ -1777,8 +1777,16 @@ fn decode_flate_limited(
 ) -> std::result::Result<Vec<u8>, ParseError> {
     use flate2::read::{DeflateDecoder, ZlibDecoder};
 
-    read_limited(ZlibDecoder::new(Cursor::new(bytes)), max_decode_bytes)
-        .or_else(|_| read_limited(DeflateDecoder::new(Cursor::new(bytes)), max_decode_bytes))
+    read_limited(
+        ZlibDecoder::new(std::io::Cursor::new(bytes)),
+        max_decode_bytes,
+    )
+    .or_else(|_| {
+        read_limited(
+            DeflateDecoder::new(std::io::Cursor::new(bytes)),
+            max_decode_bytes,
+        )
+    })
 }
 
 #[cfg(not(feature = "flate"))]

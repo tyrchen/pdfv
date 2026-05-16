@@ -30,10 +30,12 @@ pub use parser::{
     CosObject, Dictionary, IndirectObject, ObjectStore, ParsedDocument, Parser, PdfName, PdfSource,
     PdfString, StreamObject, Trailer,
 };
+#[cfg(feature = "custom-profiles")]
+pub use profile::CustomProfileRepository;
 pub use profile::{
     BinaryOp, BuiltinFunction, BuiltinProfileRepository, ErrorTemplate, ModelValue, ObjectTypeName,
-    ProfileRepository, PropertyName, PropertyPath, Rule, RuleEvaluator, RuleExpr, RuleOutcome,
-    UnaryOp, ValidationProfile,
+    ProfileCatalogEntry, ProfileImportSummary, ProfileRepository, PropertyName, PropertyPath, Rule,
+    RuleEvaluator, RuleExpr, RuleOutcome, UnaryOp, ValidationProfile, import_verapdf_profile_xml,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -157,6 +159,18 @@ pub enum ProfileError {
     TypeMismatch {
         /// Bounded diagnostic message.
         message: BoundedText,
+    },
+    /// A rule expression is not supported by the bounded IR.
+    #[error("unsupported rule expression: {reason}")]
+    UnsupportedRule {
+        /// Bounded reason string.
+        reason: BoundedText,
+    },
+    /// Profile XML failed bounded parsing.
+    #[error("invalid profile XML: {reason}")]
+    InvalidXml {
+        /// Bounded reason string.
+        reason: BoundedText,
     },
 }
 
@@ -881,6 +895,23 @@ impl BatchReport {
             warnings,
         }
     }
+
+    /// Builds a batch report with internal per-input error count.
+    #[must_use]
+    pub fn from_items_with_internal_errors(
+        items: Vec<ValidationReport>,
+        warnings: Vec<ValidationWarning>,
+        elapsed: Duration,
+        internal_errors: u64,
+    ) -> Self {
+        let summary =
+            BatchSummary::from_items_with_internal_errors(&items, elapsed, internal_errors);
+        Self {
+            items,
+            summary,
+            warnings,
+        }
+    }
 }
 
 /// Batch summary counters.
@@ -917,33 +948,60 @@ impl BatchSummary {
             elapsed_millis: duration_millis(elapsed),
             ..Self::default()
         };
+        summary.apply_items(items);
+        summary.finish()
+    }
+
+    /// Computes batch summary counters from item reports plus internal error count.
+    #[must_use]
+    pub fn from_items_with_internal_errors(
+        items: &[ValidationReport],
+        elapsed: Duration,
+        internal_errors: u64,
+    ) -> Self {
+        let mut summary = Self {
+            total_files: u64::try_from(items.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(internal_errors),
+            elapsed_millis: duration_millis(elapsed),
+            internal_errors,
+            ..Self::default()
+        };
+        summary.apply_items(items);
+        summary.finish()
+    }
+
+    fn apply_items(&mut self, items: &[ValidationReport]) {
         for report in items {
             match report.status {
-                ValidationStatus::Valid => summary.valid = summary.valid.saturating_add(1),
-                ValidationStatus::Invalid => summary.invalid = summary.invalid.saturating_add(1),
+                ValidationStatus::Valid => self.valid = self.valid.saturating_add(1),
+                ValidationStatus::Invalid => self.invalid = self.invalid.saturating_add(1),
                 ValidationStatus::ParseFailed => {
-                    summary.parse_failures = summary.parse_failures.saturating_add(1);
+                    self.parse_failures = self.parse_failures.saturating_add(1);
                 }
                 ValidationStatus::Encrypted => {
-                    summary.encrypted = summary.encrypted.saturating_add(1);
+                    self.encrypted = self.encrypted.saturating_add(1);
                 }
                 ValidationStatus::Incomplete => {
-                    summary.incomplete = summary.incomplete.saturating_add(1);
+                    self.incomplete = self.incomplete.saturating_add(1);
                 }
             }
         }
-        summary.worst_exit_category = if summary.parse_failures > 0
-            || summary.encrypted > 0
-            || summary.incomplete > 0
-            || summary.internal_errors > 0
+    }
+
+    fn finish(mut self) -> Self {
+        self.worst_exit_category = if self.parse_failures > 0
+            || self.encrypted > 0
+            || self.incomplete > 0
+            || self.internal_errors > 0
         {
             ExitCategory::ProcessingFailed
-        } else if summary.invalid > 0 {
+        } else if self.invalid > 0 {
             ExitCategory::ValidationFailed
         } else {
             ExitCategory::Success
         };
-        summary
+        self
     }
 }
 

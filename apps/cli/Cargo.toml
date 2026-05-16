@@ -12,7 +12,10 @@ homepage.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-pdfv-core.workspace = true
+config.workspace = true
+pdfv-core = { workspace = true, features = ["custom-profiles"] }
+rayon.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
