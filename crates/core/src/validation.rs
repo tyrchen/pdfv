@@ -273,6 +273,7 @@ impl ValidationSession {
             self.max_failed_assertions_per_rule,
             self.record_passed_assertions,
         );
+        state.register_static_unsupported_rules(&profile.rules);
         let mut stack = Vec::from([ModelObjectRef::Document(DocumentModel::new(&self.document))]);
         let mut visited = HashSet::new();
         let mut deferred = Vec::new();
@@ -284,6 +285,9 @@ impl ValidationSession {
             }
             let object_rules = index.rules_for(&object);
             for rule in object_rules {
+                if matches!(rule.test, crate::RuleExpr::Unsupported { .. }) {
+                    continue;
+                }
                 if rule.deferred {
                     deferred.push((object.clone(), rule));
                 } else {
@@ -709,6 +713,13 @@ impl ModelObject for DocumentModel<'_> {
             "postEOFDataSize" => Ok(ModelValue::Number(u64_to_f64(post_eof_data_size(
                 self.document,
             ))?)),
+            "header" => Ok(ModelValue::String(BoundedText::new(
+                format!(
+                    "%PDF-{}.{}",
+                    self.document.version.major, self.document.version.minor
+                ),
+                32,
+            )?)),
             "encrypted" | "isEncrypted" => Ok(ModelValue::Bool(self.document.is_encrypted())),
             "hasCatalog" => Ok(ModelValue::Bool(self.document.catalog.is_some())),
             "containsXRefStream" => Ok(ModelValue::Bool(contains_xref_stream(self.document))),
@@ -1799,6 +1810,7 @@ impl ProfileState {
                     rule_id: rule.id.clone(),
                     expression_fragment: Some(BoundedText::unchecked(format!("{:?}", rule.test))),
                     reason: BoundedText::new(error.to_string(), 512)?,
+                    references: rule.references.clone(),
                 });
                 return Ok(());
             }
@@ -1831,6 +1843,20 @@ impl ProfileState {
             }
         }
         Ok(())
+    }
+
+    fn register_static_unsupported_rules(&mut self, rules: &[Rule]) {
+        for rule in rules {
+            if let crate::RuleExpr::Unsupported { fragment, reason } = &rule.test {
+                self.unsupported_rules.push(UnsupportedRule {
+                    profile_id: self.profile.id.clone(),
+                    rule_id: rule.id.clone(),
+                    expression_fragment: Some(fragment.clone()),
+                    reason: reason.clone(),
+                    references: rule.references.clone(),
+                });
+            }
+        }
     }
 
     fn assertion(
@@ -2262,6 +2288,7 @@ trailer
             error: ErrorTemplate {
                 message: BoundedText::new(id, 64)?,
             },
+            references: Vec::new(),
         })
     }
 }

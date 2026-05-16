@@ -27,6 +27,7 @@ thiserror.workspace = true
 typed-builder.workspace = true
 flate2 = { workspace = true, optional = true }
 quick-xml.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

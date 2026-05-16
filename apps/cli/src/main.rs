@@ -252,16 +252,27 @@ fn run_profiles_list() -> Result<CliExit> {
     {
         writeln!(
             handle,
-            "{}\tpdfa-{}{}\t{}",
+            "{}\t{}\t{}%\t{}\t{}\t{}\t{}\t{}",
             entry.identity.id.as_str(),
-            entry.flavour.part,
-            entry.flavour.conformance.as_str(),
+            entry.display_flavour.as_str(),
+            coverage_percent(entry.coverage.executable_rules, entry.coverage.total_rules),
+            entry.coverage.executable_rules,
+            entry.coverage.total_rules,
+            entry.source_pin.as_str(),
+            entry.source_file.as_str(),
             entry.identity.name.as_str(),
         )
         .context("failed to write profile list")?;
     }
     handle.flush().context("failed to flush profile list")?;
     Ok(CliExit::Valid)
+}
+
+fn coverage_percent(executable: u64, total: u64) -> u64 {
+    executable
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(0)
 }
 
 fn write_reports<W: Write>(
@@ -425,27 +436,70 @@ fn parse_flavour_selection(value: &str) -> std::result::Result<FlavourSelection,
 }
 
 fn parse_flavour(value: &str) -> std::result::Result<ValidationFlavour, String> {
-    let Some(rest) = value.strip_prefix("pdfa-") else {
-        return Err(String::from(
-            "expected auto or a PDF/A flavour such as pdfa-1b",
-        ));
-    };
-    if rest.len() < 2 {
-        return Err(String::from("expected PDF/A flavour part and conformance"));
+    if let Some(rest) = value.strip_prefix("pdfa-") {
+        return parse_pdfa_flavour(rest);
     }
+    if let Some(rest) = value.strip_prefix("pdfua-") {
+        return parse_pdfua_flavour(rest);
+    }
+    if let Some(rest) = value.strip_prefix("wtpdf-") {
+        return parse_wtpdf_flavour(rest);
+    }
+    Err(String::from(
+        "expected auto, pdfa-1b, pdfa-4, pdfua-1, pdfua-2-iso32005, or wtpdf-1-0-reuse",
+    ))
+}
+
+fn parse_pdfa_flavour(rest: &str) -> std::result::Result<ValidationFlavour, String> {
     let split_at = rest
         .find(|character: char| !character.is_ascii_digit())
-        .ok_or_else(|| String::from("expected conformance level after PDF/A part"))?;
+        .unwrap_or(rest.len());
     let (part, conformance) = rest.split_at(split_at);
-    if part.is_empty() || conformance.is_empty() {
-        return Err(String::from("expected PDF/A flavour part and conformance"));
+    if part.is_empty() {
+        return Err(String::from("expected PDF/A flavour part"));
     }
     let part = part
         .parse::<u32>()
         .map_err(|_| String::from("PDF/A part must be an integer"))?;
     let part = NonZeroU32::new(part).ok_or_else(|| String::from("PDF/A part must be non-zero"))?;
+    let conformance = if conformance.is_empty() {
+        "none"
+    } else {
+        conformance
+    };
     ValidationFlavour::new("pdfa", part, conformance)
         .map_err(|error| format!("invalid PDF/A flavour: {error}"))
+}
+
+fn parse_pdfua_flavour(rest: &str) -> std::result::Result<ValidationFlavour, String> {
+    let (part, suffix) = rest
+        .split_once('-')
+        .map_or((rest, ""), |(part, suffix)| (part, suffix));
+    let part = part
+        .parse::<u32>()
+        .map_err(|_| String::from("PDF/UA part must be an integer"))?;
+    let part = NonZeroU32::new(part).ok_or_else(|| String::from("PDF/UA part must be non-zero"))?;
+    if part.get() == 2 && suffix != "iso32005" {
+        return Err(String::from("PDF/UA-2 must be spelled pdfua-2-iso32005"));
+    }
+    let conformance = if suffix.is_empty() { "none" } else { suffix };
+    ValidationFlavour::new("pdfua", part, conformance)
+        .map_err(|error| format!("invalid PDF/UA flavour: {error}"))
+}
+
+fn parse_wtpdf_flavour(rest: &str) -> std::result::Result<ValidationFlavour, String> {
+    let Some(level) = rest.strip_prefix("1-0-") else {
+        return Err(String::from(
+            "WTPDF flavour must be wtpdf-1-0-reuse or wtpdf-1-0-accessibility",
+        ));
+    };
+    if !matches!(level, "reuse" | "accessibility") {
+        return Err(String::from(
+            "WTPDF flavour must be wtpdf-1-0-reuse or wtpdf-1-0-accessibility",
+        ));
+    }
+    ValidationFlavour::new("wtpdf", NonZeroU32::MIN, level)
+        .map_err(|error| format!("invalid WTPDF flavour: {error}"))
 }
 
 fn load_cli_config(path: &Path) -> Result<CliConfig> {
@@ -903,6 +957,22 @@ mod tests {
         let result = parse_flavour_selection("pdfa-1b");
 
         assert!(matches!(result, Ok(FlavourSelection::Explicit { .. })));
+    }
+
+    #[test]
+    fn test_should_parse_phase_13_builtin_flavours() {
+        for flavour in [
+            "pdfa-4",
+            "pdfa-4e",
+            "pdfua-1",
+            "pdfua-2-iso32005",
+            "wtpdf-1-0-reuse",
+            "wtpdf-1-0-accessibility",
+        ] {
+            let result = parse_flavour_selection(flavour);
+
+            assert!(matches!(result, Ok(FlavourSelection::Explicit { .. })));
+        }
     }
 
     #[test]

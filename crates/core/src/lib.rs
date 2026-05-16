@@ -14,6 +14,7 @@
 //! assert_eq!(source.kind, InputKind::Memory);
 //! ```
 
+mod generated_profiles;
 mod parser;
 mod profile;
 mod validation;
@@ -36,7 +37,8 @@ pub use profile::CustomProfileRepository;
 pub use profile::{
     BinaryOp, BuiltinFunction, BuiltinProfileRepository, ErrorTemplate, ModelValue, ObjectTypeName,
     ProfileCatalogEntry, ProfileImportSummary, ProfileRepository, PropertyName, PropertyPath, Rule,
-    RuleEvaluator, RuleExpr, RuleOutcome, UnaryOp, ValidationProfile, import_verapdf_profile_xml,
+    RuleEvaluator, RuleExpr, RuleOutcome, UnaryOp, ValidationProfile, display_flavour,
+    import_verapdf_profile_xml,
 };
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -836,6 +838,19 @@ pub struct UnsupportedRule {
     pub expression_fragment: Option<BoundedText>,
     /// Unsupported reason.
     pub reason: BoundedText,
+    /// Specification citations associated with this rule.
+    pub references: Vec<SpecReference>,
+}
+
+/// Specification citation associated with a validation rule.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpecReference {
+    /// Specification name.
+    pub specification: BoundedText,
+    /// Clause or section identifier.
+    pub clause: BoundedText,
 }
 
 /// Parser fact emitted by tolerant parsing.
@@ -1381,6 +1396,25 @@ fn write_text_report<W: Write>(report: &ValidationReport, out: &mut W) -> Result
             .map_err(write_error)?;
         }
     }
+    let unsupported = report
+        .profile_reports
+        .iter()
+        .flat_map(|profile| profile.unsupported_rules.iter())
+        .take(5)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        writeln!(out, "unsupported rules:").map_err(write_error)?;
+        for rule in unsupported {
+            writeln!(
+                out,
+                "  {}: {}{}",
+                rule.rule_id.0.as_str(),
+                rule.reason.as_str(),
+                reference_suffix(&rule.references),
+            )
+            .map_err(write_error)?;
+        }
+    }
     if !report.warnings.is_empty() {
         writeln!(out, "warnings: {}", report.warnings.len()).map_err(write_error)?;
     }
@@ -1554,10 +1588,34 @@ fn write_xml_unsupported_rules<W: Write>(rules: &[UnsupportedRule], out: &mut W)
             XmlEscapedText::new(rule.reason.as_str())?,
         )
         .map_err(write_error)?;
+        if !rule.references.is_empty() {
+            writeln!(out, "            <references>").map_err(write_error)?;
+            for reference in &rule.references {
+                writeln!(
+                    out,
+                    r#"              <reference specification="{}" clause="{}"></reference>"#,
+                    XmlEscapedAttr::new(reference.specification.as_str())?,
+                    XmlEscapedAttr::new(reference.clause.as_str())?,
+                )
+                .map_err(write_error)?;
+            }
+            writeln!(out, "            </references>").map_err(write_error)?;
+        }
         writeln!(out, "          </rule>").map_err(write_error)?;
     }
     writeln!(out, "        </unsupportedRules>").map_err(write_error)?;
     Ok(())
+}
+
+fn reference_suffix(references: &[SpecReference]) -> String {
+    let Some(reference) = references.first() else {
+        return String::new();
+    };
+    format!(
+        " [{} {}]",
+        reference.specification.as_str(),
+        reference.clause.as_str()
+    )
 }
 
 fn write_xml_parse_facts<W: Write>(facts: &[ParseFact], out: &mut W) -> Result<()> {

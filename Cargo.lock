@@ -816,6 +816,7 @@ dependencies = [
  "proptest",
  "quick-xml",
  "rc4",
+ "regex",
  "rstest",
  "secrecy",
  "serde",

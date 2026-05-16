@@ -701,6 +701,51 @@ fn test_should_list_profiles() -> Result<(), Box<dyn Error>> {
     let stdout = String::from_utf8(output.stdout)?;
     assert!(contains("pdfv-m4").eval(&stdout));
     assert!(contains("verapdf-pdfa-1b").eval(&stdout));
+    assert!(contains("verapdf-pdfua-2-iso32005").eval(&stdout));
+    assert!(contains("acfcc419a5df444e3e8b2a18266d01e249299957").eval(&stdout));
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 16);
+    for line in lines {
+        let columns = line.split('\t').collect::<Vec<_>>();
+        assert_eq!(columns.len(), 8);
+        assert!(columns.get(2).is_some_and(|value| value.ends_with('%')));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_should_validate_with_every_phase_13_builtin_profile() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    for (flavour, profile_id) in [
+        ("pdfa-1a", "verapdf-pdfa-1a"),
+        ("pdfa-1b", "verapdf-pdfa-1b"),
+        ("pdfa-2a", "verapdf-pdfa-2a"),
+        ("pdfa-2b", "verapdf-pdfa-2b"),
+        ("pdfa-2u", "verapdf-pdfa-2u"),
+        ("pdfa-3a", "verapdf-pdfa-3a"),
+        ("pdfa-3b", "verapdf-pdfa-3b"),
+        ("pdfa-3u", "verapdf-pdfa-3u"),
+        ("pdfa-4", "verapdf-pdfa-4"),
+        ("pdfa-4e", "verapdf-pdfa-4e"),
+        ("pdfa-4f", "verapdf-pdfa-4f"),
+        ("pdfua-1", "verapdf-pdfua-1"),
+        ("pdfua-2-iso32005", "verapdf-pdfua-2-iso32005"),
+        ("wtpdf-1-0-accessibility", "verapdf-wtpdf-1-0-accessibility"),
+        ("wtpdf-1-0-reuse", "verapdf-wtpdf-1-0-reuse"),
+    ] {
+        let output = Command::cargo_bin("pdfv")?
+            .args(["validate", "--format", "json", "--flavour", flavour])
+            .arg(&path)
+            .output()?;
+
+        assert_eq!(output.status.code(), Some(4), "{flavour}");
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(contains(format!(r#""id":"{profile_id}""#)).eval(&stdout));
+        assert!(contains(r#""status":"incomplete""#).eval(&stdout));
+    }
     Ok(())
 }
 

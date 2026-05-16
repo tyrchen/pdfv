@@ -30,4 +30,7 @@ release:
 update-submodule:
 	@git submodule update --init --recursive --remote
 
-.PHONY: build test check-agent-sync release update-submodule
+generate-profiles:
+	@cargo run -p pdfv-core --example generate_profiles -- crates/core/src/generated_profiles.rs
+
+.PHONY: build test check-agent-sync release update-submodule generate-profiles

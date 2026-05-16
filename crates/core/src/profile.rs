@@ -2,25 +2,26 @@
 
 use std::num::NonZeroU32;
 
+use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AssertionStatus, BoundedText, CosObject, FlavourSelection, Identifier, ObjectKey, ParseFact,
-    ProfileError, ProfileIdentity, ResourceLimits, Result, RuleId, StreamFact, ValidationFlavour,
+    ProfileError, ProfileIdentity, ResourceLimits, Result, RuleId, SpecReference, StreamFact,
+    ValidationFlavour,
+    generated_profiles::{GENERATED_PROFILE_SOURCES, GeneratedProfileSource, VERA_PDF_LIBRARY_PIN},
 };
 
 const MAX_RULE_INSTRUCTIONS: u64 = 512;
 const MAX_RULE_DEPTH: u32 = 32;
+const MAX_REGEX_PATTERN_BYTES: usize = 512;
+const MAX_REGEX_HAYSTACK_BYTES: usize = 4096;
 const MAX_PROFILE_XML_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_PROFILE_XML_ELEMENTS: u64 = 100_000;
 const MAX_PROFILE_XML_DEPTH: u32 = 32;
 const MAX_PROFILE_XML_ATTRIBUTES: usize = 16;
 const MAX_PROFILE_RULES: usize = 10_000;
 const MAX_PROFILE_STRING_BYTES: usize = 4096;
-const VERA_PDF_A_1B_XML: &str = include_str!(
-    "../../../vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-1B.\
-     xml"
-);
 
 /// Repository that resolves validation profiles for a caller selection.
 pub trait ProfileRepository {
@@ -59,17 +60,19 @@ impl BuiltinProfileRepository {
     ///
     /// Returns [`crate::PdfvError`] when built-in generated profile data is invalid.
     pub fn list_profiles(&self) -> Result<Vec<ProfileCatalogEntry>> {
-        let generated = import_verapdf_profile_xml(VERA_PDF_A_1B_XML)?;
-        Ok(vec![
-            ProfileCatalogEntry {
-                identity: m4_profile(pdfa_1b_flavour()?)?.identity,
-                flavour: pdfa_1b_flavour()?,
-            },
-            ProfileCatalogEntry {
-                identity: generated.profile.identity,
-                flavour: generated.profile.flavour,
-            },
-        ])
+        let mut entries = Vec::with_capacity(GENERATED_PROFILE_SOURCES.len().saturating_add(1));
+        let m4 = m4_profile(pdfa_1b_flavour()?)?;
+        entries.push(ProfileCatalogEntry::from_profile(
+            &m4,
+            "pdfv-internal",
+            "built-in smoke profile",
+            "pdfa-1b",
+        )?);
+        for source in GENERATED_PROFILE_SOURCES {
+            let import = import_generated_profile(source)?;
+            entries.push(ProfileCatalogEntry::from_import(source, &import)?);
+        }
+        Ok(entries)
     }
 }
 
@@ -85,8 +88,8 @@ impl ProfileRepository for BuiltinProfileRepository {
                 Ok(vec![m4_profile(flavour)?])
             }
             FlavourSelection::Explicit { flavour } => {
-                ensure_builtin_flavour(flavour)?;
-                Ok(vec![import_verapdf_profile_xml(VERA_PDF_A_1B_XML)?.profile])
+                let source = builtin_source_for_flavour(flavour)?;
+                Ok(vec![import_generated_profile(source)?.profile])
             }
             FlavourSelection::CustomProfile { .. } => {
                 #[cfg(feature = "custom-profiles")]
@@ -131,6 +134,23 @@ pub struct ProfileImportSummary {
     pub unsupported_rules: u64,
 }
 
+/// Executable coverage metadata for a profile.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "public report contract mirrors ExpressionCoverage terminology from the spec"
+)]
+pub struct ProfileCoverage {
+    /// Total official rules imported from the source profile.
+    pub total_rules: u64,
+    /// Rules that lowered to executable Rust IR.
+    pub executable_rules: u64,
+    /// Required rules retained as unsupported report data.
+    pub unsupported_rules: u64,
+}
+
 /// Profile metadata suitable for listing catalogs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
@@ -140,6 +160,69 @@ pub struct ProfileCatalogEntry {
     pub identity: ProfileIdentity,
     /// Validation flavour.
     pub flavour: ValidationFlavour,
+    /// CLI/catalog spelling for the flavour.
+    pub display_flavour: BoundedText,
+    /// Source pin that produced this profile entry.
+    pub source_pin: Identifier,
+    /// Vendored or internal source description.
+    pub source_file: BoundedText,
+    /// Executable rule coverage.
+    pub coverage: ProfileCoverage,
+}
+
+impl ProfileCatalogEntry {
+    fn from_import(source: &GeneratedProfileSource, import: &ProfileImportSummary) -> Result<Self> {
+        Self::from_profile(
+            &import.profile,
+            VERA_PDF_LIBRARY_PIN,
+            source.source_file,
+            source.display_flavour,
+        )
+        .map(|mut entry| {
+            entry.coverage = ProfileCoverage {
+                total_rules: import
+                    .supported_rules
+                    .saturating_add(import.unsupported_rules),
+                executable_rules: import.supported_rules,
+                unsupported_rules: import.unsupported_rules,
+            };
+            entry
+        })
+    }
+
+    fn from_profile(
+        profile: &ValidationProfile,
+        source_pin: &str,
+        source_file: &str,
+        display_flavour: &str,
+    ) -> Result<Self> {
+        Ok(Self {
+            identity: profile.identity.clone(),
+            flavour: profile.flavour.clone(),
+            display_flavour: BoundedText::new(display_flavour, 128)?,
+            source_pin: Identifier::new(source_pin)?,
+            source_file: BoundedText::new(source_file, 512)?,
+            coverage: ProfileCoverage {
+                total_rules: u64::try_from(profile.rules.len()).unwrap_or(u64::MAX),
+                executable_rules: u64::try_from(
+                    profile
+                        .rules
+                        .iter()
+                        .filter(|rule| !matches!(rule.test, RuleExpr::Unsupported { .. }))
+                        .count(),
+                )
+                .unwrap_or(u64::MAX),
+                unsupported_rules: u64::try_from(
+                    profile
+                        .rules
+                        .iter()
+                        .filter(|rule| matches!(rule.test, RuleExpr::Unsupported { .. }))
+                        .count(),
+                )
+                .unwrap_or(u64::MAX),
+            },
+        })
+    }
 }
 
 /// Immutable validation profile.
@@ -174,6 +257,8 @@ pub struct Rule {
     pub test: RuleExpr,
     /// Error template used for failed assertions.
     pub error: ErrorTemplate,
+    /// Specification citations associated with this rule.
+    pub references: Vec<SpecReference>,
 }
 
 /// Error template for failed assertions.
@@ -341,6 +426,15 @@ pub enum RuleExpr {
         /// Right operand.
         right: Box<RuleExpr>,
     },
+    /// Ternary conditional expression.
+    Conditional {
+        /// Boolean condition.
+        condition: Box<RuleExpr>,
+        /// Expression evaluated when condition is true.
+        when_true: Box<RuleExpr>,
+        /// Expression evaluated when condition is false.
+        when_false: Box<RuleExpr>,
+    },
     /// Built-in function call.
     Call {
         /// Built-in function.
@@ -387,6 +481,16 @@ pub enum BinaryOp {
     And,
     /// Boolean disjunction.
     Or,
+    /// Numeric addition.
+    Add,
+    /// Numeric subtraction.
+    Sub,
+    /// Numeric multiplication.
+    Mul,
+    /// Numeric division.
+    Div,
+    /// Numeric modulo.
+    Rem,
 }
 
 /// Bounded built-in function.
@@ -396,6 +500,18 @@ pub enum BinaryOp {
 pub enum BuiltinFunction {
     /// Returns true when a named parse fact exists.
     HasParseFact,
+    /// Returns collection or string size.
+    Size,
+    /// Returns true when a collection or string is empty.
+    IsEmpty,
+    /// Returns true when a collection or string contains a value.
+    Contains,
+    /// Returns true when every boolean argument is true.
+    All,
+    /// Returns true when any boolean argument is true.
+    Exists,
+    /// Returns true when a bounded regex matches a string.
+    Matches,
 }
 
 /// Model value used by rule evaluation.
@@ -412,6 +528,8 @@ pub enum ModelValue {
     String(BoundedText),
     /// Object key value.
     ObjectKey(ObjectKey),
+    /// Bounded list value.
+    List(Vec<ModelValue>),
 }
 
 /// Rule evaluation outcome.
@@ -490,6 +608,17 @@ impl DefaultRuleEvaluator {
             RuleExpr::Binary { op, left, right } => {
                 self.eval_binary(object, *op, left, right, depth)
             }
+            RuleExpr::Conditional {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                if expect_bool(&self.eval(object, condition, depth.saturating_add(1))?)? {
+                    self.eval(object, when_true, depth.saturating_add(1))
+                } else {
+                    self.eval(object, when_false, depth.saturating_add(1))
+                }
+            }
             RuleExpr::Call { function, args } => self.eval_call(object, *function, args, depth),
             RuleExpr::Unsupported { reason, .. } => Err(ProfileError::UnsupportedRule {
                 reason: reason.clone(),
@@ -533,6 +662,35 @@ impl DefaultRuleEvaluator {
             BinaryOp::Lt => expect_number(&left)? < expect_number(&right)?,
             BinaryOp::Gt => expect_number(&left)? > expect_number(&right)?,
             BinaryOp::And | BinaryOp::Or => false,
+            BinaryOp::Add => {
+                return Ok(ModelValue::Number(
+                    expect_number(&left)? + expect_number(&right)?,
+                ));
+            }
+            BinaryOp::Sub => {
+                return Ok(ModelValue::Number(
+                    expect_number(&left)? - expect_number(&right)?,
+                ));
+            }
+            BinaryOp::Mul => {
+                return Ok(ModelValue::Number(
+                    expect_number(&left)? * expect_number(&right)?,
+                ));
+            }
+            BinaryOp::Div => {
+                let divisor = expect_number(&right)?;
+                if divisor.abs() < f64::EPSILON {
+                    return Err(type_mismatch("division by zero").into());
+                }
+                return Ok(ModelValue::Number(expect_number(&left)? / divisor));
+            }
+            BinaryOp::Rem => {
+                let divisor = expect_number(&right)?;
+                if divisor.abs() < f64::EPSILON {
+                    return Err(type_mismatch("modulo by zero").into());
+                }
+                return Ok(ModelValue::Number(expect_number(&left)? % divisor));
+            }
         };
         Ok(ModelValue::Bool(result))
     }
@@ -546,13 +704,7 @@ impl DefaultRuleEvaluator {
     ) -> Result<ModelValue> {
         match function {
             BuiltinFunction::HasParseFact => {
-                if args.len() != 1 {
-                    return Err(type_mismatch("hasParseFact requires exactly one argument").into());
-                }
-                let Some(first) = args.first() else {
-                    return Err(type_mismatch("hasParseFact requires one argument").into());
-                };
-                let value = self.eval(object, first, depth.saturating_add(1))?;
+                let value = self.eval_single_arg(object, args, depth, "hasParseFact")?;
                 let ModelValue::String(name) = value else {
                     return Err(type_mismatch("hasParseFact requires string").into());
                 };
@@ -561,7 +713,106 @@ impl DefaultRuleEvaluator {
                     name.as_str(),
                 )))
             }
+            BuiltinFunction::Size => {
+                let value = self.eval_single_arg(object, args, depth, "size")?;
+                Ok(ModelValue::Number(usize_to_f64(collection_len(&value)?)?))
+            }
+            BuiltinFunction::IsEmpty => {
+                let value = self.eval_single_arg(object, args, depth, "isEmpty")?;
+                Ok(ModelValue::Bool(collection_len(&value)? == 0))
+            }
+            BuiltinFunction::Contains => {
+                if args.len() != 2 {
+                    return Err(type_mismatch("contains requires two arguments").into());
+                }
+                let haystack = self.eval(
+                    object,
+                    args.first()
+                        .ok_or_else(|| type_mismatch("contains requires haystack"))?,
+                    depth.saturating_add(1),
+                )?;
+                let needle = self.eval(
+                    object,
+                    args.get(1)
+                        .ok_or_else(|| type_mismatch("contains requires needle"))?,
+                    depth.saturating_add(1),
+                )?;
+                Ok(ModelValue::Bool(contains_value(&haystack, &needle)?))
+            }
+            BuiltinFunction::All => {
+                let mut result = true;
+                for arg in args {
+                    result &= expect_bool(&self.eval(object, arg, depth.saturating_add(1))?)?;
+                    if !result {
+                        break;
+                    }
+                }
+                Ok(ModelValue::Bool(result))
+            }
+            BuiltinFunction::Exists => {
+                let mut result = false;
+                for arg in args {
+                    result |= expect_bool(&self.eval(object, arg, depth.saturating_add(1))?)?;
+                    if result {
+                        break;
+                    }
+                }
+                Ok(ModelValue::Bool(result))
+            }
+            BuiltinFunction::Matches => {
+                if args.len() != 2 {
+                    return Err(type_mismatch("matches requires pattern and string").into());
+                }
+                let pattern = self.eval(
+                    object,
+                    args.first()
+                        .ok_or_else(|| type_mismatch("matches requires pattern"))?,
+                    depth.saturating_add(1),
+                )?;
+                let haystack = self.eval(
+                    object,
+                    args.get(1)
+                        .ok_or_else(|| type_mismatch("matches requires string"))?,
+                    depth.saturating_add(1),
+                )?;
+                let (ModelValue::String(pattern), ModelValue::String(haystack)) =
+                    (pattern, haystack)
+                else {
+                    return Err(type_mismatch("matches requires string arguments").into());
+                };
+                if pattern.as_str().len() > MAX_REGEX_PATTERN_BYTES
+                    || haystack.as_str().len() > MAX_REGEX_HAYSTACK_BYTES
+                {
+                    return Err(ProfileError::BudgetExceeded { budget: "regex" }.into());
+                }
+                let regex = RegexBuilder::new(pattern.as_str())
+                    .size_limit(1 << 20)
+                    .dfa_size_limit(1 << 20)
+                    .build()
+                    .map_err(|error| ProfileError::InvalidField {
+                        field: "regex",
+                        reason: BoundedText::new(error.to_string(), 512)
+                            .unwrap_or_else(|_| BoundedText::unchecked("invalid regex")),
+                    })?;
+                Ok(ModelValue::Bool(regex.is_match(haystack.as_str())))
+            }
         }
+    }
+
+    fn eval_single_arg(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+        name: &'static str,
+    ) -> Result<ModelValue> {
+        if args.len() != 1 {
+            return Err(type_mismatch("built-in requires exactly one argument").into());
+        }
+        let Some(first) = args.first() else {
+            return Err(type_mismatch(name).into());
+        };
+        self.eval(object, first, depth.saturating_add(1))
     }
 }
 
@@ -578,18 +829,24 @@ impl RuleEvaluator for DefaultRuleEvaluator {
 }
 
 fn property(object: &crate::ModelObjectRef<'_>, path: &PropertyPath) -> Result<ModelValue> {
-    if path.parts().len() != 1 {
-        return Err(ProfileError::UnknownProperty {
-            property: BoundedText::unchecked("nested property paths are unsupported in M0"),
-        }
-        .into());
-    }
-    let Some(name) = path.parts().first() else {
+    if path.parts().is_empty() {
         return Err(ProfileError::UnknownProperty {
             property: BoundedText::unchecked("empty"),
         }
         .into());
-    };
+    }
+    if path.parts().len() > 1 {
+        return Err(ProfileError::UnsupportedRule {
+            reason: BoundedText::unchecked("nested property path has no bound model link"),
+        }
+        .into());
+    }
+    let name = path
+        .parts()
+        .first()
+        .ok_or_else(|| ProfileError::UnknownProperty {
+            property: BoundedText::unchecked("empty"),
+        })?;
     object.property(name)
 }
 
@@ -616,7 +873,35 @@ fn values_equal(left: &ModelValue, right: &ModelValue) -> bool {
         }
         (ModelValue::String(left), ModelValue::String(right)) => left == right,
         (ModelValue::ObjectKey(left), ModelValue::ObjectKey(right)) => left == right,
+        (ModelValue::List(left), ModelValue::List(right)) => left == right,
         _ => false,
+    }
+}
+
+fn collection_len(value: &ModelValue) -> Result<usize> {
+    match value {
+        ModelValue::String(value) => Ok(value.as_str().len()),
+        ModelValue::List(value) => Ok(value.len()),
+        _ => Err(type_mismatch("expected collection or string").into()),
+    }
+}
+
+fn usize_to_f64(value: usize) -> Result<f64> {
+    let value = u32::try_from(value).map_err(|_| ProfileError::BudgetExceeded {
+        budget: "collection_size",
+    })?;
+    Ok(f64::from(value))
+}
+
+fn contains_value(haystack: &ModelValue, needle: &ModelValue) -> Result<bool> {
+    match (haystack, needle) {
+        (ModelValue::String(haystack), ModelValue::String(needle)) => {
+            Ok(haystack.as_str().contains(needle.as_str()))
+        }
+        (ModelValue::List(values), needle) => {
+            Ok(values.iter().any(|value| values_equal(value, needle)))
+        }
+        _ => Err(type_mismatch("contains requires compatible arguments").into()),
     }
 }
 
@@ -655,10 +940,99 @@ fn pdfa_1b_flavour() -> Result<ValidationFlavour> {
 }
 
 fn ensure_builtin_flavour(flavour: &ValidationFlavour) -> Result<()> {
-    if flavour == &pdfa_1b_flavour()? {
-        Ok(())
+    builtin_source_for_flavour(flavour).map(|_| ())
+}
+
+fn import_generated_profile(source: &GeneratedProfileSource) -> Result<ProfileImportSummary> {
+    let mut import = import_verapdf_profile_xml(source.xml)?;
+    import.profile.identity.id = Identifier::new(source.id)?;
+    import.profile.identity.version = Some(Identifier::new("verapdf-generated")?);
+    import.profile.flavour = parse_display_flavour(source.display_flavour)?;
+    Ok(import)
+}
+
+fn builtin_source_for_flavour(
+    flavour: &ValidationFlavour,
+) -> Result<&'static GeneratedProfileSource> {
+    let display = display_flavour(flavour)?;
+    GENERATED_PROFILE_SOURCES
+        .iter()
+        .find(|source| source.display_flavour == display.as_str())
+        .ok_or_else(|| ProfileError::UnsupportedSelection.into())
+}
+
+/// Returns the stable CLI/catalog spelling for a validation flavour.
+///
+/// # Errors
+///
+/// Returns [`crate::PdfvError`] when the flavour cannot be represented by the
+/// built-in profile catalog.
+pub fn display_flavour(flavour: &ValidationFlavour) -> Result<BoundedText> {
+    let family = flavour.family.as_str();
+    let conformance = flavour.conformance.as_str();
+    let value = match family {
+        "pdfa" if conformance == "none" => format!("pdfa-{}", flavour.part),
+        "pdfa" => format!("pdfa-{}{}", flavour.part, conformance),
+        "pdfua" if flavour.part.get() == 1 && conformance == "none" => String::from("pdfua-1"),
+        "pdfua" if flavour.part.get() == 2 && conformance == "iso32005" => {
+            String::from("pdfua-2-iso32005")
+        }
+        "wtpdf" if matches!(conformance, "reuse" | "accessibility") => {
+            format!("wtpdf-1-0-{conformance}")
+        }
+        _ => return Err(ProfileError::UnsupportedSelection.into()),
+    };
+    Ok(BoundedText::new(value, 128)?)
+}
+
+fn parse_display_flavour(value: &str) -> Result<ValidationFlavour> {
+    if let Some(rest) = value.strip_prefix("pdfa-") {
+        return parse_display_pdfa_flavour(rest);
+    }
+    if let Some(rest) = value.strip_prefix("pdfua-") {
+        return parse_display_pdfua_flavour(rest);
+    }
+    if let Some(level) = value.strip_prefix("wtpdf-1-0-")
+        && matches!(level, "reuse" | "accessibility")
+    {
+        return ValidationFlavour::new("wtpdf", NonZeroU32::MIN, level).map_err(Into::into);
+    }
+    Err(ProfileError::UnsupportedSelection.into())
+}
+
+fn parse_display_pdfa_flavour(rest: &str) -> Result<ValidationFlavour> {
+    let split_at = rest
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (part, conformance) = rest.split_at(split_at);
+    let part = part
+        .parse::<u32>()
+        .map_err(|_| ProfileError::InvalidField {
+            field: "flavour",
+            reason: BoundedText::unchecked("PDF/A part is not numeric"),
+        })?;
+    let part = NonZeroU32::new(part).ok_or(ProfileError::InvalidField {
+        field: "flavour",
+        reason: BoundedText::unchecked("PDF/A part is zero"),
+    })?;
+    let conformance = if conformance.is_empty() {
+        "none"
     } else {
-        Err(ProfileError::UnsupportedSelection.into())
+        conformance
+    };
+    ValidationFlavour::new("pdfa", part, conformance).map_err(Into::into)
+}
+
+fn parse_display_pdfua_flavour(rest: &str) -> Result<ValidationFlavour> {
+    match rest {
+        "1" => ValidationFlavour::new("pdfua", NonZeroU32::MIN, "none").map_err(Into::into),
+        "2-iso32005" => ValidationFlavour::new(
+            "pdfua",
+            NonZeroU32::new(2).ok_or(ProfileError::UnsupportedSelection)?,
+            "iso32005",
+        )
+        .map_err(Into::into),
+        _ => Err(ProfileError::UnsupportedSelection.into()),
     }
 }
 
@@ -777,6 +1151,7 @@ fn rule(
         error: ErrorTemplate {
             message: BoundedText::new(description, 256)?,
         },
+        references: Vec::new(),
     })
 }
 
@@ -902,6 +1277,11 @@ fn import_verapdf_profile_xml_impl(xml: &str) -> Result<ProfileImportSummary> {
                             rule.id = Some(rule_id_from_attrs(&element)?);
                         }
                     }
+                    b"reference" if current_rule.is_some() => {
+                        if let Some(rule) = current_rule.as_mut() {
+                            rule.references.push(reference_from_attrs(&element)?);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -967,6 +1347,11 @@ fn import_verapdf_profile_xml_impl(xml: &str) -> Result<ProfileImportSummary> {
                 {
                     rule.id = Some(rule_id_from_attrs(&element)?);
                 }
+                if element.name().as_ref() == b"reference"
+                    && let Some(rule) = current_rule.as_mut()
+                {
+                    rule.references.push(reference_from_attrs(&element)?);
+                }
             }
             Event::Eof => break,
             _ => {}
@@ -1015,10 +1400,12 @@ enum XmlTextTarget {
 struct XmlRuleBuilder {
     object_type: Option<ObjectTypeName>,
     unsupported_reason: Option<BoundedText>,
+    deferred: bool,
     id: Option<RuleId>,
     description: Option<BoundedText>,
     test: Option<BoundedText>,
     message: Option<BoundedText>,
+    references: Vec<SpecReference>,
 }
 
 impl XmlRuleBuilder {
@@ -1028,6 +1415,7 @@ impl XmlRuleBuilder {
         Ok(Self {
             object_type: Some(object_type),
             unsupported_reason,
+            deferred: optional_bool_attr(element, b"deferred")?,
             ..Self::default()
         })
     }
@@ -1062,11 +1450,12 @@ impl XmlRuleBuilder {
         Ok(Rule {
             id,
             object_type,
-            deferred: false,
+            deferred: self.deferred,
             tags: Vec::new(),
             description,
             test,
             error: ErrorTemplate { message },
+            references: self.references,
         })
     }
 }
@@ -1132,7 +1521,7 @@ fn validate_attribute(element: &[u8], attr: &[u8]) -> Result<()> {
     let allowed = match element {
         b"profile" => matches!(attr, b"flavour" | b"xmlns"),
         b"details" => matches!(attr, b"creator" | b"created"),
-        b"rule" => matches!(attr, b"object" | b"deferred"),
+        b"rule" => matches!(attr, b"object" | b"deferred" | b"tags"),
         b"id" => matches!(attr, b"specification" | b"clause" | b"testNumber"),
         b"reference" => matches!(attr, b"specification" | b"clause"),
         b"variable" => matches!(attr, b"name" | b"object"),
@@ -1187,6 +1576,27 @@ fn required_attr(element: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Re
     .into())
 }
 
+fn optional_bool_attr(element: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Result<bool> {
+    for attr in element.attributes().with_checks(true) {
+        let attr = attr.map_err(|error| ProfileError::InvalidXml {
+            reason: BoundedText::new(error.to_string(), 512)
+                .unwrap_or_else(|_| BoundedText::unchecked("XML attribute error")),
+        })?;
+        if attr.key.as_ref() == name {
+            return match attr.value.as_ref() {
+                b"true" => Ok(true),
+                b"false" => Ok(false),
+                _ => Err(ProfileError::InvalidField {
+                    field: "deferred",
+                    reason: BoundedText::unchecked("expected true or false"),
+                }
+                .into()),
+            };
+        }
+    }
+    Ok(false)
+}
+
 fn rule_id_from_attrs(element: &quick_xml::events::BytesStart<'_>) -> Result<RuleId> {
     let specification = required_attr(element, b"specification")?;
     let clause = required_attr(element, b"clause")?;
@@ -1198,6 +1608,13 @@ fn rule_id_from_attrs(element: &quick_xml::events::BytesStart<'_>) -> Result<Rul
         identifier_fragment(&test_number)
     );
     Ok(RuleId(Identifier::new(text)?))
+}
+
+fn reference_from_attrs(element: &quick_xml::events::BytesStart<'_>) -> Result<SpecReference> {
+    Ok(SpecReference {
+        specification: BoundedText::new(required_attr(element, b"specification")?, 512)?,
+        clause: BoundedText::new(required_attr(element, b"clause")?, 512)?,
+    })
 }
 
 fn identifier_fragment(value: &str) -> String {
@@ -1217,42 +1634,95 @@ fn identifier_fragment(value: &str) -> String {
 
 fn parse_verapdf_flavour(value: &str) -> Result<ValidationFlavour> {
     let parts = value.split('_').collect::<Vec<_>>();
-    if parts.len() != 3 || parts.first().copied() != Some("PDFA") {
+    let Some(family) = parts.first().copied() else {
         return Err(ProfileError::InvalidField {
             field: "flavour",
-            reason: BoundedText::unchecked("expected PDFA_<part>_<conformance>"),
+            reason: BoundedText::unchecked("profile flavour is empty"),
         }
         .into());
+    };
+    match family {
+        "PDFA" => parse_numbered_flavour("pdfa", &parts, "none"),
+        "PDFUA" => parse_pdfua_xml_flavour(&parts),
+        "WTPDF" => parse_wtpdf_flavour(&parts),
+        _ => Err(ProfileError::InvalidField {
+            field: "flavour",
+            reason: BoundedText::unchecked("unsupported profile flavour family"),
+        }
+        .into()),
     }
+}
+
+fn parse_pdfua_xml_flavour(parts: &[&str]) -> Result<ValidationFlavour> {
     let part = parts
         .get(1)
         .ok_or(ProfileError::InvalidField {
             field: "flavour",
-            reason: BoundedText::unchecked("missing PDF/A part"),
+            reason: BoundedText::unchecked("missing PDF/UA part"),
         })?
         .parse::<u32>()
         .map_err(|_| ProfileError::InvalidField {
             field: "flavour",
-            reason: BoundedText::unchecked("PDF/A part is not numeric"),
+            reason: BoundedText::unchecked("PDF/UA part is not numeric"),
         })?;
     let part = NonZeroU32::new(part).ok_or(ProfileError::InvalidField {
         field: "flavour",
-        reason: BoundedText::unchecked("PDF/A part is zero"),
+        reason: BoundedText::unchecked("PDF/UA part is zero"),
     })?;
-    let conformance = parts.get(2).ok_or(ProfileError::InvalidField {
+    let conformance = if part.get() == 2 { "iso32005" } else { "none" };
+    ValidationFlavour::new("pdfua", part, conformance).map_err(Into::into)
+}
+
+fn parse_numbered_flavour(
+    family: &str,
+    parts: &[&str],
+    default_conformance: &str,
+) -> Result<ValidationFlavour> {
+    let part = parts
+        .get(1)
+        .ok_or(ProfileError::InvalidField {
+            field: "flavour",
+            reason: BoundedText::unchecked("missing flavour part"),
+        })?
+        .parse::<u32>()
+        .map_err(|_| ProfileError::InvalidField {
+            field: "flavour",
+            reason: BoundedText::unchecked("flavour part is not numeric"),
+        })?;
+    let part = NonZeroU32::new(part).ok_or(ProfileError::InvalidField {
         field: "flavour",
-        reason: BoundedText::unchecked("missing conformance"),
+        reason: BoundedText::unchecked("flavour part is zero"),
     })?;
-    ValidationFlavour::new("pdfa", part, conformance.to_ascii_lowercase()).map_err(Into::into)
+    let conformance = parts
+        .get(2)
+        .copied()
+        .unwrap_or(default_conformance)
+        .to_ascii_lowercase();
+    ValidationFlavour::new(family, part, conformance).map_err(Into::into)
+}
+
+fn parse_wtpdf_flavour(parts: &[&str]) -> Result<ValidationFlavour> {
+    if parts.len() != 4 || parts.get(1).copied() != Some("1") || parts.get(2).copied() != Some("0")
+    {
+        return Err(ProfileError::InvalidField {
+            field: "flavour",
+            reason: BoundedText::unchecked("expected WTPDF_1_0_<level>"),
+        }
+        .into());
+    }
+    let conformance = parts
+        .get(3)
+        .ok_or(ProfileError::InvalidField {
+            field: "flavour",
+            reason: BoundedText::unchecked("missing WTPDF level"),
+        })?
+        .to_ascii_lowercase();
+    ValidationFlavour::new("wtpdf", NonZeroU32::MIN, conformance).map_err(Into::into)
 }
 
 fn profile_id_for_flavour(flavour: &ValidationFlavour) -> Result<Identifier> {
-    Identifier::new(format!(
-        "verapdf-pdfa-{}{}",
-        flavour.part,
-        flavour.conformance.as_str()
-    ))
-    .map_err(Into::into)
+    let display = display_flavour(flavour)?;
+    Identifier::new(format!("verapdf-{}", display.as_str())).map_err(Into::into)
 }
 
 fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<BoundedText>)> {
@@ -1281,13 +1751,11 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
 }
 
 fn parse_imported_expr(input: &str) -> std::result::Result<RuleExpr, BoundedText> {
-    if input.contains('?') || input.contains('%') || input.contains('.') {
-        return Err(BoundedText::unchecked(
-            "expression operator is not supported",
-        ));
-    }
     let mut parser = ExprParser::new(input);
-    let expr = parser.parse_or()?;
+    let expr = parser.parse_conditional()?;
+    if matches!(expr, RuleExpr::Unsupported { .. }) {
+        return Ok(expr);
+    }
     parser.skip_ws();
     if parser.remaining().is_empty() {
         Ok(expr)
@@ -1332,6 +1800,24 @@ impl<'a> ExprParser<'a> {
         }
     }
 
+    fn parse_conditional(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        let condition = self.parse_or()?;
+        if self.consume("?") {
+            let when_true = self.parse_conditional()?;
+            if !self.consume(":") {
+                return Err(BoundedText::unchecked("missing ternary separator"));
+            }
+            let when_false = self.parse_conditional()?;
+            Ok(RuleExpr::Conditional {
+                condition: Box::new(condition),
+                when_true: Box::new(when_true),
+                when_false: Box::new(when_false),
+            })
+        } else {
+            Ok(condition)
+        }
+    }
+
     fn parse_or(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
         let mut expr = self.parse_and()?;
         while self.consume("||") {
@@ -1359,7 +1845,7 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse_comparison(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
-        let left = self.parse_primary()?;
+        let left = self.parse_additive()?;
         let op = if self.consume("==") {
             Some(BinaryOp::Eq)
         } else if self.consume("!=") {
@@ -1376,7 +1862,7 @@ impl<'a> ExprParser<'a> {
             None
         };
         if let Some(op) = op {
-            let right = self.parse_primary()?;
+            let right = self.parse_additive()?;
             Ok(RuleExpr::Binary {
                 op,
                 left: Box::new(left),
@@ -1387,22 +1873,105 @@ impl<'a> ExprParser<'a> {
         }
     }
 
+    fn parse_additive(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        let mut expr = self.parse_multiplicative()?;
+        loop {
+            let op = if self.consume("+") {
+                Some(BinaryOp::Add)
+            } else if self.consume("-") {
+                Some(BinaryOp::Sub)
+            } else {
+                None
+            };
+            let Some(op) = op else {
+                return Ok(expr);
+            };
+            expr = RuleExpr::Binary {
+                op,
+                left: Box::new(expr),
+                right: Box::new(self.parse_multiplicative()?),
+            };
+        }
+    }
+
+    fn parse_multiplicative(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        let mut expr = self.parse_unary()?;
+        loop {
+            let op = if self.consume("*") {
+                Some(BinaryOp::Mul)
+            } else if self.consume("/") {
+                Some(BinaryOp::Div)
+            } else if self.consume("%") {
+                Some(BinaryOp::Rem)
+            } else {
+                None
+            };
+            let Some(op) = op else {
+                return Ok(expr);
+            };
+            expr = RuleExpr::Binary {
+                op,
+                left: Box::new(expr),
+                right: Box::new(self.parse_unary()?),
+            };
+        }
+    }
+
+    fn parse_unary(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        self.skip_ws();
+        if self.consume("!") {
+            return Ok(RuleExpr::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(self.parse_unary()?),
+            });
+        }
+        self.parse_postfix()
+    }
+
+    fn parse_postfix(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        let expr = self.parse_primary()?;
+        self.skip_ws();
+        if self.consume(".") {
+            if self.consume("length") && self.consume("(") && self.consume(")") {
+                return Ok(RuleExpr::Call {
+                    function: BuiltinFunction::Size,
+                    args: vec![expr],
+                });
+            }
+            if self.consume("test") && self.consume("(") {
+                let arg = self.parse_conditional()?;
+                if !self.consume(")") {
+                    return Err(BoundedText::unchecked("missing call closing parenthesis"));
+                }
+                return Ok(RuleExpr::Call {
+                    function: BuiltinFunction::Matches,
+                    args: vec![expr, arg],
+                });
+            }
+            return Ok(RuleExpr::Unsupported {
+                fragment: BoundedText::new(self.input, MAX_PROFILE_STRING_BYTES)
+                    .map_err(|_| BoundedText::unchecked("expression exceeds limit"))?,
+                reason: BoundedText::unchecked(
+                    "nested property path has no bound model link in this phase",
+                ),
+            });
+        }
+        Ok(expr)
+    }
+
     fn parse_primary(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
         self.skip_ws();
         if self.consume("(") {
-            let expr = self.parse_or()?;
+            let expr = self.parse_conditional()?;
             if !self.consume(")") {
                 return Err(BoundedText::unchecked("missing closing parenthesis"));
             }
             return Ok(expr);
         }
-        if self.consume("!") {
-            return Ok(RuleExpr::Unary {
-                op: UnaryOp::Not,
-                expr: Box::new(self.parse_primary()?),
-            });
+        if self.remaining().starts_with('/') {
+            return self.parse_regex_literal();
         }
-        if self.remaining().starts_with('"') {
+        if self.remaining().starts_with('"') || self.remaining().starts_with('\'') {
             return self.parse_string();
         }
         if self.remaining().starts_with("true") {
@@ -1429,10 +1998,15 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse_string(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        let quote = *self
+            .remaining()
+            .as_bytes()
+            .first()
+            .ok_or_else(|| BoundedText::unchecked("expected string quote"))?;
         self.offset = self.offset.saturating_add(1);
         let start = self.offset;
         while let Some(byte) = self.remaining().as_bytes().first() {
-            if *byte == b'"' {
+            if *byte == quote {
                 let value = &self.input[start..self.offset];
                 self.offset = self.offset.saturating_add(1);
                 return Ok(RuleExpr::String {
@@ -1443,6 +2017,28 @@ impl<'a> ExprParser<'a> {
             self.offset = self.offset.saturating_add(1);
         }
         Err(BoundedText::unchecked("unterminated string literal"))
+    }
+
+    fn parse_regex_literal(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        self.offset = self.offset.saturating_add(1);
+        let start = self.offset;
+        let mut escaped = false;
+        while let Some(byte) = self.remaining().as_bytes().first() {
+            if *byte == b'/' && !escaped {
+                let value = &self.input[start..self.offset];
+                self.offset = self.offset.saturating_add(1);
+                return Ok(RuleExpr::String {
+                    value: BoundedText::new(value, MAX_REGEX_PATTERN_BYTES)
+                        .map_err(|_| BoundedText::unchecked("regex literal exceeds limit"))?,
+                });
+            }
+            escaped = *byte == b'\\' && !escaped;
+            if *byte != b'\\' {
+                escaped = false;
+            }
+            self.offset = self.offset.saturating_add(1);
+        }
+        Err(BoundedText::unchecked("unterminated regex literal"))
     }
 
     fn parse_number(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
@@ -1461,6 +2057,44 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse_property(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        let first = self.parse_identifier()?;
+        if self.consume("(") {
+            let mut args = Vec::new();
+            if !self.consume(")") {
+                loop {
+                    args.push(self.parse_conditional()?);
+                    if self.consume(")") {
+                        break;
+                    }
+                    if !self.consume(",") {
+                        return Err(BoundedText::unchecked(
+                            "missing function argument separator",
+                        ));
+                    }
+                }
+            }
+            return Ok(RuleExpr::Call {
+                function: builtin_function(&first)?,
+                args,
+            });
+        }
+        let parts = vec![property_name_from_source(&first)?];
+        if self.consume(".") {
+            let _member = self.parse_identifier()?;
+            return Ok(RuleExpr::Unsupported {
+                fragment: BoundedText::new(self.input, MAX_PROFILE_STRING_BYTES)
+                    .map_err(|_| BoundedText::unchecked("expression exceeds limit"))?,
+                reason: BoundedText::unchecked(
+                    "nested property path has no bound model link in this phase",
+                ),
+            });
+        }
+        Ok(RuleExpr::Property {
+            path: PropertyPath::new(parts),
+        })
+    }
+
+    fn parse_identifier(&mut self) -> std::result::Result<String, BoundedText> {
         let start = self.offset;
         while let Some(byte) = self.remaining().as_bytes().first() {
             if byte.is_ascii_alphanumeric() || *byte == b'_' {
@@ -1472,12 +2106,25 @@ impl<'a> ExprParser<'a> {
         if start == self.offset {
             return Err(BoundedText::unchecked("expected expression"));
         }
-        let name = map_verapdf_property(&self.input[start..self.offset]);
-        Ok(RuleExpr::Property {
-            path: PropertyPath::new(vec![
-                PropertyName::new(name).map_err(|_| BoundedText::unchecked("invalid property"))?,
-            ]),
-        })
+        Ok(self.input[start..self.offset].to_owned())
+    }
+}
+
+fn property_name_from_source(value: &str) -> std::result::Result<PropertyName, BoundedText> {
+    PropertyName::new(map_verapdf_property(value))
+        .map_err(|_| BoundedText::unchecked("invalid property"))
+}
+
+fn builtin_function(value: &str) -> std::result::Result<BuiltinFunction, BoundedText> {
+    match value {
+        "hasParseFact" => Ok(BuiltinFunction::HasParseFact),
+        "size" => Ok(BuiltinFunction::Size),
+        "isEmpty" => Ok(BuiltinFunction::IsEmpty),
+        "contains" => Ok(BuiltinFunction::Contains),
+        "all" => Ok(BuiltinFunction::All),
+        "exists" => Ok(BuiltinFunction::Exists),
+        "matches" => Ok(BuiltinFunction::Matches),
+        _ => Err(BoundedText::unchecked("unsupported built-in function")),
     }
 }
 
@@ -1520,6 +2167,15 @@ mod tests {
     use super::{BuiltinProfileRepository, DefaultRuleEvaluator, ProfileRepository, RuleEvaluator};
     use crate::{FlavourSelection, Parser, Validator};
 
+    const MINIMAL_PDF: &[u8] = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+";
+
     #[derive(Debug)]
     struct StaticRepo(super::ValidationProfile);
 
@@ -1551,12 +2207,99 @@ mod tests {
     #[cfg(feature = "custom-profiles")]
     #[test]
     fn test_should_import_representative_verapdf_xml_rules() -> crate::Result<()> {
-        let import = super::import_verapdf_profile_xml(super::VERA_PDF_A_1B_XML)?;
+        let import = super::import_verapdf_profile_xml(
+            crate::generated_profiles::GENERATED_PROFILE_SOURCES
+                .iter()
+                .find(|source| source.display_flavour == "pdfa-1b")
+                .ok_or(crate::ProfileError::UnsupportedSelection)?
+                .xml,
+        )?;
 
         assert!(import.profile.rules.len() > 100);
         assert!(import.supported_rules > 0);
         assert!(import.unsupported_rules > 0);
         assert_eq!(import.profile.identity.id.as_str(), "verapdf-pdfa-1b");
+        assert!(
+            import
+                .profile
+                .rules
+                .iter()
+                .any(|rule| !rule.references.is_empty())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_list_every_generated_builtin_profile_with_coverage() -> crate::Result<()> {
+        let profiles = BuiltinProfileRepository::new().list_profiles()?;
+
+        assert_eq!(
+            profiles.len(),
+            crate::generated_profiles::GENERATED_PROFILE_SOURCES.len() + 1
+        );
+        assert!(profiles.iter().any(|profile| {
+            profile.identity.id.as_str() == "verapdf-pdfua-2-iso32005"
+                && profile.display_flavour.as_str() == "pdfua-2-iso32005"
+                && profile.coverage.total_rules > 0
+        }));
+        assert!(profiles.iter().any(|profile| {
+            profile.identity.id.as_str() == "verapdf-wtpdf-1-0-reuse"
+                && profile.source_pin.as_str() == crate::generated_profiles::VERA_PDF_LIBRARY_PIN
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_reject_inexact_pdfua_2_flavour_selection() -> crate::Result<()> {
+        let flavour = crate::ValidationFlavour::new(
+            "pdfua",
+            std::num::NonZeroU32::new(2).ok_or(crate::ProfileError::UnsupportedSelection)?,
+            "wrong",
+        )?;
+        let result =
+            BuiltinProfileRepository::new().profiles_for(&FlavourSelection::Explicit { flavour });
+
+        assert!(matches!(
+            result,
+            Err(crate::PdfvError::Profile(
+                crate::ProfileError::UnsupportedSelection
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_load_and_validate_every_generated_builtin_profile() -> crate::Result<()> {
+        for source in crate::generated_profiles::GENERATED_PROFILE_SOURCES {
+            let flavour = super::parse_display_flavour(source.display_flavour)?;
+            let report = Validator::new(
+                crate::ValidationOptions::builder()
+                    .flavour(FlavourSelection::Explicit { flavour })
+                    .build(),
+            )?
+            .validate_reader(Cursor::new(MINIMAL_PDF), crate::InputName::memory())?;
+
+            assert_eq!(report.status, crate::ValidationStatus::Incomplete);
+            assert_eq!(
+                report
+                    .profile_reports
+                    .first()
+                    .map(|profile| profile.profile.id.as_str()),
+                Some(source.id)
+            );
+            assert!(
+                report
+                    .profile_reports
+                    .first()
+                    .is_some_and(|profile| !profile.unsupported_rules.is_empty())
+            );
+            assert!(report.profile_reports.first().is_some_and(|profile| {
+                profile
+                    .unsupported_rules
+                    .iter()
+                    .any(|rule| !rule.references.is_empty())
+            }));
+        }
         Ok(())
     }
 
@@ -1689,6 +2432,7 @@ trailer
             error: super::ErrorTemplate {
                 message: crate::BoundedText::new("derived font name", 64)?,
             },
+            references: Vec::new(),
         };
         let profile = super::ValidationProfile {
             identity: crate::ProfileIdentity {
@@ -1829,6 +2573,7 @@ trailer
             error: super::ErrorTemplate {
                 message: crate::BoundedText::new("nested", 32)?,
             },
+            references: Vec::new(),
         };
         let arity_rule = super::Rule {
             id: crate::RuleId(crate::Identifier::new("bad-arity")?),
@@ -1850,6 +2595,7 @@ trailer
             error: super::ErrorTemplate {
                 message: crate::BoundedText::new("arity", 32)?,
             },
+            references: Vec::new(),
         };
 
         assert!(evaluator.evaluate(object.clone(), &nested_rule).is_err());
@@ -1882,6 +2628,7 @@ trailer
             error: super::ErrorTemplate {
                 message: crate::BoundedText::new("unsupported", 64)?,
             },
+            references: Vec::new(),
         };
         let profile = super::ValidationProfile {
             identity: crate::ProfileIdentity {
@@ -1910,6 +2657,79 @@ trailer
     }
 
     #[test]
+    fn test_should_parse_phase_13_expression_surface() -> crate::Result<()> {
+        let modulo = super::parse_imported_expr("hexCount % 2 == 0")
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let ternary = super::parse_imported_expr(
+            "gPageOutputCS == null ? gDocumentOutputCS == 'RGB ' : gPageOutputCS == 'RGB '",
+        )
+        .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let regex = super::parse_imported_expr(r"/^%PDF-2\.[0-9]$/.test(header)")
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let call = super::parse_imported_expr("contains(entries, 'UR3') == false")
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+
+        assert!(matches!(modulo, super::RuleExpr::Binary { .. }));
+        assert!(matches!(ternary, super::RuleExpr::Conditional { .. }));
+        assert!(matches!(regex, super::RuleExpr::Call { .. }));
+        assert!(matches!(call, super::RuleExpr::Binary { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_import_nested_property_paths_as_static_unsupported() -> crate::Result<()> {
+        let expr = super::parse_imported_expr("metadata.schema.part == 1")
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+
+        assert!(matches!(expr, super::RuleExpr::Unsupported { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_evaluate_arithmetic_ternary_and_regex_builtins() -> crate::Result<()> {
+        let bytes = br"%PDF-2.0
+1 0 obj
+<< /Type /Catalog >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+";
+        let document = Parser::default().parse(Cursor::new(bytes))?;
+        let model = crate::validation::DocumentModel::new(&document);
+        let object = crate::ModelObjectRef::Document(model);
+        let mut evaluator = DefaultRuleEvaluator::new(crate::ResourceLimits::default());
+        let rule = super::Rule {
+            id: crate::RuleId(crate::Identifier::new("expr-surface")?),
+            object_type: super::ObjectTypeName::new("document")?,
+            deferred: false,
+            tags: Vec::new(),
+            description: crate::BoundedText::new("expr", 32)?,
+            test: super::RuleExpr::Binary {
+                op: super::BinaryOp::And,
+                left: Box::new(
+                    super::parse_imported_expr("5 % 2 == 1")
+                        .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?,
+                ),
+                right: Box::new(
+                    super::parse_imported_expr(r"/^%PDF-2\.[0-9]$/.test(header)")
+                        .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?,
+                ),
+            },
+            error: super::ErrorTemplate {
+                message: crate::BoundedText::new("expr", 32)?,
+            },
+            references: Vec::new(),
+        };
+
+        assert_eq!(
+            evaluator.evaluate(object, &rule)?,
+            super::RuleOutcome::Passed
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_should_apply_failed_assertion_cap_per_rule() -> crate::Result<()> {
         let bytes = br"%PDF-1.7
 1 0 obj
@@ -1931,6 +2751,7 @@ trailer
                 error: super::ErrorTemplate {
                     message: crate::BoundedText::new(id, 64)?,
                 },
+                references: Vec::new(),
             });
         }
         let profile = super::ValidationProfile {
