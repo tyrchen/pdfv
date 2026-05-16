@@ -1902,7 +1902,8 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "OutputIntents" | "OutputIntent" | "PDOutputIntent" => Some("outputIntent"),
         "PDXObject" | "PDXForm" | "PD3DStream" | "PDMediaClip" | "PDRichMedia" => Some("xObject"),
         "PDXImage" | "JPEG2000" | "PDMaskImage" => Some("image"),
-        "PDContentStream" | "Op_Undefined" | "Op_q_gsave" => Some("contentStream"),
+        "PDContentStream" | "Op_q_gsave" => Some("contentStream"),
+        "Op_Undefined" => Some("undefinedOperator"),
         "PDOCConfig" => Some("optionalContentProperties"),
         "PDPerms" => Some("permissions"),
         "PDOutline" => Some("outline"),
@@ -2480,6 +2481,28 @@ trailer
                 .iter()
                 .any(|rule| !rule.references.is_empty())
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "custom-profiles")]
+    #[test]
+    fn test_should_map_verapdf_undefined_operator_to_sparse_family() -> crate::Result<()> {
+        let import = super::import_verapdf_profile_xml(
+            crate::generated_profiles::GENERATED_PROFILE_SOURCES
+                .iter()
+                .find(|source| source.display_flavour == "pdfa-1b")
+                .ok_or(crate::ProfileError::UnsupportedSelection)?
+                .xml,
+        )?;
+
+        let rule = import
+            .profile
+            .rules
+            .iter()
+            .find(|rule| rule.id.0.as_str() == "iso-19005-1-6-2-10-1")
+            .ok_or(crate::ProfileError::UnsupportedSelection)?;
+
+        assert_eq!(rule.object_type.as_str(), "undefinedOperator");
         Ok(())
     }
 

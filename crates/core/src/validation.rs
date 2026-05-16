@@ -360,6 +360,7 @@ const CONTENT_STREAM_PROPERTIES: &[&str] = &[
     "FFilter",
     "FDecodeParms",
 ];
+const UNDEFINED_OPERATOR_PROPERTIES: &[&str] = &["name"];
 const ANNOTATION_PROPERTIES: &[&str] = &[
     "hasSubtype",
     "Type",
@@ -1268,6 +1269,11 @@ impl ModelRegistry {
             family("image", IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
             family("xObject", XOBJECT_PROPERTIES, EMPTY_LINK_NAMES),
             family("contentStream", CONTENT_STREAM_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "undefinedOperator",
+                UNDEFINED_OPERATOR_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("annotation", ANNOTATION_PROPERTIES, EMPTY_LINK_NAMES),
             family("action", ACTION_PROPERTIES, EMPTY_LINK_NAMES),
             family("formField", FORM_FIELD_PROPERTIES, EMPTY_LINK_NAMES),

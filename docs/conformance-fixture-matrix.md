@@ -35,3 +35,27 @@ veraPDF trees. Future revision 5-6 implementation will add deterministic
 generated R5/R6 AESV3 fixtures covering user password, owner password, wrong
 password, tampered `/Perms`, malformed short key fields, and string/stream
 decryption under resource limits.
+
+## Opt-In veraPDF Corpus Tests
+
+`apps/cli/tests/verapdf_corpus.rs` translates the upstream
+`vendors/veraPDF-apps/tests/exit-status.sh` scenarios into `pdfv` CLI checks.
+The tests are ignored by default because they require an external
+`veraPDF-corpus` checkout and intentionally exercise broader conformance than
+the local generated fixtures.
+
+Run them with:
+
+```bash
+PDFV_VERAPDF_CORPUS_DIR=/path/to/veraPDF-corpus make test-conformance-verapdf
+```
+
+The current rows cover single pass, single fail, all-pass batch, all-fail
+batch, mixed recursive directory validation, bad parameters, and parse failure.
+Because the imported PDF/A-1b profile still contains unsupported rules, the
+validation rows currently expect `incomplete` rather than veraPDF's final
+valid/invalid decisions. They still guard parser/report behavior and known-pass
+fixtures with zero failed rules until full model parity is implemented.
+External corpus PDFs remain outside `tests/fixtures/`; any checked-in copy must
+first be added to `tests/fixtures/manifest.md` with source, license, and
+expected status metadata.

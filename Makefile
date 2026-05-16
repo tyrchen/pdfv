@@ -4,6 +4,13 @@ build:
 test:
 	@cargo nextest run --all-features
 
+test-conformance-verapdf:
+	@if [ -z "$$PDFV_VERAPDF_CORPUS_DIR" ]; then \
+		echo "PDFV_VERAPDF_CORPUS_DIR must point to a veraPDF-corpus checkout"; \
+		exit 2; \
+	fi
+	@cargo test -p pdfv --test verapdf_corpus -- --ignored --nocapture
+
 check-agent-sync:
 	@cmp -s CLAUDE.md AGENTS.md || { \
 		echo "AGENTS.md must stay in sync with CLAUDE.md"; \
@@ -33,4 +40,4 @@ update-submodule:
 generate-profiles:
 	@cargo run -p pdfv-core --example generate_profiles -- crates/core/src/generated_profiles.rs
 
-.PHONY: build test check-agent-sync release update-submodule generate-profiles
+.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles
