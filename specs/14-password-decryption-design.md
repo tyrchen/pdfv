@@ -164,7 +164,7 @@ Revision 5-6 authentication and decryption must implement:
 - Algorithm 2.B hashing: revision 5 uses SHA-256; revision 6 starts with SHA-256 and then runs the AES-128-CBC hardened hash loop selecting SHA-256/SHA-384/SHA-512 by the encrypted block modulo 3 rule;
 - AES-256-CBC with zero IV and no padding for decrypting `/OE` and `/UE`;
 - direct use of the recovered 32-byte file key as the AESV3 string/stream key, without object-number MD5 derivation;
-- AESV3 string and stream decryption using a 16-byte IV prefix and AES-256-CBC;
+- AESV3 string and stream decryption using a 16-byte IV prefix and AES-256-CBC with PKCS#7-compatible padding validation and removal;
 - `/Perms` validation by decrypting the 16-byte value with AES-256-ECB and checking the stable first 12 plaintext bytes against `/P`, `0xff 0xff 0xff 0xff`, the `EncryptMetadata` marker, and `adb`;
 - encrypted/unsupported status for wrong passwords, invalid `/Perms`, unsupported filters, or unsupported revision/version combinations, without exposing `/O`, `/U`, `/OE`, `/UE`, file keys, object keys, password bytes, or decrypted data.
 

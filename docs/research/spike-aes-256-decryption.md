@@ -20,7 +20,7 @@ derivation differ materially from revisions 2 through 4.
 - qpdf encryption implementation:
   `https://github.com/qpdf/qpdf/blob/main/libqpdf/QPDF_encryption.cc`.
 - qpdf encryption documentation:
-  `https://qpdf.readthedocs.io/en/11.6/encryption.html`.
+  `https://qpdf.readthedocs.io/en/latest/encryption.html`.
 - PDF 2.0 errata for clause 7.6:
   `https://pdf-issues.pdfa.org/32000-2-2020/clause07.html`.
 - Current RustCrypto crate metadata checked through `cargo info` and docs.rs:
@@ -115,9 +115,10 @@ For `/V >= 5`, the object-specific key derivation from revisions 2-4 is not
 used. The recovered 32-byte file key is the data key for every encrypted string
 and stream.
 
-AESV3 string and stream bodies use AES-256-CBC. Like AESV2, the first 16 bytes
-of each encrypted string or stream are the IV, followed by ciphertext. Decrypted
-bytes remain hostile input and must pass the existing
+AESV3 string and stream bodies use AES-256-CBC with PKCS#7-compatible padding
+validation and removal. Like AESV2, the first 16 bytes of each encrypted string
+or stream are the IV, followed by ciphertext. Decrypted bytes remain hostile
+input and must pass the existing
 `max_decrypted_string_bytes` and `max_decrypted_stream_bytes` checks before
 being fed back into object parsing or stream decoding.
 
@@ -127,8 +128,8 @@ through content decryption.
 
 ### 3.6 `/Perms` validation
 
-Revision 6 requires `/Perms` validation. Decrypt the 16-byte `/Perms` value
-with AES-256-ECB using the file key. The cleartext format is:
+Revisions 5 and 6 require `/Perms` validation in pdfv. Decrypt the 16-byte
+`/Perms` value with AES-256-ECB using the file key. The cleartext format is:
 
 ```text
 P little-endian 4 bytes || 0xff 0xff 0xff 0xff || T/F || "adb" || random 4 bytes
