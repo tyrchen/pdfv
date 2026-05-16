@@ -18,6 +18,7 @@ mod generated_profiles;
 mod parser;
 mod profile;
 mod validation;
+mod xmp;
 
 use std::{
     fmt,
@@ -49,6 +50,10 @@ pub use validation::{
     MetadataModel, ModelGraph, ModelObject, ModelObjectRef, ObjectIdentity, OutputIntentModel,
     PageModel, Validator,
 };
+pub use xmp::{
+    DetectedFlavours, FlavourClaim, FlavourDetector, NamespaceBinding, XmpIdentificationKind,
+    XmpPacket, XmpParser,
+};
 
 /// Current library version embedded in generated reports.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -61,6 +66,12 @@ const DEFAULT_MAX_STRING_BYTES: usize = 1_048_576;
 const DEFAULT_MAX_STREAM_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES: u64 = 64;
 const DEFAULT_MEMORY_SOURCE_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
+const DEFAULT_MAX_XMP_BYTES: u64 = 4 * 1024 * 1024;
+const DEFAULT_MAX_XMP_ELEMENTS: u64 = 50_000;
+const DEFAULT_MAX_XMP_DEPTH: u32 = 32;
+const DEFAULT_MAX_XMP_ATTRIBUTES: usize = 64;
+const DEFAULT_MAX_XMP_NAMESPACES: usize = 256;
+const DEFAULT_MAX_XMP_TEXT_BYTES: usize = 4096;
 
 /// Result alias for pdfv library operations.
 pub type Result<T> = std::result::Result<T, PdfvError>;
@@ -456,7 +467,13 @@ pub enum FlavourSelection {
 
 impl Default for FlavourSelection {
     fn default() -> Self {
-        Self::Auto { default: None }
+        Self::Auto {
+            default: Some(ValidationFlavour {
+                family: Identifier::unchecked("pdfa"),
+                part: NonZeroU32::MIN,
+                conformance: Identifier::unchecked("b"),
+            }),
+        }
     }
 }
 
@@ -537,6 +554,30 @@ pub struct ResourceLimits {
     pub memory_source_threshold_bytes: u64,
     /// Maximum retained parse facts.
     pub max_parse_facts: usize,
+    /// Maximum catalog XMP metadata stream bytes.
+    #[builder(default = DEFAULT_MAX_XMP_BYTES)]
+    #[serde(default = "default_max_xmp_bytes")]
+    pub max_xmp_bytes: u64,
+    /// Maximum XML elements parsed from one XMP packet.
+    #[builder(default = DEFAULT_MAX_XMP_ELEMENTS)]
+    #[serde(default = "default_max_xmp_elements")]
+    pub max_xmp_elements: u64,
+    /// Maximum XML element nesting depth in one XMP packet.
+    #[builder(default = DEFAULT_MAX_XMP_DEPTH)]
+    #[serde(default = "default_max_xmp_depth")]
+    pub max_xmp_depth: u32,
+    /// Maximum XML attributes accepted on one XMP element.
+    #[builder(default = DEFAULT_MAX_XMP_ATTRIBUTES)]
+    #[serde(default = "default_max_xmp_attributes")]
+    pub max_xmp_attributes: usize,
+    /// Maximum namespace declarations retained from one XMP packet.
+    #[builder(default = DEFAULT_MAX_XMP_NAMESPACES)]
+    #[serde(default = "default_max_xmp_namespaces")]
+    pub max_xmp_namespaces: usize,
+    /// Maximum text bytes retained from one XMP metadata property.
+    #[builder(default = DEFAULT_MAX_XMP_TEXT_BYTES)]
+    #[serde(default = "default_max_xmp_text_bytes")]
+    pub max_xmp_text_bytes: usize,
 }
 
 impl Default for ResourceLimits {
@@ -557,6 +598,12 @@ impl Default for ResourceLimits {
             max_encryption_dict_entries: DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES,
             memory_source_threshold_bytes: DEFAULT_MEMORY_SOURCE_THRESHOLD_BYTES,
             max_parse_facts: 100_000,
+            max_xmp_bytes: DEFAULT_MAX_XMP_BYTES,
+            max_xmp_elements: DEFAULT_MAX_XMP_ELEMENTS,
+            max_xmp_depth: DEFAULT_MAX_XMP_DEPTH,
+            max_xmp_attributes: DEFAULT_MAX_XMP_ATTRIBUTES,
+            max_xmp_namespaces: DEFAULT_MAX_XMP_NAMESPACES,
+            max_xmp_text_bytes: DEFAULT_MAX_XMP_TEXT_BYTES,
         }
     }
 }
@@ -579,6 +626,30 @@ fn default_max_encryption_dict_entries() -> u64 {
 
 fn default_memory_source_threshold_bytes() -> u64 {
     DEFAULT_MEMORY_SOURCE_THRESHOLD_BYTES
+}
+
+fn default_max_xmp_bytes() -> u64 {
+    DEFAULT_MAX_XMP_BYTES
+}
+
+fn default_max_xmp_elements() -> u64 {
+    DEFAULT_MAX_XMP_ELEMENTS
+}
+
+fn default_max_xmp_depth() -> u32 {
+    DEFAULT_MAX_XMP_DEPTH
+}
+
+fn default_max_xmp_attributes() -> usize {
+    DEFAULT_MAX_XMP_ATTRIBUTES
+}
+
+fn default_max_xmp_namespaces() -> usize {
+    DEFAULT_MAX_XMP_NAMESPACES
+}
+
+fn default_max_xmp_text_bytes() -> usize {
+    DEFAULT_MAX_XMP_TEXT_BYTES
 }
 
 /// Maximum displayed assertion failures per rule.
@@ -906,6 +977,13 @@ pub enum ParseFact {
         /// Whether decryption succeeded.
         decrypted: bool,
     },
+    /// XMP metadata fact.
+    Xmp {
+        /// Metadata stream object key.
+        object: ObjectKey,
+        /// XMP-specific fact.
+        fact: XmpFact,
+    },
 }
 
 /// PDF version.
@@ -995,6 +1073,43 @@ pub enum StreamFact {
     },
 }
 
+/// XMP metadata parser fact.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields, tag = "fact")]
+pub enum XmpFact {
+    /// XMP packet was extracted and parsed.
+    PacketParsed {
+        /// Packet byte count.
+        bytes: u64,
+        /// Number of namespace declarations retained.
+        namespaces: u64,
+        /// Number of recognized flavour claims.
+        claims: u64,
+    },
+    /// XMP packet wrapper was absent.
+    MissingPacketWrapper,
+    /// Recognized XMP flavour claim.
+    FlavourClaim {
+        /// Flavour family.
+        family: Identifier,
+        /// Profile display spelling.
+        display_flavour: BoundedText,
+        /// Namespace URI that supplied the claim.
+        namespace_uri: BoundedText,
+    },
+    /// XMP XML was malformed or unsupported.
+    Malformed {
+        /// Bounded reason string.
+        reason: BoundedText,
+    },
+    /// DTD or entity processing was rejected.
+    HostileXmlRejected {
+        /// Bounded reason string.
+        reason: BoundedText,
+    },
+}
+
 /// Validation warning.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
@@ -1011,6 +1126,11 @@ pub enum ValidationWarning {
         profile_id: Identifier,
         /// Skip reason.
         reason: BoundedText,
+    },
+    /// Auto flavour detection fell back or could not select a profile.
+    AutoDetection {
+        /// Bounded warning message.
+        message: BoundedText,
     },
     /// General bounded warning.
     General {
@@ -1671,6 +1791,14 @@ fn write_xml_parse_facts<W: Write>(facts: &[ParseFact], out: &mut W) -> Result<(
                 XmlEscapedAttr::new(algorithm.as_ref().map_or("", Identifier::as_str))?,
             )
             .map_err(write_error)?,
+            ParseFact::Xmp { object, fact } => writeln!(
+                out,
+                r#"        <xmp object="{} {}" fact="{}"></xmp>"#,
+                object.number,
+                object.generation,
+                XmlEscapedAttr::new(&xmp_fact_text(fact))?,
+            )
+            .map_err(write_error)?,
         }
     }
     writeln!(out, "      </parseFacts>").map_err(write_error)?;
@@ -1881,6 +2009,31 @@ fn stream_fact_text(fact: &StreamFact) -> String {
     }
 }
 
+fn xmp_fact_text(fact: &XmpFact) -> String {
+    match fact {
+        XmpFact::PacketParsed {
+            bytes,
+            namespaces,
+            claims,
+        } => format!("packetParsed bytes={bytes} namespaces={namespaces} claims={claims}"),
+        XmpFact::MissingPacketWrapper => String::from("missingPacketWrapper"),
+        XmpFact::FlavourClaim {
+            family,
+            display_flavour,
+            namespace_uri,
+        } => format!(
+            "flavourClaim family={} displayFlavour={} namespaceUri={}",
+            family.as_str(),
+            display_flavour.as_str(),
+            namespace_uri.as_str()
+        ),
+        XmpFact::Malformed { reason } => format!("malformed reason={}", reason.as_str()),
+        XmpFact::HostileXmlRejected { reason } => {
+            format!("hostileXmlRejected reason={}", reason.as_str())
+        }
+    }
+}
+
 fn warning_text(warning: &ValidationWarning) -> String {
     match warning {
         ValidationWarning::ParseFactCapReached { cap } => {
@@ -1892,6 +2045,9 @@ fn warning_text(warning: &ValidationWarning) -> String {
                 profile_id.as_str(),
                 reason.as_str()
             )
+        }
+        ValidationWarning::AutoDetection { message } => {
+            format!("auto detection: {}", message.as_str())
         }
         ValidationWarning::General { message } => message.as_str().to_owned(),
     }

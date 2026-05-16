@@ -80,12 +80,11 @@ impl ProfileRepository for BuiltinProfileRepository {
     fn profiles_for(&self, selection: &FlavourSelection) -> Result<Vec<ValidationProfile>> {
         match selection {
             FlavourSelection::Auto { default } => {
-                let flavour = match default {
-                    Some(flavour) => flavour.clone(),
-                    None => pdfa_1b_flavour()?,
+                let Some(flavour) = default else {
+                    return Ok(Vec::new());
                 };
-                ensure_builtin_flavour(&flavour)?;
-                Ok(vec![m4_profile(flavour)?])
+                ensure_builtin_flavour(flavour)?;
+                Ok(vec![m4_profile(flavour.clone())?])
             }
             FlavourSelection::Explicit { flavour } => {
                 let source = builtin_source_for_flavour(flavour)?;
@@ -2435,7 +2434,7 @@ trailer
     }
 
     #[test]
-    fn test_should_return_builtin_profile_for_auto_selection() -> crate::Result<()> {
+    fn test_should_return_builtin_profile_for_default_auto_selection() -> crate::Result<()> {
         let profiles = BuiltinProfileRepository::new().profiles_for(&FlavourSelection::default())?;
 
         assert_eq!(profiles.len(), 1);
@@ -2447,6 +2446,15 @@ trailer
             profiles.first().map(|profile| profile.identity.id.as_str()),
             Some("pdfv-m4")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_return_no_builtin_profile_for_auto_without_default() -> crate::Result<()> {
+        let profiles = BuiltinProfileRepository::new()
+            .profiles_for(&FlavourSelection::Auto { default: None })?;
+
+        assert!(profiles.is_empty());
         Ok(())
     }
 

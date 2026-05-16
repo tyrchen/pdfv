@@ -15,7 +15,7 @@ use crate::{
     ParsedDocument, Parser, PdfName, PdfvError, ProfileReport, ProfileRepository, PropertyName,
     ResourceLimits, Result, Rule, RuleEvaluator, RuleId, RuleOutcome, TaskDuration,
     UnsupportedRule, ValidationError, ValidationOptions, ValidationReport, ValidationStatus,
-    profile::DefaultRuleEvaluator,
+    profile::DefaultRuleEvaluator, xmp::FlavourDetector,
 };
 
 const CATALOG_DIRECT_PROPERTIES: &[&str] = &["Type", "Metadata", "Pages", "OutputIntents"];
@@ -292,6 +292,17 @@ const CATALOG_PROPERTIES: &[&str] = &[
 const METADATA_PROPERTIES: &[&str] = &[
     "present",
     "catalogMetadata",
+    "containsPDFAIdentification",
+    "containsPDFUAIdentification",
+    "part",
+    "partPrefix",
+    "conformance",
+    "conformancePrefix",
+    "rev",
+    "revPrefix",
+    "amdPrefix",
+    "corrPrefix",
+    "declarations",
     "Type",
     "Subtype",
     "Filter",
@@ -594,7 +605,32 @@ impl Validator {
             );
         }
 
-        let profiles = self.profiles.profiles_for(&self.options.flavour)?;
+        let mut parsed = parsed;
+        let profiles = match &self.options.flavour {
+            crate::FlavourSelection::Auto { default } => {
+                let detected = FlavourDetector::new(Arc::clone(&self.profiles)).detect(
+                    &parsed,
+                    default.as_ref(),
+                    &self.options.resource_limits,
+                )?;
+                parsed.parse_facts.extend(detected.parse_facts);
+                parsed.warnings.extend(detected.warnings);
+                detected.profiles
+            }
+            crate::FlavourSelection::Explicit { .. }
+            | crate::FlavourSelection::CustomProfile { .. } => {
+                self.profiles.profiles_for(&self.options.flavour)?
+            }
+        };
+        if profiles.is_empty() {
+            return base_report(
+                source_summary,
+                ValidationStatus::Incomplete,
+                Vec::new(),
+                parsed,
+                started.elapsed(),
+            );
+        }
         let mut session = ValidationSession::new(
             parsed,
             self.options.resource_limits.clone(),
@@ -1624,8 +1660,12 @@ impl ModelObject for DocumentModel<'_> {
             "nrIndirects" => Ok(ModelValue::Number(usize_to_f64(
                 self.document.objects.len(),
             )?)),
-            "containsPDFUAIdentification" | "containsPDFAIdentification" => {
-                Ok(ModelValue::Bool(false))
+            "containsPDFUAIdentification" => Ok(ModelValue::Bool(contains_xmp_family(
+                self.document,
+                "pdfua",
+            ))),
+            "containsPDFAIdentification" => {
+                Ok(ModelValue::Bool(contains_xmp_family(self.document, "pdfa")))
             }
             "part" => Ok(ModelValue::Number(0.0)),
             "partPrefix" | "rev" | "revPrefix" => Ok(ModelValue::Null),
@@ -1881,6 +1921,27 @@ impl ModelObject for MetadataModel<'_> {
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
             "present" | "catalogMetadata" => Ok(ModelValue::Bool(true)),
+            "containsPDFAIdentification" => {
+                Ok(ModelValue::Bool(contains_xmp_family(self.document, "pdfa")))
+            }
+            "containsPDFUAIdentification" => Ok(ModelValue::Bool(contains_xmp_family(
+                self.document,
+                "pdfua",
+            ))),
+            "part" => Ok(ModelValue::Number(xmp_part(self.document).unwrap_or(0.0))),
+            "partPrefix" => Ok(ModelValue::String(BoundedText::unchecked(
+                xmp_prefix_for_claim(self.document).unwrap_or("pdfaid"),
+            ))),
+            "conformance" => Ok(
+                xmp_conformance(self.document).map_or(ModelValue::Null, |value| {
+                    ModelValue::String(BoundedText::unchecked(value))
+                }),
+            ),
+            "conformancePrefix" | "revPrefix" | "amdPrefix" | "corrPrefix" => {
+                Ok(ModelValue::String(BoundedText::unchecked("pdfaid")))
+            }
+            "rev" => Ok(ModelValue::Null),
+            "declarations" => Ok(ModelValue::List(xmp_declarations(self.document))),
             _ => self.document.objects.get(&self.key).map_or_else(
                 || unknown_property(name),
                 |object| match &object.object {
@@ -3173,6 +3234,123 @@ fn contains_xref_stream(document: &ParsedDocument) -> bool {
             }
         )
     })
+}
+
+fn contains_xmp_family(document: &ParsedDocument, family: &str) -> bool {
+    document.parse_facts.iter().any(|fact| {
+        matches!(
+            fact,
+            crate::ParseFact::Xmp {
+                fact:
+                    crate::XmpFact::FlavourClaim {
+                        family: claim_family,
+                        ..
+                    },
+                ..
+            } if claim_family.as_str() == family
+        )
+    })
+}
+
+fn xmp_part(document: &ParsedDocument) -> Option<f64> {
+    document.parse_facts.iter().find_map(|fact| {
+        let crate::ParseFact::Xmp {
+            fact:
+                crate::XmpFact::FlavourClaim {
+                    family,
+                    display_flavour,
+                    ..
+                },
+            ..
+        } = fact
+        else {
+            return None;
+        };
+        if family.as_str() == "pdfa" || family.as_str() == "pdfua" {
+            display_flavour
+                .as_str()
+                .split('-')
+                .nth(1)
+                .and_then(|value| value.chars().next())
+                .and_then(|character| character.to_digit(10))
+                .map(f64::from)
+        } else {
+            None
+        }
+    })
+}
+
+fn xmp_prefix_for_claim(document: &ParsedDocument) -> Option<&'static str> {
+    document.parse_facts.iter().find_map(|fact| {
+        let crate::ParseFact::Xmp {
+            fact: crate::XmpFact::FlavourClaim { family, .. },
+            ..
+        } = fact
+        else {
+            return None;
+        };
+        match family.as_str() {
+            "pdfa" => Some("pdfaid"),
+            "pdfua" => Some("pdfuaid"),
+            _ => None,
+        }
+    })
+}
+
+fn xmp_conformance(document: &ParsedDocument) -> Option<String> {
+    document.parse_facts.iter().find_map(|fact| {
+        let crate::ParseFact::Xmp {
+            fact:
+                crate::XmpFact::FlavourClaim {
+                    family,
+                    display_flavour,
+                    ..
+                },
+            ..
+        } = fact
+        else {
+            return None;
+        };
+        if family.as_str() != "pdfa" {
+            return None;
+        }
+        display_flavour
+            .as_str()
+            .chars()
+            .last()
+            .filter(char::is_ascii_alphabetic)
+            .map(|character| character.to_ascii_uppercase().to_string())
+    })
+}
+
+fn xmp_declarations(document: &ParsedDocument) -> Vec<ModelValue> {
+    document
+        .parse_facts
+        .iter()
+        .filter_map(|fact| {
+            let crate::ParseFact::Xmp {
+                fact:
+                    crate::XmpFact::FlavourClaim {
+                        family,
+                        display_flavour,
+                        ..
+                    },
+                ..
+            } = fact
+            else {
+                return None;
+            };
+            if family.as_str() != "wtpdf" {
+                return None;
+            }
+            let declaration = match display_flavour.as_str() {
+                "wtpdf-1-0-accessibility" => "http://pdfa.org/declarations/wtpdf#accessibility1.0",
+                "wtpdf-1-0-reuse" => "http://pdfa.org/declarations/wtpdf#reuse1.0",
+                _ => return None,
+            };
+            Some(ModelValue::String(BoundedText::unchecked(declaration)))
+        })
+        .collect()
 }
 
 fn u64_to_f64(value: u64) -> Result<f64> {
