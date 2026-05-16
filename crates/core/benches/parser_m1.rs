@@ -48,8 +48,12 @@ fn bench_decode_runlength_stream(c: &mut Criterion) {
 
 fn bench_validate_broad_model_graph(c: &mut Criterion) {
     let fixture = broad_model_pdf();
-    let Ok(validator) = Validator::new(ValidationOptions::default()) else {
-        return;
+    let validator = match Validator::new(ValidationOptions::default()) {
+        Ok(validator) => validator,
+        Err(error) => {
+            eprintln!("failed to construct validator for broad model graph bench: {error}");
+            std::process::exit(1);
+        }
     };
     c.bench_function("validate_broad_model_graph", |b| {
         b.iter(|| validator.validate_reader(Cursor::new(fixture.as_slice()), InputName::memory()));
@@ -98,16 +102,16 @@ fn filtered_pdf(filter: &str, encoded: &[u8]) -> Vec<u8> {
 fn broad_model_pdf() -> Vec<u8> {
     br"%PDF-1.7
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R /AcroForm 7 0 R /StructTreeRoot 8 0 R /OCProperties 9 0 R /Names 10 0 R /Outlines 11 0 R /Perms 12 0 R >>
+<< /Type /Catalog /Pages 2 0 R /AcroForm 7 0 R /StructTreeRoot 8 0 R /OCProperties 9 0 R /Names 10 0 R /Outlines 11 0 R /Perms 12 0 R /Dests [21 0 R] >>
 endobj
 2 0 obj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 5 0 R >> /ColorSpace << /CS1 13 0 R >> /ExtGState << /GS1 14 0 R >> >> /Annots [6 0 R] /Contents 15 0 R >>
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 5 0 R /Fm1 22 0 R >> /ColorSpace << /CS1 13 0 R >> /ExtGState << /GS1 14 0 R >> >> /Annots [6 0 R] /Contents 15 0 R >>
 endobj
 4 0 obj
-<< /Type /Font /Subtype /Type0 /BaseFont /Faux /ToUnicode 16 0 R >>
+<< /Type /Font /Subtype /Type0 /BaseFont /Faux /ToUnicode 16 0 R /FontDescriptor << /FontFile2 20 0 R >> >>
 endobj
 5 0 obj
 << /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 0 >>
@@ -158,6 +162,22 @@ endobj
 endobj
 19 0 obj
 << /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 0 0 0] >>
+endobj
+20 0 obj
+<< /Type /EmbeddedFile /Length 0 >>
+stream
+endstream
+endobj
+21 0 obj
+<< /D [3 0 R /Fit] >>
+endobj
+22 0 obj
+<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>
+stream
+endstream
+endobj
+23 0 obj
+<< /Filter /Standard /V 1 /R 2 /Length 40 /P -4 >>
 endobj
 trailer
 << /Root 1 0 R >>

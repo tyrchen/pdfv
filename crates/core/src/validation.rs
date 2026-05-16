@@ -431,11 +431,7 @@ const STREAM_PROPERTIES: &[&str] = &[
 ];
 
 const EMPTY_LINK_NAMES: &[(&str, &str)] = &[];
-const DOCUMENT_LINKS: &[(&str, &str)] = &[
-    ("catalog", "catalog"),
-    ("streams", "stream"),
-    ("security", "security"),
-];
+const DOCUMENT_LINKS: &[(&str, &str)] = &[("catalog", "catalog"), ("streams", "stream")];
 const CATALOG_LINKS: &[(&str, &str)] = &[
     ("metadata", "metadata"),
     ("pages", "page"),
@@ -454,20 +450,6 @@ const PAGE_LINKS: &[(&str, &str)] = &[
     ("annotations", "annotation"),
     ("contentStreams", "contentStream"),
 ];
-const RESOURCE_LINKS: &[(&str, &str)] = &[
-    ("fonts", "font"),
-    ("xObjects", "xObject"),
-    ("images", "image"),
-    ("colorSpaces", "colorSpace"),
-    ("extGStates", "extGState"),
-];
-const ACRO_FORM_LINKS: &[(&str, &str)] = &[("fields", "formField")];
-const FONT_LINKS: &[(&str, &str)] = &[("toUnicode", "cMap"), ("fontFile", "embeddedFontFile")];
-const XOBJECT_LINKS: &[(&str, &str)] = &[("resources", "resource")];
-const ANNOTATION_LINKS: &[(&str, &str)] = &[("actions", "action"), ("formField", "formField")];
-const FORM_FIELD_LINKS: &[(&str, &str)] = &[("actions", "action")];
-const STRUCTURE_LINKS: &[(&str, &str)] = &[("children", "structureElement")];
-const OUTPUT_INTENT_LINKS: &[(&str, &str)] = &[("destOutputProfile", "stream")];
 
 /// Bounded input name used by reader validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -682,7 +664,7 @@ impl ValidationSession {
 
     fn validate_profile(&mut self, profile: &crate::ValidationProfile) -> Result<ProfileReport> {
         let index = RuleIndex::new(&profile.rules);
-        let graph = ModelGraph::new(&self.document, &self.limits);
+        let graph = ModelGraph::for_rules(&self.document, &self.limits, &profile.rules);
         let mut evaluator = DefaultRuleEvaluator::new(self.limits.clone());
         let mut state = ProfileState::new(
             profile.identity.clone(),
@@ -733,7 +715,7 @@ impl ValidationSession {
 
 /// Property exposed by a validation model family.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PropertySpec {
+pub(crate) struct PropertySpec {
     /// Property name.
     pub name: PropertyName,
 }
@@ -748,7 +730,7 @@ impl PropertySpec {
 
 /// Link exposed by a validation model family.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LinkSpec {
+pub(crate) struct LinkSpec {
     /// Link name.
     pub name: LinkName,
     /// Target model family.
@@ -765,15 +747,9 @@ impl LinkSpec {
 }
 
 /// Validation model family schema entry.
-pub trait ModelFamily {
+pub(crate) trait ModelFamily {
     /// Family name.
     fn family_name(&self) -> ObjectTypeName;
-    /// Root objects for this family.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PdfvError`] when root materialization exceeds configured limits.
-    fn build_roots<'a>(&self, session: &'a ValidationSession) -> Result<Vec<ModelObjectRef<'a>>>;
     /// Properties allowed on this family.
     fn property_schema(&self) -> &[PropertySpec];
     /// Links allowed on this family.
@@ -782,7 +758,7 @@ pub trait ModelFamily {
 
 /// Internal registry of validation model family schemas.
 #[derive(Clone)]
-pub struct ModelRegistry {
+pub(crate) struct ModelRegistry {
     families: BTreeMap<ObjectTypeName, Arc<dyn ModelFamily + Send + Sync>>,
     all_properties: BTreeSet<PropertyName>,
 }
@@ -800,58 +776,63 @@ impl std::fmt::Debug for ModelRegistry {
 impl ModelRegistry {
     /// Builds the default internal registry.
     #[must_use]
-    pub fn default_registry() -> Self {
+    pub(crate) fn default_registry() -> Self {
         let families = [
             family("document", DOCUMENT_PROPERTIES, DOCUMENT_LINKS),
             family("catalog", CATALOG_PROPERTIES, CATALOG_LINKS),
             family("metadata", METADATA_PROPERTIES, EMPTY_LINK_NAMES),
             family("page", PAGE_PROPERTIES, PAGE_LINKS),
             family("pageTree", PAGE_TREE_PROPERTIES, EMPTY_LINK_NAMES),
-            family("resource", RESOURCE_PROPERTIES, RESOURCE_LINKS),
+            family("resource", RESOURCE_PROPERTIES, EMPTY_LINK_NAMES),
             family("names", NAMES_PROPERTIES, EMPTY_LINK_NAMES),
             family("outline", OUTLINE_PROPERTIES, EMPTY_LINK_NAMES),
             family("destination", DESTINATION_PROPERTIES, EMPTY_LINK_NAMES),
-            family("acroForm", ACRO_FORM_PROPERTIES, ACRO_FORM_LINKS),
+            family("acroForm", ACRO_FORM_PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 "optionalContentProperties",
                 OPTIONAL_CONTENT_PROPERTIES,
                 EMPTY_LINK_NAMES,
             ),
             family("permissions", PERMISSIONS_PROPERTIES, EMPTY_LINK_NAMES),
-            family("font", FONT_PROPERTIES, FONT_LINKS),
+            family("font", FONT_PROPERTIES, EMPTY_LINK_NAMES),
             family("cMap", CMAP_PROPERTIES, EMPTY_LINK_NAMES),
             family("embeddedFontFile", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("image", IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
-            family("xObject", XOBJECT_PROPERTIES, XOBJECT_LINKS),
+            family("xObject", XOBJECT_PROPERTIES, EMPTY_LINK_NAMES),
             family("contentStream", CONTENT_STREAM_PROPERTIES, EMPTY_LINK_NAMES),
-            family("annotation", ANNOTATION_PROPERTIES, ANNOTATION_LINKS),
+            family("annotation", ANNOTATION_PROPERTIES, EMPTY_LINK_NAMES),
             family("action", ACTION_PROPERTIES, EMPTY_LINK_NAMES),
-            family("formField", FORM_FIELD_PROPERTIES, FORM_FIELD_LINKS),
+            family("formField", FORM_FIELD_PROPERTIES, EMPTY_LINK_NAMES),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
             family("extGState", EXT_GSTATE_PROPERTIES, EMPTY_LINK_NAMES),
-            family("structureTreeRoot", STRUCTURE_PROPERTIES, STRUCTURE_LINKS),
+            family("structureTreeRoot", STRUCTURE_PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 "structureElement",
                 STRUCTURE_ELEMENT_PROPERTIES,
-                STRUCTURE_LINKS,
+                EMPTY_LINK_NAMES,
             ),
             family("signature", SIGNATURE_PROPERTIES, EMPTY_LINK_NAMES),
             family("security", SECURITY_PROPERTIES, EMPTY_LINK_NAMES),
-            family(
-                "outputIntent",
-                OUTPUT_INTENT_PROPERTIES,
-                OUTPUT_INTENT_LINKS,
-            ),
+            family("outputIntent", OUTPUT_INTENT_PROPERTIES, EMPTY_LINK_NAMES),
             family("stream", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("object", OBJECT_PROPERTIES, EMPTY_LINK_NAMES),
         ];
-        let mut by_name = BTreeMap::new();
+        let mut by_name: BTreeMap<ObjectTypeName, Arc<dyn ModelFamily + Send + Sync>> =
+            BTreeMap::new();
         let mut all_properties = BTreeSet::new();
         for family in families {
             for property in family.property_schema() {
                 all_properties.insert(property.name.clone());
             }
             by_name.insert(family.family_name(), Arc::new(family) as Arc<_>);
+        }
+        for family in by_name.values() {
+            for link in family.link_schema() {
+                debug_assert!(
+                    by_name.contains_key(&link.target),
+                    "model registry link target is not registered"
+                );
+            }
         }
         for property in DIRECT_PROPERTY_NAMES {
             all_properties.insert(PropertyName::unchecked(*property));
@@ -864,19 +845,17 @@ impl ModelRegistry {
 
     /// Returns true when a family is registered.
     #[must_use]
-    pub fn has_family(&self, family: &ObjectTypeName) -> bool {
+    pub(crate) fn has_family(&self, family: &ObjectTypeName) -> bool {
         self.families.contains_key(family)
-    }
-
-    /// Returns true when a property is present in any registered family schema.
-    #[must_use]
-    pub fn has_property(&self, property: &PropertyName) -> bool {
-        self.all_properties.contains(property)
     }
 
     /// Returns true when a property is present on a specific registered family schema.
     #[must_use]
-    pub fn has_family_property(&self, family: &ObjectTypeName, property: &PropertyName) -> bool {
+    pub(crate) fn has_family_property(
+        &self,
+        family: &ObjectTypeName,
+        property: &PropertyName,
+    ) -> bool {
         self.families.get(family).is_some_and(|family| {
             family
                 .property_schema()
@@ -885,14 +864,9 @@ impl ModelRegistry {
         })
     }
 
-    /// Looks up a family.
-    #[must_use]
-    pub fn family(&self, family: &ObjectTypeName) -> Option<&(dyn ModelFamily + Send + Sync)> {
-        self.families.get(family).map(Arc::as_ref)
-    }
-
     /// Iterates registered family names.
-    pub fn family_names(&self) -> impl Iterator<Item = &ObjectTypeName> {
+    #[cfg(test)]
+    pub(crate) fn family_names(&self) -> impl Iterator<Item = &ObjectTypeName> {
         self.families.keys()
     }
 }
@@ -907,11 +881,6 @@ struct StaticModelFamily {
 impl ModelFamily for StaticModelFamily {
     fn family_name(&self) -> ObjectTypeName {
         self.name.clone()
-    }
-
-    fn build_roots<'a>(&self, session: &'a ValidationSession) -> Result<Vec<ModelObjectRef<'a>>> {
-        let graph = ModelGraph::new(&session.document, &session.limits);
-        graph.family_roots(self.name.as_str())
     }
 
     fn property_schema(&self) -> &[PropertySpec] {
@@ -1241,6 +1210,7 @@ impl<'a> ModelObjectRef<'a> {
 pub struct ModelGraph<'a> {
     document: &'a ParsedDocument,
     limits: &'a ResourceLimits,
+    materialized_families: BTreeSet<ObjectTypeName>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1254,8 +1224,53 @@ struct ResourceCollection<'a> {
 }
 
 impl<'a> ModelGraph<'a> {
-    fn new(document: &'a ParsedDocument, limits: &'a ResourceLimits) -> Self {
-        Self { document, limits }
+    fn for_rules(document: &'a ParsedDocument, limits: &'a ResourceLimits, rules: &[Rule]) -> Self {
+        let materialized_families = rules
+            .iter()
+            .filter(|rule| !matches!(rule.test, crate::RuleExpr::Unsupported { .. }))
+            .map(|rule| rule.object_type.clone())
+            .collect();
+        Self {
+            document,
+            limits,
+            materialized_families,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_all_families(document: &'a ParsedDocument, limits: &'a ResourceLimits) -> Self {
+        Self {
+            document,
+            limits,
+            materialized_families: ModelRegistry::default_registry()
+                .family_names()
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn materializes(&self, family: &str) -> bool {
+        self.materialized_families
+            .iter()
+            .any(|materialized| materialized.as_str() == family)
+    }
+
+    fn materializes_generic_roots(&self) -> bool {
+        self.materialized_families.iter().any(|family| {
+            !matches!(
+                family.as_str(),
+                "document"
+                    | "catalog"
+                    | "metadata"
+                    | "page"
+                    | "font"
+                    | "annotation"
+                    | "outputIntent"
+                    | "contentStream"
+                    | "stream"
+                    | "object"
+            )
+        })
     }
 
     fn catalog(&self) -> Option<CatalogModel<'a>> {
@@ -1323,32 +1338,12 @@ impl<'a> ModelGraph<'a> {
         max_objects: usize,
     ) -> Result<()> {
         for model in self.generic_models(max_objects)? {
+            if !self.materialized_families.contains(&model.object_type) {
+                continue;
+            }
             push_linked(objects, ModelObjectRef::Generic(model), max_objects)?;
         }
         Ok(())
-    }
-
-    fn family_roots(&self, family: &str) -> Result<Vec<ModelObjectRef<'a>>> {
-        let mut roots = Vec::new();
-        if family == "document" {
-            roots.push(ModelObjectRef::Document(DocumentModel::new(self.document)));
-            return Ok(roots);
-        }
-        if family == "catalog" {
-            roots.extend(self.catalog().map(ModelObjectRef::Catalog));
-            return Ok(roots);
-        }
-        if family == "stream" {
-            self.push_streams(&mut roots, usize::MAX)?;
-            return Ok(roots);
-        }
-        roots.extend(
-            self.generic_models(usize::MAX)?
-                .into_iter()
-                .filter(|model| model.object_type.as_str() == family)
-                .map(ModelObjectRef::Generic),
-        );
-        Ok(roots)
     }
 
     fn generic_models(&self, max_objects: usize) -> Result<Vec<GenericModel<'a>>> {
@@ -1654,8 +1649,12 @@ impl ModelObject for DocumentModel<'_> {
         if let Some(catalog) = graph.catalog() {
             push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
         }
-        graph.push_streams(&mut objects, max_objects)?;
-        graph.push_generic_roots(&mut objects, max_objects)?;
+        if graph.materializes("stream") {
+            graph.push_streams(&mut objects, max_objects)?;
+        }
+        if graph.materializes_generic_roots() {
+            graph.push_generic_roots(&mut objects, max_objects)?;
+        }
         Ok(objects)
     }
 }
@@ -2752,6 +2751,9 @@ fn classify_dictionary(dictionary: &crate::Dictionary) -> Option<&'static str> {
         if name.matches("Sig") {
             return Some("signature");
         }
+        if name.matches("EmbeddedFile") {
+            return Some("embeddedFontFile");
+        }
         if name.matches("OCProperties") {
             return Some("optionalContentProperties");
         }
@@ -3299,16 +3301,16 @@ trailer
     fn m6_model_pdf() -> &'static [u8] {
         br"%PDF-1.7
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R /AcroForm 7 0 R /StructTreeRoot 8 0 R /OCProperties 9 0 R /Names 10 0 R /Outlines 11 0 R /Perms 12 0 R >>
+<< /Type /Catalog /Pages 2 0 R /AcroForm 7 0 R /StructTreeRoot 8 0 R /OCProperties 9 0 R /Names 10 0 R /Outlines 11 0 R /Perms 12 0 R /Dests [21 0 R] >>
 endobj
 2 0 obj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 5 0 R >> /ColorSpace << /CS1 13 0 R >> /ExtGState << /GS1 14 0 R >> >> /Annots [6 0 R] /Contents 15 0 R >>
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 5 0 R /Fm1 22 0 R >> /ColorSpace << /CS1 13 0 R >> /ExtGState << /GS1 14 0 R >> >> /Annots [6 0 R] /Contents 15 0 R >>
 endobj
 4 0 obj
-<< /Type /Font /Subtype /Type0 /BaseFont /Faux /ToUnicode 16 0 R >>
+<< /Type /Font /Subtype /Type0 /BaseFont /Faux /ToUnicode 16 0 R /FontDescriptor << /FontFile2 20 0 R >> >>
 endobj
 5 0 obj
 << /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 0 >>
@@ -3360,6 +3362,22 @@ endobj
 19 0 obj
 << /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 0 0 0] >>
 endobj
+20 0 obj
+<< /Type /EmbeddedFile /Length 0 >>
+stream
+endstream
+endobj
+21 0 obj
+<< /D [3 0 R /Fit] >>
+endobj
+22 0 obj
+<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>
+stream
+endstream
+endobj
+23 0 obj
+<< /Filter /Standard /V 1 /R 2 /Length 40 /P -4 >>
+endobj
 trailer
 << /Root 1 0 R >>
 %%EOF
@@ -3403,7 +3421,7 @@ trailer
     fn test_should_resolve_m1_links_lazily_from_model_graph() -> crate::Result<()> {
         let document = Parser::default().parse(Cursor::new(m1_model_pdf()))?;
         let limits = crate::ResourceLimits::default();
-        let graph = super::ModelGraph::new(&document, &limits);
+        let graph = super::ModelGraph::with_all_families(&document, &limits);
         let document_model = super::DocumentModel::new(&document);
         let mut stack = vec![ModelObjectRef::Document(document_model)];
         let mut visited_contexts = Vec::new();
@@ -3441,7 +3459,7 @@ trailer
 
     #[test]
     fn test_should_register_model_family_schema_for_generated_profiles() -> crate::Result<()> {
-        let registry = crate::ModelRegistry::default_registry();
+        let registry = super::ModelRegistry::default_registry();
 
         for family in [
             "document",
@@ -3478,7 +3496,7 @@ trailer
             max_objects: 128,
             ..crate::ResourceLimits::default()
         };
-        let graph = super::ModelGraph::new(&document, &limits);
+        let graph = super::ModelGraph::with_all_families(&document, &limits);
         let mut stack = vec![ModelObjectRef::Document(super::DocumentModel::new(
             &document,
         ))];
@@ -3501,14 +3519,19 @@ trailer
             "optionalContentProperties",
             "names",
             "outline",
+            "destination",
             "permissions",
+            "pageTree",
             "resource",
             "image",
+            "xObject",
             "colorSpace",
             "extGState",
             "cMap",
+            "embeddedFontFile",
             "action",
             "signature",
+            "security",
         ] {
             assert!(families.contains(family), "missing {family}: {families:?}");
         }

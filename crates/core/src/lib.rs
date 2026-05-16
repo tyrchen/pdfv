@@ -45,9 +45,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use typed_builder::TypedBuilder;
 pub use validation::{
-    AnnotationModel, CatalogModel, ContentStreamModel, FontModel, GenericModel, InputName,
-    LinkName, LinkSpec, MetadataModel, ModelFamily, ModelGraph, ModelObject, ModelObjectRef,
-    ModelRegistry, ObjectIdentity, OutputIntentModel, PageModel, PropertySpec, Validator,
+    AnnotationModel, CatalogModel, ContentStreamModel, FontModel, InputName, LinkName,
+    MetadataModel, ModelGraph, ModelObject, ModelObjectRef, ObjectIdentity, OutputIntentModel,
+    PageModel, Validator,
 };
 
 /// Current library version embedded in generated reports.

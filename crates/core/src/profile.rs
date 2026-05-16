@@ -957,7 +957,7 @@ fn import_generated_profile(source: &GeneratedProfileSource) -> Result<ProfileIm
 }
 
 fn apply_model_schema_checks(import: &mut ProfileImportSummary) -> Result<()> {
-    let registry = crate::ModelRegistry::default_registry();
+    let registry = crate::validation::ModelRegistry::default_registry();
     let mut supported_rules = 0_u64;
     let mut unsupported_rules = 0_u64;
     for rule in &mut import.profile.rules {
@@ -991,7 +991,7 @@ fn apply_model_schema_checks(import: &mut ProfileImportSummary) -> Result<()> {
 }
 
 fn unsupported_property_reason(
-    registry: &crate::ModelRegistry,
+    registry: &crate::validation::ModelRegistry,
     object_type: &ObjectTypeName,
     expr: &RuleExpr,
 ) -> Result<Option<BoundedText>> {
