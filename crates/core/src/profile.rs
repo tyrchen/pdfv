@@ -454,7 +454,7 @@ impl DefaultRuleEvaluator {
 
     fn eval(
         &mut self,
-        object: crate::ModelObjectRef<'_>,
+        object: &crate::ModelObjectRef<'_>,
         expr: &RuleExpr,
         depth: u32,
     ) -> Result<ModelValue> {
@@ -500,7 +500,7 @@ impl DefaultRuleEvaluator {
 
     fn eval_binary(
         &mut self,
-        object: crate::ModelObjectRef<'_>,
+        object: &crate::ModelObjectRef<'_>,
         op: BinaryOp,
         left: &RuleExpr,
         right: &RuleExpr,
@@ -539,7 +539,7 @@ impl DefaultRuleEvaluator {
 
     fn eval_call(
         &mut self,
-        object: crate::ModelObjectRef<'_>,
+        object: &crate::ModelObjectRef<'_>,
         function: BuiltinFunction,
         args: &[RuleExpr],
         depth: u32,
@@ -568,7 +568,7 @@ impl DefaultRuleEvaluator {
 impl RuleEvaluator for DefaultRuleEvaluator {
     fn evaluate(&mut self, object: crate::ModelObjectRef<'_>, rule: &Rule) -> Result<RuleOutcome> {
         self.instructions = 0;
-        let value = self.eval(object, &rule.test, 0)?;
+        let value = self.eval(&object, &rule.test, 0)?;
         if expect_bool(&value)? {
             Ok(RuleOutcome::Passed)
         } else {
@@ -577,7 +577,7 @@ impl RuleEvaluator for DefaultRuleEvaluator {
     }
 }
 
-fn property(object: crate::ModelObjectRef<'_>, path: &PropertyPath) -> Result<ModelValue> {
+fn property(object: &crate::ModelObjectRef<'_>, path: &PropertyPath) -> Result<ModelValue> {
     if path.parts().len() != 1 {
         return Err(ProfileError::UnknownProperty {
             property: BoundedText::unchecked("nested property paths are unsupported in M0"),
@@ -1539,7 +1539,7 @@ trailer
 ";
         let document = Parser::default().parse(Cursor::new(bytes))?;
         let model = crate::validation::DocumentModel::new(&document);
-        let object = crate::ModelObjectRef::Document(&model);
+        let object = crate::ModelObjectRef::Document(model);
         let profile = BuiltinProfileRepository::new()
             .profiles_for(&FlavourSelection::default())?
             .remove(0);
@@ -1550,7 +1550,7 @@ trailer
             .iter()
             .filter(|rule| rule.object_type.as_str() == "document")
         {
-            let outcome = evaluator.evaluate(object, rule)?;
+            let outcome = evaluator.evaluate(object.clone(), rule)?;
             assert_eq!(outcome, super::RuleOutcome::Passed);
         }
         Ok(())
@@ -1608,7 +1608,7 @@ trailer
 ";
         let document = Parser::default().parse(Cursor::new(bytes))?;
         let model = crate::validation::DocumentModel::new(&document);
-        let object = crate::ModelObjectRef::Document(&model);
+        let object = crate::ModelObjectRef::Document(model);
         let mut evaluator = DefaultRuleEvaluator::new(crate::ResourceLimits::default());
         let nested_rule = super::Rule {
             id: crate::RuleId(crate::Identifier::new("bad-nested")?),
@@ -1648,7 +1648,7 @@ trailer
             },
         };
 
-        assert!(evaluator.evaluate(object, &nested_rule).is_err());
+        assert!(evaluator.evaluate(object.clone(), &nested_rule).is_err());
         assert!(evaluator.evaluate(object, &arity_rule).is_err());
         Ok(())
     }

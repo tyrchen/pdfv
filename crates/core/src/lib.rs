@@ -42,8 +42,8 @@ use thiserror::Error;
 use typed_builder::TypedBuilder;
 pub use validation::{
     AnnotationModel, CatalogModel, ContentStreamModel, FontModel, InputName, LinkName,
-    MetadataModel, ModelGraph, ModelLinks, ModelObject, ModelObjectRef, ObjectIdentity,
-    OutputIntentModel, PageModel, Validator,
+    MetadataModel, ModelGraph, ModelObject, ModelObjectRef, ObjectIdentity, OutputIntentModel,
+    PageModel, Validator,
 };
 
 /// Current library version embedded in generated reports.

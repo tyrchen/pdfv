@@ -226,65 +226,28 @@ impl ValidationSession {
 
     fn validate_profile(&mut self, profile: &crate::ValidationProfile) -> Result<ProfileReport> {
         let index = RuleIndex::new(&profile.rules);
-        let graph = ModelGraph::new(&self.document);
-        let document_model = DocumentModel::new(&self.document);
-        let catalog_model = self
-            .document
-            .catalog
-            .and_then(|key| CatalogModel::new(&self.document, key));
-        let metadata_model = catalog_model
-            .as_ref()
-            .and_then(|catalog| MetadataModel::new(&self.document, catalog.metadata));
-        let page_models = catalog_model
-            .as_ref()
-            .map(|catalog| PageModel::from_catalog(&self.document, catalog, &self.limits))
-            .transpose()?
-            .unwrap_or_default();
-        let font_models = FontModel::from_pages(&self.document, &page_models);
-        let annotation_models = AnnotationModel::from_pages(&self.document, &page_models);
-        let output_intent_models = catalog_model
-            .as_ref()
-            .map(|catalog| OutputIntentModel::from_catalog(&self.document, catalog))
-            .unwrap_or_default();
-        let content_stream_models = ContentStreamModel::from_pages(&self.document, &page_models);
-        let stream_models = self
-            .document
-            .objects
-            .values()
-            .filter_map(|object| StreamModel::from_indirect_with_document(&self.document, object))
-            .collect::<Vec<_>>();
+        let graph = ModelGraph::new(&self.document, &self.limits);
         let mut evaluator = DefaultRuleEvaluator::new(self.limits.clone());
         let mut state = ProfileState::new(
             profile.identity.clone(),
             self.max_failed_assertions_per_rule,
             self.record_passed_assertions,
         );
-        let mut stack = Vec::from([ModelObjectRef::Document(&document_model)]);
+        let mut stack = Vec::from([ModelObjectRef::Document(DocumentModel::new(&self.document))]);
         let mut visited = HashSet::new();
         let mut deferred = Vec::new();
-        let links = ModelLinks {
-            graph: &graph,
-            catalog: catalog_model.as_ref(),
-            metadata: metadata_model.as_ref(),
-            pages: &page_models,
-            fonts: &font_models,
-            annotations: &annotation_models,
-            output_intents: &output_intent_models,
-            content_streams: &content_stream_models,
-            streams: &stream_models,
-        };
 
         while let Some(object) = stack.pop() {
             let visited_key = object.identity_key();
             if !visited.insert(visited_key) {
                 continue;
             }
-            let object_rules = index.rules_for(object);
+            let object_rules = index.rules_for(&object);
             for rule in object_rules {
                 if rule.deferred {
-                    deferred.push((object, rule));
+                    deferred.push((object.clone(), rule));
                 } else {
-                    state.apply_rule(object, rule, &mut evaluator)?;
+                    state.apply_rule(&object, rule, &mut evaluator)?;
                 }
             }
             if u64::try_from(visited.len()).map_err(|_| ValidationError::LimitExceeded {
@@ -296,12 +259,13 @@ impl ValidationSession {
                 }
                 .into());
             }
-            for linked in object.linked_objects(&links)? {
+            let object_budget = remaining_object_budget(&self.limits, visited.len(), stack.len())?;
+            for linked in object.linked_objects(&graph, object_budget)? {
                 stack.push(linked);
             }
         }
         for (object, rule) in deferred {
-            state.apply_rule(object, rule, &mut evaluator)?;
+            state.apply_rule(&object, rule, &mut evaluator)?;
         }
         Ok(state.finish())
     }
@@ -328,20 +292,6 @@ impl LinkName {
     }
 }
 
-/// Borrowed model graph link sources used during lazy traversal.
-#[derive(Debug)]
-pub struct ModelLinks<'a> {
-    graph: &'a ModelGraph<'a>,
-    catalog: Option<&'a CatalogModel<'a>>,
-    metadata: Option<&'a MetadataModel<'a>>,
-    pages: &'a [PageModel<'a>],
-    fonts: &'a [FontModel<'a>],
-    annotations: &'a [AnnotationModel<'a>],
-    output_intents: &'a [OutputIntentModel<'a>],
-    content_streams: &'a [ContentStreamModel<'a>],
-    streams: &'a [StreamModel<'a>],
-}
-
 /// Validation model object.
 pub trait ModelObject {
     /// Optional stable object identity.
@@ -365,36 +315,40 @@ pub trait ModelObject {
     /// # Errors
     ///
     /// Returns [`PdfvError`] when link materialization fails.
-    fn linked_objects<'a>(&'a self, links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>>;
+    fn linked_objects<'a>(
+        &self,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>>;
 }
 
-/// Borrowed validation model object reference.
-#[derive(Clone, Copy, Debug)]
+/// Validation model object reference.
+#[derive(Clone, Debug)]
 pub enum ModelObjectRef<'a> {
     /// Document root object.
-    Document(&'a DocumentModel<'a>),
+    Document(DocumentModel<'a>),
     /// Catalog object.
-    Catalog(&'a CatalogModel<'a>),
+    Catalog(CatalogModel<'a>),
     /// Metadata stream object.
-    Metadata(&'a MetadataModel<'a>),
+    Metadata(MetadataModel<'a>),
     /// Page dictionary object.
-    Page(&'a PageModel<'a>),
+    Page(PageModel<'a>),
     /// Font dictionary object.
-    Font(&'a FontModel<'a>),
+    Font(FontModel<'a>),
     /// Annotation dictionary object.
-    Annotation(&'a AnnotationModel<'a>),
+    Annotation(AnnotationModel<'a>),
     /// Output intent dictionary object.
-    OutputIntent(&'a OutputIntentModel<'a>),
+    OutputIntent(OutputIntentModel<'a>),
     /// Page content stream object.
-    ContentStream(&'a ContentStreamModel<'a>),
+    ContentStream(ContentStreamModel<'a>),
     /// Basic stream object.
-    Stream(&'a StreamModel<'a>),
+    Stream(StreamModel<'a>),
 }
 
 impl<'a> ModelObjectRef<'a> {
     /// Returns the parsed document backing this model object.
     #[must_use]
-    pub fn document(self) -> &'a ParsedDocument {
+    pub fn document(&self) -> &'a ParsedDocument {
         match self {
             Self::Document(model) => model.document,
             Self::Catalog(model) => model.document,
@@ -410,7 +364,7 @@ impl<'a> ModelObjectRef<'a> {
 
     /// Returns this object's type.
     #[must_use]
-    pub fn object_type(self) -> ObjectTypeName {
+    pub fn object_type(&self) -> ObjectTypeName {
         match self {
             Self::Document(model) => model.object_type(),
             Self::Catalog(model) => model.object_type(),
@@ -429,7 +383,7 @@ impl<'a> ModelObjectRef<'a> {
     /// # Errors
     ///
     /// Returns [`PdfvError`] when the property is unknown.
-    pub fn property(self, name: &PropertyName) -> Result<ModelValue> {
+    pub fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match self {
             Self::Document(model) => model.property(name),
             Self::Catalog(model) => model.property(name),
@@ -443,7 +397,7 @@ impl<'a> ModelObjectRef<'a> {
         }
     }
 
-    fn location(self) -> ObjectLocation {
+    fn location(&self) -> ObjectLocation {
         match self {
             Self::Document(_) => ObjectLocation {
                 object: None,
@@ -512,7 +466,7 @@ impl<'a> ModelObjectRef<'a> {
         }
     }
 
-    fn context(self) -> BoundedText {
+    fn context(&self) -> BoundedText {
         match self {
             Self::Document(_) => BoundedText::unchecked("root"),
             Self::Catalog(_) => BoundedText::unchecked("root/catalog[0]"),
@@ -540,7 +494,7 @@ impl<'a> ModelObjectRef<'a> {
         }
     }
 
-    fn identity_key(self) -> String {
+    fn identity_key(&self) -> String {
         match self {
             Self::Document(_) => String::from("document"),
             Self::Catalog(model) => {
@@ -575,17 +529,21 @@ impl<'a> ModelObjectRef<'a> {
         }
     }
 
-    fn linked_objects(self, links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
+    fn linked_objects(
+        &self,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         match self {
-            Self::Document(model) => model.linked_objects(links),
-            Self::Catalog(model) => model.linked_objects(links),
-            Self::Metadata(model) => model.linked_objects(links),
-            Self::Page(model) => model.linked_objects(links),
-            Self::Font(model) => model.linked_objects(links),
-            Self::Annotation(model) => model.linked_objects(links),
-            Self::OutputIntent(model) => model.linked_objects(links),
-            Self::ContentStream(model) => model.linked_objects(links),
-            Self::Stream(model) => model.linked_objects(links),
+            Self::Document(model) => model.linked_objects(graph, max_objects),
+            Self::Catalog(model) => model.linked_objects(graph, max_objects),
+            Self::Metadata(model) => model.linked_objects(graph, max_objects),
+            Self::Page(model) => model.linked_objects(graph, max_objects),
+            Self::Font(model) => model.linked_objects(graph, max_objects),
+            Self::Annotation(model) => model.linked_objects(graph, max_objects),
+            Self::OutputIntent(model) => model.linked_objects(graph, max_objects),
+            Self::ContentStream(model) => model.linked_objects(graph, max_objects),
+            Self::Stream(model) => model.linked_objects(graph, max_objects),
         }
     }
 }
@@ -594,16 +552,76 @@ impl<'a> ModelObjectRef<'a> {
 #[derive(Debug)]
 pub struct ModelGraph<'a> {
     document: &'a ParsedDocument,
+    limits: &'a ResourceLimits,
 }
 
 impl<'a> ModelGraph<'a> {
-    fn new(document: &'a ParsedDocument) -> Self {
-        Self { document }
+    fn new(document: &'a ParsedDocument, limits: &'a ResourceLimits) -> Self {
+        Self { document, limits }
+    }
+
+    fn catalog(&self) -> Option<CatalogModel<'a>> {
+        self.document
+            .catalog
+            .and_then(|key| CatalogModel::new(self.document, key))
+    }
+
+    fn metadata(&self, catalog: &CatalogModel<'_>) -> Option<MetadataModel<'a>> {
+        MetadataModel::new(self.document, catalog.metadata)
+    }
+
+    fn pages(&self, catalog: &CatalogModel<'_>, max_objects: usize) -> Result<Vec<PageModel<'a>>> {
+        PageModel::from_catalog(self.document, catalog, self.limits, max_objects)
+    }
+
+    fn fonts(&self, page: &PageModel<'_>, max_objects: usize) -> Result<Vec<FontModel<'a>>> {
+        FontModel::from_page(self.document, page, max_objects)
+    }
+
+    fn annotations(
+        &self,
+        page: &PageModel<'_>,
+        max_objects: usize,
+    ) -> Result<Vec<AnnotationModel<'a>>> {
+        AnnotationModel::from_page(self.document, page, max_objects)
+    }
+
+    fn output_intents(
+        &self,
+        catalog: &CatalogModel<'_>,
+        max_objects: usize,
+    ) -> Result<Vec<OutputIntentModel<'a>>> {
+        OutputIntentModel::from_catalog(self.document, catalog, max_objects)
+    }
+
+    fn content_streams(
+        &self,
+        page: &PageModel<'_>,
+        max_objects: usize,
+    ) -> Result<Vec<ContentStreamModel<'a>>> {
+        ContentStreamModel::from_page(self.document, page, max_objects)
+    }
+
+    fn push_streams(
+        &self,
+        objects: &mut Vec<ModelObjectRef<'a>>,
+        max_objects: usize,
+    ) -> Result<()> {
+        for object in self.document.objects.values() {
+            let Some(stream) = StreamModel::from_indirect_with_document(self.document, object)
+            else {
+                continue;
+            };
+            if Some(stream.key) != self.document.catalog {
+                push_linked(objects, ModelObjectRef::Stream(stream), max_objects)?;
+            }
+        }
+        Ok(())
     }
 }
 
 /// Document model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DocumentModel<'a> {
     document: &'a ParsedDocument,
     object_type: ObjectTypeName,
@@ -668,22 +686,22 @@ impl ModelObject for DocumentModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'a>(&'a self, links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
+    fn linked_objects<'a>(
+        &self,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut objects = Vec::new();
-        if let Some(catalog) = links.catalog {
-            objects.push(ModelObjectRef::Catalog(catalog));
+        if let Some(catalog) = graph.catalog() {
+            push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
         }
-        for stream in links.streams.iter().rev() {
-            if Some(stream.key) != links.graph.document.catalog {
-                objects.push(ModelObjectRef::Stream(stream));
-            }
-        }
+        graph.push_streams(&mut objects, max_objects)?;
         Ok(objects)
     }
 }
 
 /// Catalog model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CatalogModel<'a> {
     document: &'a ParsedDocument,
     key: ObjectKey,
@@ -753,26 +771,43 @@ impl ModelObject for CatalogModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'a>(&'a self, links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
-        let mut objects = links
-            .metadata
+    fn linked_objects<'a>(
+        &self,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
+        let mut objects = graph
+            .metadata(self)
             .map(ModelObjectRef::Metadata)
             .into_iter()
             .collect::<Vec<_>>();
-        objects.extend(
-            links
-                .output_intents
-                .iter()
-                .rev()
-                .map(ModelObjectRef::OutputIntent),
-        );
-        objects.extend(links.pages.iter().rev().map(ModelObjectRef::Page));
+        if objects.len() > max_objects {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_objects",
+            }
+            .into());
+        }
+        let mut output_intents =
+            graph.output_intents(self, max_objects.saturating_sub(objects.len()))?;
+        output_intents.reverse();
+        for output_intent in output_intents {
+            push_linked(
+                &mut objects,
+                ModelObjectRef::OutputIntent(output_intent),
+                max_objects,
+            )?;
+        }
+        let mut pages = graph.pages(self, max_objects.saturating_sub(objects.len()))?;
+        pages.reverse();
+        for page in pages {
+            push_linked(&mut objects, ModelObjectRef::Page(page), max_objects)?;
+        }
         Ok(objects)
     }
 }
 
 /// Metadata stream model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MetadataModel<'a> {
     document: &'a ParsedDocument,
     key: ObjectKey,
@@ -836,13 +871,17 @@ impl ModelObject for MetadataModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'a>(&'a self, _links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
 }
 
 /// Page dictionary model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PageModel<'a> {
     document: &'a ParsedDocument,
     key: ObjectKey,
@@ -859,6 +898,7 @@ impl<'a> PageModel<'a> {
         document: &'a ParsedDocument,
         catalog: &CatalogModel<'_>,
         limits: &ResourceLimits,
+        max_objects: usize,
     ) -> Result<Vec<Self>> {
         let Some(pages_root) = catalog.pages else {
             return Ok(Vec::new());
@@ -878,6 +918,12 @@ impl<'a> PageModel<'a> {
             };
             match dictionary.get("Type") {
                 Some(crate::CosObject::Name(name)) if name.matches("Page") => {
+                    if pages.len() >= max_objects {
+                        return Err(ValidationError::LimitExceeded {
+                            limit: "max_objects",
+                        }
+                        .into());
+                    }
                     pages.push(Self {
                         document,
                         key,
@@ -953,38 +999,41 @@ impl ModelObject for PageModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'b>(&'b self, links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+    fn linked_objects<'a>(
+        &self,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut objects = Vec::new();
-        objects.extend(
-            links
-                .content_streams
-                .iter()
-                .rev()
-                .filter(|stream| stream.page_ordinal == self.ordinal)
-                .map(ModelObjectRef::ContentStream),
-        );
-        objects.extend(
-            links
-                .annotations
-                .iter()
-                .rev()
-                .filter(|annotation| annotation.page_ordinal == self.ordinal)
-                .map(ModelObjectRef::Annotation),
-        );
-        objects.extend(
-            links
-                .fonts
-                .iter()
-                .rev()
-                .filter(|font| font.page_ordinal == self.ordinal)
-                .map(ModelObjectRef::Font),
-        );
+        let mut content_streams = graph.content_streams(self, max_objects)?;
+        content_streams.reverse();
+        for content_stream in content_streams {
+            push_linked(
+                &mut objects,
+                ModelObjectRef::ContentStream(content_stream),
+                max_objects,
+            )?;
+        }
+        let mut annotations = graph.annotations(self, max_objects.saturating_sub(objects.len()))?;
+        annotations.reverse();
+        for annotation in annotations {
+            push_linked(
+                &mut objects,
+                ModelObjectRef::Annotation(annotation),
+                max_objects,
+            )?;
+        }
+        let mut fonts = graph.fonts(self, max_objects.saturating_sub(objects.len()))?;
+        fonts.reverse();
+        for font in fonts {
+            push_linked(&mut objects, ModelObjectRef::Font(font), max_objects)?;
+        }
         Ok(objects)
     }
 }
 
 /// Font dictionary model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FontModel<'a> {
     document: &'a ParsedDocument,
     page_ordinal: usize,
@@ -998,34 +1047,44 @@ pub struct FontModel<'a> {
 }
 
 impl<'a> FontModel<'a> {
-    fn from_pages(document: &'a ParsedDocument, pages: &[PageModel<'a>]) -> Vec<Self> {
+    fn from_page(
+        document: &'a ParsedDocument,
+        page: &PageModel<'_>,
+        max_objects: usize,
+    ) -> Result<Vec<Self>> {
         let mut fonts = Vec::new();
-        for page in pages {
-            let Some(resources) =
-                resolve_dictionary_value(document, page.dictionary.get("Resources"))
-            else {
-                continue;
-            };
-            let Some(crate::CosObject::Dictionary(fonts_dictionary)) = resources.get("Font") else {
-                continue;
-            };
-            for (name, value) in fonts_dictionary.iter() {
-                if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
-                    fonts.push(Self {
-                        document,
-                        page_ordinal: page.ordinal,
-                        key,
-                        offset,
-                        name: name.clone(),
-                        dictionary,
-                        object_type: ObjectTypeName::unchecked("font"),
-                        supertypes: vec![ObjectTypeName::unchecked("object")],
-                        links: Vec::new(),
-                    });
+        let Some(page_dictionary) = page_dictionary(document, page.key) else {
+            return Ok(fonts);
+        };
+        let Some(resources) = resolve_dictionary_value(document, page_dictionary.get("Resources"))
+        else {
+            return Ok(fonts);
+        };
+        let Some(crate::CosObject::Dictionary(fonts_dictionary)) = resources.get("Font") else {
+            return Ok(fonts);
+        };
+        for (name, value) in fonts_dictionary.iter() {
+            if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
+                if fonts.len() >= max_objects {
+                    return Err(ValidationError::LimitExceeded {
+                        limit: "max_objects",
+                    }
+                    .into());
                 }
+                fonts.push(Self {
+                    document,
+                    page_ordinal: page.ordinal,
+                    key,
+                    offset,
+                    name: name.clone(),
+                    dictionary,
+                    object_type: ObjectTypeName::unchecked("font"),
+                    supertypes: vec![ObjectTypeName::unchecked("object")],
+                    links: Vec::new(),
+                });
             }
         }
-        fonts
+        Ok(fonts)
     }
 }
 
@@ -1069,13 +1128,17 @@ impl ModelObject for FontModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'b>(&'b self, _links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
 }
 
 /// Annotation dictionary model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AnnotationModel<'a> {
     document: &'a ParsedDocument,
     page_ordinal: usize,
@@ -1089,26 +1152,37 @@ pub struct AnnotationModel<'a> {
 }
 
 impl<'a> AnnotationModel<'a> {
-    fn from_pages(document: &'a ParsedDocument, pages: &[PageModel<'a>]) -> Vec<Self> {
+    fn from_page(
+        document: &'a ParsedDocument,
+        page: &PageModel<'_>,
+        max_objects: usize,
+    ) -> Result<Vec<Self>> {
         let mut annotations = Vec::new();
-        for page in pages {
-            for (ordinal, value) in array_values(page.dictionary.get("Annots")).enumerate() {
-                if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
-                    annotations.push(Self {
-                        document,
-                        page_ordinal: page.ordinal,
-                        ordinal,
-                        key,
-                        offset,
-                        dictionary,
-                        object_type: ObjectTypeName::unchecked("annotation"),
-                        supertypes: vec![ObjectTypeName::unchecked("object")],
-                        links: Vec::new(),
-                    });
+        let Some(page_dictionary) = page_dictionary(document, page.key) else {
+            return Ok(annotations);
+        };
+        for (ordinal, value) in array_values(page_dictionary.get("Annots")).enumerate() {
+            if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
+                if annotations.len() >= max_objects {
+                    return Err(ValidationError::LimitExceeded {
+                        limit: "max_objects",
+                    }
+                    .into());
                 }
+                annotations.push(Self {
+                    document,
+                    page_ordinal: page.ordinal,
+                    ordinal,
+                    key,
+                    offset,
+                    dictionary,
+                    object_type: ObjectTypeName::unchecked("annotation"),
+                    supertypes: vec![ObjectTypeName::unchecked("object")],
+                    links: Vec::new(),
+                });
             }
         }
-        annotations
+        Ok(annotations)
     }
 }
 
@@ -1145,13 +1219,17 @@ impl ModelObject for AnnotationModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'b>(&'b self, _links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
 }
 
 /// Output intent dictionary model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OutputIntentModel<'a> {
     document: &'a ParsedDocument,
     ordinal: usize,
@@ -1164,16 +1242,26 @@ pub struct OutputIntentModel<'a> {
 }
 
 impl<'a> OutputIntentModel<'a> {
-    fn from_catalog(document: &'a ParsedDocument, catalog: &CatalogModel<'_>) -> Vec<Self> {
+    fn from_catalog(
+        document: &'a ParsedDocument,
+        catalog: &CatalogModel<'_>,
+        max_objects: usize,
+    ) -> Result<Vec<Self>> {
         let Some(catalog_object) = document.objects.get(&catalog.key) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let Some(catalog_dictionary) = catalog_object.object.as_dictionary() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let mut output_intents = Vec::new();
         for (ordinal, value) in array_values(catalog_dictionary.get("OutputIntents")).enumerate() {
             if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
+                if output_intents.len() >= max_objects {
+                    return Err(ValidationError::LimitExceeded {
+                        limit: "max_objects",
+                    }
+                    .into());
+                }
                 output_intents.push(Self {
                     document,
                     ordinal,
@@ -1186,7 +1274,7 @@ impl<'a> OutputIntentModel<'a> {
                 });
             }
         }
-        output_intents
+        Ok(output_intents)
     }
 }
 
@@ -1225,13 +1313,17 @@ impl ModelObject for OutputIntentModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'b>(&'b self, _links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
 }
 
 /// Page content stream model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ContentStreamModel<'a> {
     document: &'a ParsedDocument,
     page_ordinal: usize,
@@ -1245,36 +1337,23 @@ pub struct ContentStreamModel<'a> {
 }
 
 impl<'a> ContentStreamModel<'a> {
-    fn from_pages(document: &'a ParsedDocument, pages: &[PageModel<'a>]) -> Vec<Self> {
+    fn from_page(
+        document: &'a ParsedDocument,
+        page: &PageModel<'_>,
+        max_objects: usize,
+    ) -> Result<Vec<Self>> {
         let mut streams = Vec::new();
-        for page in pages {
-            for (ordinal, key) in object_refs_from_value(page.dictionary.get("Contents"))
-                .into_iter()
-                .enumerate()
-            {
-                let Some(object) = document.objects.get(&key) else {
-                    continue;
-                };
-                let crate::CosObject::Stream(stream) = &object.object else {
-                    continue;
-                };
-                streams.push(Self {
-                    document,
-                    page_ordinal: page.ordinal,
-                    ordinal,
-                    key,
-                    offset: object.offset,
-                    stream,
-                    object_type: ObjectTypeName::unchecked("contentStream"),
-                    supertypes: vec![
-                        ObjectTypeName::unchecked("stream"),
-                        ObjectTypeName::unchecked("object"),
-                    ],
-                    links: Vec::new(),
-                });
-            }
-        }
-        streams
+        let Some(page_dictionary) = page_dictionary(document, page.key) else {
+            return Ok(streams);
+        };
+        push_content_streams_from_value(
+            document,
+            page,
+            page_dictionary.get("Contents"),
+            max_objects,
+            &mut streams,
+        )?;
+        Ok(streams)
     }
 }
 
@@ -1318,7 +1397,11 @@ impl ModelObject for ContentStreamModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'b>(&'b self, _links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
 }
@@ -1332,6 +1415,10 @@ fn resolve_dictionary_value<'a>(
         Some(crate::CosObject::Reference(key)) => document.objects.get(key)?.object.as_dictionary(),
         _ => None,
     }
+}
+
+fn page_dictionary(document: &ParsedDocument, key: ObjectKey) -> Option<&crate::Dictionary> {
+    document.objects.get(&key)?.object.as_dictionary()
 }
 
 fn resolve_named_dictionary<'a>(
@@ -1362,12 +1449,71 @@ fn object_refs_from_array(value: Option<&crate::CosObject>) -> Vec<ObjectKey> {
     }
 }
 
-fn object_refs_from_value(value: Option<&crate::CosObject>) -> Vec<ObjectKey> {
+fn push_content_streams_from_value<'a>(
+    document: &'a ParsedDocument,
+    page: &PageModel<'_>,
+    value: Option<&crate::CosObject>,
+    max_objects: usize,
+    streams: &mut Vec<ContentStreamModel<'a>>,
+) -> Result<()> {
     match value {
-        Some(crate::CosObject::Reference(key)) => vec![*key],
-        Some(crate::CosObject::Array(_)) => object_refs_from_array(value),
-        _ => Vec::new(),
+        Some(crate::CosObject::Reference(key)) => {
+            push_content_stream(document, page, *key, 0, max_objects, streams)?;
+        }
+        Some(crate::CosObject::Array(values)) => {
+            let mut ordinal = 0_usize;
+            for value in values {
+                let crate::CosObject::Reference(key) = value else {
+                    continue;
+                };
+                push_content_stream(document, page, *key, ordinal, max_objects, streams)?;
+                ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or(ValidationError::LimitExceeded {
+                        limit: "max_objects",
+                    })?;
+            }
+        }
+        Some(_) | None => {}
     }
+    Ok(())
+}
+
+fn push_content_stream<'a>(
+    document: &'a ParsedDocument,
+    page: &PageModel<'_>,
+    key: ObjectKey,
+    ordinal: usize,
+    max_objects: usize,
+    streams: &mut Vec<ContentStreamModel<'a>>,
+) -> Result<()> {
+    let Some(object) = document.objects.get(&key) else {
+        return Ok(());
+    };
+    let crate::CosObject::Stream(stream) = &object.object else {
+        return Ok(());
+    };
+    if streams.len() >= max_objects {
+        return Err(ValidationError::LimitExceeded {
+            limit: "max_objects",
+        }
+        .into());
+    }
+    streams.push(ContentStreamModel {
+        document,
+        page_ordinal: page.ordinal,
+        ordinal,
+        key,
+        offset: object.offset,
+        stream,
+        object_type: ObjectTypeName::unchecked("contentStream"),
+        supertypes: vec![
+            ObjectTypeName::unchecked("stream"),
+            ObjectTypeName::unchecked("object"),
+        ],
+        links: Vec::new(),
+    });
+    Ok(())
 }
 
 fn object_refs_or_direct_count(value: Option<&crate::CosObject>) -> usize {
@@ -1389,7 +1535,7 @@ fn array_values(value: Option<&crate::CosObject>) -> impl Iterator<Item = &crate
 }
 
 /// Stream model wrapper.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct StreamModel<'a> {
     document: &'a ParsedDocument,
     key: ObjectKey,
@@ -1477,7 +1623,11 @@ impl ModelObject for StreamModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'a>(&'a self, _links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
 }
@@ -1498,7 +1648,7 @@ impl<'a> RuleIndex<'a> {
         Self { by_type }
     }
 
-    fn rules_for(&self, object: ModelObjectRef<'_>) -> Vec<&'a Rule> {
+    fn rules_for(&self, object: &ModelObjectRef<'_>) -> Vec<&'a Rule> {
         let mut rules = self
             .by_type
             .get(object.object_type().as_str())
@@ -1561,7 +1711,7 @@ impl ProfileState {
 
     fn apply_rule(
         &mut self,
-        object: ModelObjectRef<'_>,
+        object: &ModelObjectRef<'_>,
         rule: &Rule,
         evaluator: &mut DefaultRuleEvaluator,
     ) -> Result<()> {
@@ -1577,7 +1727,7 @@ impl ProfileState {
                 .ok_or(ValidationError::LimitExceeded {
                     limit: "checks_executed",
                 })?;
-        let outcome = match evaluator.evaluate(object, rule) {
+        let outcome = match evaluator.evaluate(object.clone(), rule) {
             Ok(outcome) => outcome,
             Err(PdfvError::Profile(error)) => {
                 self.unsupported_rules.push(UnsupportedRule {
@@ -1621,7 +1771,7 @@ impl ProfileState {
 
     fn assertion(
         &mut self,
-        object: ModelObjectRef<'_>,
+        object: &ModelObjectRef<'_>,
         rule: &Rule,
         outcome: RuleOutcome,
     ) -> Result<Assertion> {
@@ -1766,14 +1916,77 @@ fn usize_to_f64(value: usize) -> Result<f64> {
     Ok(f64::from(bounded))
 }
 
+fn remaining_object_budget(
+    limits: &ResourceLimits,
+    visited_len: usize,
+    stack_len: usize,
+) -> Result<usize> {
+    let visited = u64::try_from(visited_len).map_err(|_| ValidationError::LimitExceeded {
+        limit: "max_objects",
+    })?;
+    let pending = u64::try_from(stack_len).map_err(|_| ValidationError::LimitExceeded {
+        limit: "max_objects",
+    })?;
+    let consumed = visited
+        .checked_add(pending)
+        .ok_or(ValidationError::LimitExceeded {
+            limit: "max_objects",
+        })?;
+    let remaining =
+        limits
+            .max_objects
+            .checked_sub(consumed)
+            .ok_or(ValidationError::LimitExceeded {
+                limit: "max_objects",
+            })?;
+    usize::try_from(remaining).map_err(|_| {
+        ValidationError::LimitExceeded {
+            limit: "max_objects",
+        }
+        .into()
+    })
+}
+
+fn push_linked<'a>(
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    object: ModelObjectRef<'a>,
+    max_objects: usize,
+) -> Result<()> {
+    if objects.len() >= max_objects {
+        return Err(ValidationError::LimitExceeded {
+            limit: "max_objects",
+        }
+        .into());
+    }
+    objects.push(object);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, sync::Arc};
 
     use super::{
         AnnotationModel, CatalogModel, ContentStreamModel, FontModel, OutputIntentModel, PageModel,
     };
-    use crate::{ModelObject, ModelValue, Parser, PropertyName};
+    use crate::{
+        BinaryOp, BoundedText, ErrorTemplate, FlavourSelection, Identifier, ModelObject,
+        ModelObjectRef, ModelValue, Parser, PdfvError, ProfileIdentity, ProfileRepository,
+        PropertyName, ResourceLimits, Rule, RuleExpr, RuleId, ValidationFlavour, ValidationOptions,
+        ValidationProfile, Validator,
+    };
+
+    #[derive(Debug)]
+    struct StaticRepo(ValidationProfile);
+
+    impl ProfileRepository for StaticRepo {
+        fn profiles_for(
+            &self,
+            _selection: &FlavourSelection,
+        ) -> crate::Result<Vec<ValidationProfile>> {
+            Ok(vec![self.0.clone()])
+        }
+    }
 
     fn m1_model_pdf() -> &'static [u8] {
         br"%PDF-1.7
@@ -1824,11 +2037,14 @@ trailer
             })?;
 
         let pages =
-            PageModel::from_catalog(&document, &catalog, &crate::ResourceLimits::default())?;
-        let fonts = FontModel::from_pages(&document, &pages);
-        let annotations = AnnotationModel::from_pages(&document, &pages);
-        let output_intents = OutputIntentModel::from_catalog(&document, &catalog);
-        let content_streams = ContentStreamModel::from_pages(&document, &pages);
+            PageModel::from_catalog(&document, &catalog, &crate::ResourceLimits::default(), 16)?;
+        let page = pages.first().ok_or(crate::ParseError::MissingObject {
+            message: crate::BoundedText::unchecked("missing page"),
+        })?;
+        let fonts = FontModel::from_page(&document, page, 16)?;
+        let annotations = AnnotationModel::from_page(&document, page, 16)?;
+        let output_intents = OutputIntentModel::from_catalog(&document, &catalog, 16)?;
+        let content_streams = ContentStreamModel::from_page(&document, page, 16)?;
 
         assert_eq!(pages.len(), 1);
         assert_eq!(fonts.len(), 1);
@@ -1836,14 +2052,152 @@ trailer
         assert_eq!(output_intents.len(), 1);
         assert_eq!(content_streams.len(), 1);
         assert_eq!(
-            pages
-                .first()
-                .ok_or(crate::ParseError::MissingObject {
-                    message: crate::BoundedText::unchecked("missing page"),
-                })?
-                .property(&PropertyName::new("hasContents")?)?,
+            page.property(&PropertyName::new("hasContents")?)?,
             ModelValue::Bool(true)
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_should_resolve_m1_links_lazily_from_model_graph() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(m1_model_pdf()))?;
+        let limits = crate::ResourceLimits::default();
+        let graph = super::ModelGraph::new(&document, &limits);
+        let document_model = super::DocumentModel::new(&document);
+        let mut stack = vec![ModelObjectRef::Document(document_model)];
+        let mut visited_contexts = Vec::new();
+
+        while let Some(object) = stack.pop() {
+            visited_contexts.push(object.context().as_str().to_owned());
+            for linked in object.linked_objects(&graph, 16)? {
+                stack.push(linked);
+            }
+        }
+
+        assert!(visited_contexts.iter().any(|value| value == "root/page[0]"));
+        assert!(
+            visited_contexts
+                .iter()
+                .any(|value| value == "root/page[0]/font[F1]")
+        );
+        assert!(
+            visited_contexts
+                .iter()
+                .any(|value| value == "root/page[0]/annotation[0]")
+        );
+        assert!(
+            visited_contexts
+                .iter()
+                .any(|value| value == "root/catalog[0]/outputIntent[0]")
+        );
+        assert!(
+            visited_contexts
+                .iter()
+                .any(|value| value == "root/page[0]/contentStream[0]")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_validate_m1_linked_objects_through_lazy_traversal() -> crate::Result<()> {
+        let profile = linked_object_profile()?;
+        let validator =
+            Validator::with_profiles(ValidationOptions::default(), Arc::new(StaticRepo(profile)))?;
+        let report =
+            validator.validate_reader(Cursor::new(m1_model_pdf()), crate::InputName::memory())?;
+        let profile =
+            report
+                .profile_reports
+                .first()
+                .ok_or(crate::ValidationError::LimitExceeded {
+                    limit: "profile_reports",
+                })?;
+        let contexts = profile
+            .failed_assertions
+            .iter()
+            .filter_map(|assertion| assertion.object_context.as_ref())
+            .map(BoundedText::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(profile.rules_executed, 5);
+        assert!(contexts.contains(&"root/page[0]"));
+        assert!(contexts.contains(&"root/page[0]/font[F1]"));
+        assert!(contexts.contains(&"root/page[0]/annotation[0]"));
+        assert!(contexts.contains(&"root/catalog[0]/outputIntent[0]"));
+        assert!(contexts.contains(&"root/page[0]/contentStream[0]"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_limit_lazy_link_expansion_before_enqueue() -> crate::Result<()> {
+        let limits = ResourceLimits {
+            max_objects: 1,
+            ..ResourceLimits::default()
+        };
+        let options = ValidationOptions::builder().resource_limits(limits).build();
+        let Err(error) = Validator::new(options)?.validate_reader(
+            Cursor::new(simple_catalog_pdf()),
+            crate::InputName::memory(),
+        ) else {
+            return Err(crate::ValidationError::LimitExceeded {
+                limit: "expected_error",
+            }
+            .into());
+        };
+
+        assert!(matches!(
+            error,
+            PdfvError::Validation(crate::ValidationError::LimitExceeded {
+                limit: "max_objects"
+            })
+        ));
+        Ok(())
+    }
+
+    fn simple_catalog_pdf() -> &'static [u8] {
+        br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+"
+    }
+
+    fn linked_object_profile() -> crate::Result<ValidationProfile> {
+        Ok(ValidationProfile {
+            identity: ProfileIdentity {
+                id: Identifier::new("lazy-links")?,
+                name: BoundedText::new("lazy links", 64)?,
+                version: None,
+            },
+            flavour: ValidationFlavour::new("pdfa", std::num::NonZeroU32::MIN, "b")?,
+            rules: vec![
+                false_rule("page-rule", "page", false)?,
+                false_rule("font-rule", "font", false)?,
+                false_rule("annotation-rule", "annotation", false)?,
+                false_rule("output-intent-rule", "outputIntent", false)?,
+                false_rule("content-stream-deferred", "contentStream", true)?,
+            ],
+        })
+    }
+
+    fn false_rule(id: &str, object_type: &str, deferred: bool) -> crate::Result<Rule> {
+        Ok(Rule {
+            id: RuleId(Identifier::new(id)?),
+            object_type: crate::ObjectTypeName::new(object_type)?,
+            deferred,
+            tags: Vec::new(),
+            description: BoundedText::new(id, 64)?,
+            test: RuleExpr::Binary {
+                op: BinaryOp::Eq,
+                left: Box::new(RuleExpr::Bool { value: true }),
+                right: Box::new(RuleExpr::Bool { value: false }),
+            },
+            error: ErrorTemplate {
+                message: BoundedText::new(id, 64)?,
+            },
+        })
     }
 }
