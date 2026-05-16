@@ -1,8 +1,6 @@
 [package]
 name = "pdfv-core"
-description = """
-
-"""
+description = "Core validation contracts and library API for pdfv."
 categories = ["development-tools"]
 keywords = []
 version.workspace = true
@@ -14,8 +12,17 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+typed-builder.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[features]
+default = ["json", "flate"]
+json = []
+flate = []
+custom-profiles = []
+bench = []

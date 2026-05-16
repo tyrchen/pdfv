@@ -1,8 +1,6 @@
 [package]
-name = "pdfv-server"
-description = """
-
-"""
+name = "pdfv"
+description = "Command-line interface for the pdfv validator."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -12,6 +10,5 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+clap.workspace = true
 pdfv-core.workspace = true
-anyhow.workspace = true
-tokio.workspace = true

@@ -4,7 +4,7 @@ Status: draft · Owner: pdfv · Depends on: [00-prd.md](./00-prd.md)
 
 ## 1. Purpose
 
-This spec keeps crate boundaries, dependency choices, and feature flags coherent. Dependency versions below were checked with `cargo search` on 2026-05-15, using Rust `1.95.0` as the current stable toolchain on this machine.
+This spec keeps crate boundaries, dependency choices, and feature flags coherent. Dependency versions below were checked with `cargo search` on 2026-05-15, using Rust `1.95.0` as the current stable toolchain on this machine. The official Rust release listing identifies Rust `1.95.0` as the latest stable release on 2026-04-16.
 
 ## 2. Workspace shape
 
@@ -13,10 +13,9 @@ crates/
   core/        public library API, parser, profiles, validation, reports
 apps/
   cli/         pdfv binary
-  server/      placeholder until network service is explicitly scoped
 ```
 
-M0 should rename or replace the current `apps/server` placeholder with `apps/cli` unless the server remains deliberately out of scope.
+Phase 0 decided that `apps/server` is removed until a network service is explicitly scoped. M0 uses `apps/cli` as the only application crate.
 
 ## 3. Candidate dependencies
 
@@ -27,7 +26,7 @@ M0 should rename or replace the current `apps/server` placeholder with `apps/cli
 | Errors | `thiserror` | 2.0.18 | Library error enums. |
 | CLI errors | `anyhow` | 1.0.102 in workspace | CLI context only. |
 | Serialization | `serde` | 1.0.228 | Reports/config. |
-| JSON | `serde_json` | workspace currently 1.0.142; latest search not repeated after existing lock | JSON report output. |
+| JSON | `serde_json` | 1.0.149 | JSON report output. |
 | XML profiles | `quick-xml` | 0.40.1 | Custom profile/generator XML parsing. |
 | Config | `config` | 0.15.23 | YAML runtime config. |
 | Builders | `typed-builder` | 0.23.2 | Public config builders. |
@@ -52,7 +51,7 @@ Avoid `serde_yaml` for new code because `cargo search` reports `0.9.34+deprecate
 - `bench` enables benchmark-only helpers.
 - No feature may enable `unsafe` code.
 
-`pdfv-cli`:
+`pdfv`:
 
 - default includes `pdfv-core/json`, `pdfv-core/flate`, `config`, `tracing-subscriber`, `clap`.
 
@@ -79,4 +78,3 @@ CI and local verification run:
 - ← Depends on: [00-prd.md](./00-prd.md)
 - → Constrains: all implementation specs
 - ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md)
-

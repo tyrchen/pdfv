@@ -1,7 +1,1081 @@
+#![forbid(unsafe_code)]
+#![warn(rust_2024_compatibility, missing_docs, missing_debug_implementations)]
+//! Public contracts for the pdfv validation engine.
+//!
+//! The crate currently exposes the stable data model, error model, and JSON
+//! report writing spine used by later parser and validator phases.
+//!
+//! ```
+//! use pdfv_core::{InputKind, InputSummary, ValidationOptions};
+//!
+//! let options = ValidationOptions::default();
+//! let source = InputSummary::new(InputKind::Memory, None, None);
+//! assert!(options.report_parse_warnings);
+//! assert_eq!(source.kind, InputKind::Memory);
+//! ```
+
+use std::{
+    fmt,
+    num::{NonZeroU32, NonZeroU64},
+    path::PathBuf,
+    time::Duration,
+};
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+use typed_builder::TypedBuilder;
+
+/// Current library version embedded in generated reports.
+pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const MAX_IDENTIFIER_BYTES: usize = 128;
+const MAX_TEXT_BYTES: usize = 4096;
+
+/// Result alias for pdfv library operations.
+pub type Result<T> = std::result::Result<T, PdfvError>;
+
+/// Top-level library error.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum PdfvError {
+    /// Input/output failure.
+    #[error("I/O error{path}: {source}", path = format_optional_path(.path.as_ref()))]
+    Io {
+        /// Path associated with the failure when available.
+        path: Option<PathBuf>,
+        /// Source I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Parser failure.
+    #[error("parse error: {0}")]
+    Parse(#[from] ParseError),
+    /// Profile loading or selection failure.
+    #[error("profile error: {0}")]
+    Profile(#[from] ProfileError),
+    /// Validation engine failure.
+    #[error("validation error: {0}")]
+    Validation(#[from] ValidationError),
+    /// Report serialization failure.
+    #[error("report error: {0}")]
+    Report(#[from] ReportError),
+    /// Configuration failure.
+    #[error("configuration error: {0}")]
+    Configuration(#[from] ConfigError),
+}
+
+/// Parser-specific error.
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ParseError {
+    /// A configured parser resource limit was exceeded.
+    #[error("resource limit exceeded: {limit}")]
+    LimitExceeded {
+        /// Name of the exceeded limit.
+        limit: &'static str,
+    },
+    /// Checked arithmetic overflowed while processing input.
+    #[error("arithmetic overflow while parsing {context}")]
+    ArithmeticOverflow {
+        /// Parsing context that overflowed.
+        context: &'static str,
+    },
+    /// PDF syntax could not be recovered.
+    #[error("malformed PDF syntax: {message}")]
+    Malformed {
+        /// Bounded diagnostic message.
+        message: BoundedText,
+    },
+}
+
+/// Profile-specific error.
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ProfileError {
+    /// Profile selection did not resolve to a supported profile.
+    #[error("unsupported profile selection")]
+    UnsupportedSelection,
+    /// A profile field failed validation.
+    #[error("invalid profile field {field}: {reason}")]
+    InvalidField {
+        /// Field that failed validation.
+        field: &'static str,
+        /// Bounded reason string.
+        reason: BoundedText,
+    },
+}
+
+/// Validation-specific error.
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ValidationError {
+    /// Validation could not complete because a required subsystem is unavailable.
+    #[error("validation subsystem is unavailable: {subsystem}")]
+    SubsystemUnavailable {
+        /// Subsystem name.
+        subsystem: &'static str,
+    },
+}
+
+/// Reporting-specific error.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ReportError {
+    /// JSON serialization failed.
+    #[error("JSON serialization failed")]
+    Json {
+        /// Source JSON error.
+        #[from]
+        source: serde_json::Error,
+    },
+    /// Output write failed.
+    #[error("report output write failed")]
+    Write {
+        /// Source I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Configuration-specific error.
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ConfigError {
+    /// A configured value was outside the accepted range.
+    #[error("invalid configuration value {field}: {reason}")]
+    InvalidValue {
+        /// Configuration field name.
+        field: &'static str,
+        /// Bounded reason string.
+        reason: BoundedText,
+    },
+}
+
+/// Bounded UTF-8 text for externally supplied strings.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct BoundedText(String);
+
+impl BoundedText {
+    /// Creates bounded text with a maximum byte length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when `value` is longer than `max_bytes`.
+    pub fn new(
+        value: impl Into<String>,
+        max_bytes: usize,
+    ) -> std::result::Result<Self, ConfigError> {
+        let value = value.into();
+        if value.len() > max_bytes {
+            return Err(ConfigError::InvalidValue {
+                field: "text",
+                reason: Self::unchecked("value exceeds byte limit"),
+            });
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the text as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn unchecked(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+impl fmt::Display for BoundedText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for BoundedText {
+    type Error = ConfigError;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        Self::new(value, MAX_TEXT_BYTES)
+    }
+}
+
+impl From<BoundedText> for String {
+    fn from(value: BoundedText) -> Self {
+        value.0
+    }
+}
+
+/// Identifier text with a tight byte cap and ASCII policy.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Identifier(String);
+
+impl Identifier {
+    /// Creates an identifier from ASCII alphanumeric, dash, underscore, dot, and colon characters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if the identifier is empty, too long, or contains
+    /// characters outside the allowlist.
+    pub fn new(value: impl Into<String>) -> std::result::Result<Self, ConfigError> {
+        let value = value.into();
+        let valid_charset = value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'));
+        if value.is_empty() || value.len() > MAX_IDENTIFIER_BYTES || !valid_charset {
+            return Err(ConfigError::InvalidValue {
+                field: "identifier",
+                reason: BoundedText::unchecked("identifier violates byte or charset policy"),
+            });
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the identifier as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for Identifier {
+    type Error = ConfigError;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<Identifier> for String {
+    fn from(value: Identifier) -> Self {
+        value.0
+    }
+}
+
+/// PDF validation options shared by parser, engine, and reports.
+#[derive(Clone, Debug, Deserialize, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidationOptions {
+    /// Flavour/profile selection policy.
+    #[builder(default)]
+    pub flavour: FlavourSelection,
+    /// Parser and validation resource limits.
+    #[builder(default)]
+    pub resource_limits: ResourceLimits,
+    /// Maximum assertion details retained per failed rule.
+    #[builder(default)]
+    pub max_failed_assertions_per_rule: MaxDisplayedFailures,
+    /// Whether passed assertion details are recorded.
+    #[builder(default)]
+    pub record_passed_assertions: bool,
+    /// Whether recoverable parser warnings are included in the report.
+    #[builder(default = true)]
+    pub report_parse_warnings: bool,
+}
+
+impl Default for ValidationOptions {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+/// Flavour/profile selection policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum FlavourSelection {
+    /// Detect flavour from document metadata, optionally falling back to a default.
+    Auto {
+        /// Default flavour used when auto-detection is inconclusive.
+        default: Option<ValidationFlavour>,
+    },
+    /// Validate against an explicit built-in flavour.
+    Explicit {
+        /// Selected validation flavour.
+        flavour: ValidationFlavour,
+    },
+    /// Validate against a custom profile loaded from a path.
+    CustomProfile {
+        /// Custom profile file path.
+        profile_path: PathBuf,
+    },
+}
+
+impl Default for FlavourSelection {
+    fn default() -> Self {
+        Self::Auto { default: None }
+    }
+}
+
+/// Validation flavour identifier.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidationFlavour {
+    /// PDF family, such as `pdfa`.
+    pub family: Identifier,
+    /// Part number, such as `1`.
+    pub part: NonZeroU32,
+    /// Conformance level, such as `b`.
+    pub conformance: Identifier,
+}
+
+impl ValidationFlavour {
+    /// Creates a validation flavour.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when identifier fields violate the identifier policy.
+    pub fn new(
+        family: impl Into<String>,
+        part: NonZeroU32,
+        conformance: impl Into<String>,
+    ) -> std::result::Result<Self, ConfigError> {
+        Ok(Self {
+            family: Identifier::new(family)?,
+            part,
+            conformance: Identifier::new(conformance)?,
+        })
+    }
+}
+
+/// Parser and validation resource limits.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResourceLimits {
+    /// Maximum input file bytes.
+    pub max_file_bytes: u64,
+    /// Maximum indirect objects.
+    pub max_objects: u64,
+    /// Maximum nested object depth.
+    pub max_object_depth: u32,
+    /// Maximum array length.
+    pub max_array_len: u64,
+    /// Maximum dictionary entries.
+    pub max_dict_entries: u64,
+    /// Maximum PDF name bytes.
+    pub max_name_bytes: usize,
+    /// Maximum string bytes.
+    pub max_string_bytes: usize,
+    /// Maximum declared stream bytes.
+    pub max_stream_declared_bytes: u64,
+    /// Maximum decoded stream bytes.
+    pub max_stream_decode_bytes: u64,
+    /// Maximum retained parse facts.
+    pub max_parse_facts: usize,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: 256 * 1024 * 1024,
+            max_objects: 1_000_000,
+            max_object_depth: 128,
+            max_array_len: 65_536,
+            max_dict_entries: 16_384,
+            max_name_bytes: 127,
+            max_string_bytes: 1_048_576,
+            max_stream_declared_bytes: 128 * 1024 * 1024,
+            max_stream_decode_bytes: 256 * 1024 * 1024,
+            max_parse_facts: 100_000,
+        }
+    }
+}
+
+/// Maximum displayed assertion failures per rule.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct MaxDisplayedFailures(NonZeroU32);
+
+impl MaxDisplayedFailures {
+    /// Creates a failure display cap.
+    #[must_use]
+    pub fn new(value: NonZeroU32) -> Self {
+        Self(value)
+    }
+
+    /// Returns the cap as `u32`.
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl Default for MaxDisplayedFailures {
+    fn default() -> Self {
+        Self(NonZeroU32::MIN)
+    }
+}
+
+impl TryFrom<u32> for MaxDisplayedFailures {
+    type Error = ConfigError;
+
+    fn try_from(value: u32) -> std::result::Result<Self, Self::Error> {
+        let Some(value) = NonZeroU32::new(value) else {
+            return Err(ConfigError::InvalidValue {
+                field: "maxFailedAssertionsPerRule",
+                reason: BoundedText::unchecked("value must be greater than zero"),
+            });
+        };
+        Ok(Self(value))
+    }
+}
+
+impl From<MaxDisplayedFailures> for u32 {
+    fn from(value: MaxDisplayedFailures) -> Self {
+        value.get()
+    }
+}
+
+/// Complete validation report for one input.
+#[derive(Clone, Debug, Deserialize, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidationReport {
+    /// Engine version that produced the report.
+    pub engine_version: String,
+    /// Input summary.
+    pub source: InputSummary,
+    /// Overall validation status.
+    pub status: ValidationStatus,
+    /// Detected or selected flavours.
+    pub flavours: Vec<ValidationFlavour>,
+    /// Per-profile validation results.
+    pub profile_reports: Vec<ProfileReport>,
+    /// Parser facts retained for validation and diagnostics.
+    pub parse_facts: Vec<ParseFact>,
+    /// User-visible warnings.
+    pub warnings: Vec<ValidationWarning>,
+    /// Task duration measurements.
+    pub task_durations: Vec<TaskDuration>,
+}
+
+/// Input summary included in reports.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputSummary {
+    /// Input kind.
+    pub kind: InputKind,
+    /// Path when the input came from the filesystem.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    /// Input byte length when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+}
+
+impl InputSummary {
+    /// Creates an input summary.
+    #[must_use]
+    pub fn new(kind: InputKind, path: Option<PathBuf>, bytes: Option<u64>) -> Self {
+        Self { kind, path, bytes }
+    }
+}
+
+/// Input kind.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum InputKind {
+    /// Filesystem input.
+    File,
+    /// In-memory or reader input.
+    Memory,
+}
+
+/// Overall validation status.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum ValidationStatus {
+    /// All required checks passed.
+    Valid,
+    /// One or more required checks failed.
+    Invalid,
+    /// Input is encrypted and cannot be validated in the current phase.
+    Encrypted,
+    /// Validation could not complete.
+    Incomplete,
+    /// Input could not be parsed.
+    ParseFailed,
+}
+
+/// Per-profile report.
+#[derive(Clone, Debug, Deserialize, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileReport {
+    /// Profile identity.
+    pub profile: ProfileIdentity,
+    /// Whether this profile is compliant.
+    pub is_compliant: bool,
+    /// Number of checks executed.
+    pub checks_executed: u64,
+    /// Number of rules executed.
+    pub rules_executed: u64,
+    /// Number of failed rules.
+    pub failed_rules: u64,
+    /// Bounded failed assertion details.
+    pub failed_assertions: Vec<Assertion>,
+    /// Bounded passed assertion details.
+    pub passed_assertions: Vec<Assertion>,
+    /// Unsupported required rules.
+    pub unsupported_rules: Vec<UnsupportedRule>,
+}
+
+/// Profile identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileIdentity {
+    /// Profile id.
+    pub id: Identifier,
+    /// Human-readable profile name.
+    pub name: BoundedText,
+    /// Profile version string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<Identifier>,
+}
+
+/// Rule assertion detail.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Assertion {
+    /// Report-stable assertion ordinal.
+    pub ordinal: NonZeroU64,
+    /// Rule id.
+    pub rule_id: RuleId,
+    /// Assertion status.
+    pub status: AssertionStatus,
+    /// Assertion description.
+    pub description: BoundedText,
+    /// Object location.
+    pub location: ObjectLocation,
+    /// Optional object context path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_context: Option<BoundedText>,
+    /// Optional assertion message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<BoundedText>,
+    /// Error template arguments.
+    pub error_arguments: Vec<ErrorArgument>,
+}
+
+/// Assertion status.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum AssertionStatus {
+    /// Assertion passed.
+    Passed,
+    /// Assertion failed.
+    Failed,
+}
+
+/// Rule id.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct RuleId(pub Identifier);
+
+/// Object location for diagnostics.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectLocation {
+    /// Indirect object key when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object: Option<ObjectKey>,
+    /// Byte offset when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    /// Human-readable path in the validation model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<BoundedText>,
+}
+
+/// Indirect PDF object key.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectKey {
+    /// Object number.
+    pub number: NonZeroU32,
+    /// Generation number.
+    pub generation: u16,
+}
+
+/// Error template argument.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ErrorArgument {
+    /// Argument name.
+    pub name: Identifier,
+    /// Argument value.
+    pub value: BoundedText,
+}
+
+/// Unsupported rule detail.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedRule {
+    /// Profile id that owns the rule.
+    pub profile_id: Identifier,
+    /// Unsupported rule id.
+    pub rule_id: RuleId,
+    /// Expression fragment when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression_fragment: Option<BoundedText>,
+    /// Unsupported reason.
+    pub reason: BoundedText,
+}
+
+/// Parser fact emitted by tolerant parsing.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ParseFact {
+    /// Header fact.
+    Header {
+        /// Header offset in bytes.
+        offset: u64,
+        /// PDF version.
+        version: PdfVersion,
+        /// Whether bytes preceded the header.
+        #[serde(rename = "hadLeadingBytes")]
+        had_leading_bytes: bool,
+    },
+    /// Bytes after EOF marker.
+    PostEofData {
+        /// Post-EOF byte count.
+        bytes: u64,
+    },
+    /// Cross-reference fact.
+    Xref {
+        /// Xref section location.
+        section: ObjectLocation,
+        /// Xref-specific fact.
+        fact: XrefFact,
+    },
+    /// Stream fact.
+    Stream {
+        /// Stream object key.
+        object: ObjectKey,
+        /// Stream-specific fact.
+        fact: StreamFact,
+    },
+    /// Encryption fact.
+    Encryption {
+        /// Whether encryption was detected.
+        encrypted: bool,
+        /// Encryption handler when known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        handler: Option<Identifier>,
+    },
+}
+
+/// PDF version.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PdfVersion {
+    /// Major version.
+    pub major: u8,
+    /// Minor version.
+    pub minor: u8,
+}
+
+/// Cross-reference parser fact.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum XrefFact {
+    /// Classic xref section had compliant EOL markers.
+    EolMarkersComply,
+    /// Xref stream was detected and is unsupported in M0.
+    XrefStreamUnsupported,
+}
+
+/// Stream parser fact.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields, tag = "fact")]
+pub enum StreamFact {
+    /// Declared and discovered stream lengths.
+    Length {
+        /// Declared stream length.
+        declared: u64,
+        /// Discovered stream length.
+        discovered: u64,
+    },
+    /// Stream keyword spacing compliance.
+    KeywordSpacing {
+        /// `stream` keyword spacing compliance.
+        #[serde(rename = "streamKeywordCRLFCompliant")]
+        stream_keyword_crlf_compliant: bool,
+        /// `endstream` keyword spacing compliance.
+        #[serde(rename = "endstreamKeywordEolCompliant")]
+        endstream_keyword_eol_compliant: bool,
+    },
+}
+
+/// Validation warning.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ValidationWarning {
+    /// Parse facts exceeded the configured retention cap.
+    ParseFactCapReached {
+        /// Configured cap.
+        cap: usize,
+    },
+    /// Incompatible profile was skipped.
+    IncompatibleProfile {
+        /// Profile id.
+        profile_id: Identifier,
+        /// Skip reason.
+        reason: BoundedText,
+    },
+    /// General bounded warning.
+    General {
+        /// Warning message.
+        message: BoundedText,
+    },
+}
+
+/// Task duration entry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskDuration {
+    /// Task name.
+    pub task: Identifier,
+    /// Duration in milliseconds.
+    pub millis: u64,
+}
+
+impl TaskDuration {
+    /// Creates a task duration from a [`Duration`].
+    ///
+    /// Values larger than `u64::MAX` milliseconds saturate.
+    #[must_use]
+    pub fn from_duration(task: Identifier, duration: Duration) -> Self {
+        let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        Self { task, millis }
+    }
+}
+
+/// Batch validation report.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchReport {
+    /// Item reports.
+    pub items: Vec<ValidationReport>,
+    /// Batch summary.
+    pub summary: BatchSummary,
+    /// Batch-level warnings.
+    pub warnings: Vec<ValidationWarning>,
+}
+
+/// Batch summary counters.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchSummary {
+    /// Total input count.
+    pub total_files: u64,
+    /// Valid input count.
+    pub valid: u64,
+    /// Invalid input count.
+    pub invalid: u64,
+    /// Parse failure count.
+    pub parse_failures: u64,
+    /// Encrypted input count.
+    pub encrypted: u64,
+    /// Incomplete validation count.
+    pub incomplete: u64,
+    /// Internal error count.
+    pub internal_errors: u64,
+    /// Elapsed milliseconds.
+    pub elapsed_millis: u64,
+    /// Worst exit category.
+    pub worst_exit_category: ExitCategory,
+}
+
+/// CLI-oriented exit category represented in batch summaries.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum ExitCategory {
+    /// Success.
+    #[default]
+    Success,
+    /// Validation found non-compliance.
+    ValidationFailed,
+    /// Input could not be processed.
+    ProcessingFailed,
+    /// Internal application failure.
+    InternalError,
+}
+
+/// Report output format.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum ReportFormat {
+    /// Compact JSON.
+    Json,
+    /// Pretty-printed JSON.
+    JsonPretty,
+    /// Human-readable text.
+    Text,
+}
+
+/// Report writer interface.
+pub trait ReportWriter {
+    /// Writes a single validation report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if serialization or writing fails.
+    fn write_report<W: std::io::Write>(&self, report: &ValidationReport, out: W) -> Result<()>;
+
+    /// Writes a batch validation report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if serialization or writing fails.
+    fn write_batch<W: std::io::Write>(&self, report: &BatchReport, out: W) -> Result<()>;
+}
+
+/// JSON report writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JsonReportWriter {
+    pretty: bool,
+}
+
+impl JsonReportWriter {
+    /// Creates a compact JSON report writer.
+    #[must_use]
+    pub fn compact() -> Self {
+        Self { pretty: false }
+    }
+
+    /// Creates a pretty JSON report writer.
+    #[must_use]
+    pub fn pretty() -> Self {
+        Self { pretty: true }
+    }
+}
+
+impl ReportWriter for JsonReportWriter {
+    fn write_report<W: std::io::Write>(&self, report: &ValidationReport, out: W) -> Result<()> {
+        write_json(out, report, self.pretty)
+    }
+
+    fn write_batch<W: std::io::Write>(&self, report: &BatchReport, out: W) -> Result<()> {
+        write_json(out, report, self.pretty)
+    }
+}
+
+fn write_json<W, T>(out: W, value: &T, pretty: bool) -> Result<()>
+where
+    W: std::io::Write,
+    T: Serialize,
+{
+    if pretty {
+        serde_json::to_writer_pretty(out, value).map_err(ReportError::from)?;
+    } else {
+        serde_json::to_writer(out, value).map_err(ReportError::from)?;
+    }
+    Ok(())
+}
+
+fn format_optional_path(path: Option<&PathBuf>) -> String {
+    path.map(|path| format!(" at {}", path.display()))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{
+        error::Error as StdError,
+        num::{NonZeroU32, NonZeroU64},
+    };
+
+    use super::{
+        Assertion, AssertionStatus, BoundedText, ErrorArgument, Identifier, InputKind,
+        InputSummary, JsonReportWriter, MaxDisplayedFailures, ObjectLocation, PdfVersion,
+        ProfileIdentity, ProfileReport, ReportWriter, RuleId, ValidationOptions, ValidationReport,
+        ValidationStatus,
+    };
+
+    fn sample_report() -> std::result::Result<ValidationReport, Box<dyn StdError>> {
+        let profile_id = Identifier::new("pdfa-1b")?;
+        let rule_id = RuleId(Identifier::new("6.1.2-1")?);
+        Ok(ValidationReport::builder()
+            .engine_version("0.1.0".to_owned())
+            .source(InputSummary::new(InputKind::Memory, None, Some(42)))
+            .status(ValidationStatus::Invalid)
+            .flavours(vec![super::ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::MIN,
+                "b",
+            )?])
+            .profile_reports(vec![
+                ProfileReport::builder()
+                    .profile(ProfileIdentity {
+                        id: profile_id.clone(),
+                        name: BoundedText::new("PDF/A-1B", 64)?,
+                        version: None,
+                    })
+                    .is_compliant(false)
+                    .checks_executed(1)
+                    .rules_executed(1)
+                    .failed_rules(1)
+                    .failed_assertions(vec![Assertion {
+                        ordinal: NonZeroU64::MIN,
+                        rule_id,
+                        status: AssertionStatus::Failed,
+                        description: BoundedText::new("Header must start at byte zero", 128)?,
+                        location: ObjectLocation {
+                            object: None,
+                            offset: Some(0),
+                            path: None,
+                        },
+                        object_context: None,
+                        message: Some(BoundedText::new("Header offset is non-zero", 128)?),
+                        error_arguments: vec![ErrorArgument {
+                            name: Identifier::new("offset")?,
+                            value: BoundedText::new("12", 16)?,
+                        }],
+                    }])
+                    .passed_assertions(Vec::new())
+                    .unsupported_rules(Vec::new())
+                    .build(),
+            ])
+            .parse_facts(vec![super::ParseFact::Header {
+                offset: 12,
+                version: PdfVersion { major: 1, minor: 7 },
+                had_leading_bytes: true,
+            }])
+            .warnings(Vec::new())
+            .task_durations(Vec::new())
+            .build())
+    }
+
     #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn test_should_apply_validation_options_defaults() {
+        let options = ValidationOptions::default();
+
+        assert!(options.report_parse_warnings);
+        assert!(!options.record_passed_assertions);
+        assert_eq!(options.max_failed_assertions_per_rule.get(), 1);
+    }
+
+    #[test]
+    fn test_should_reject_zero_max_displayed_failures() {
+        let result = MaxDisplayedFailures::try_from(0);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_should_reject_invalid_identifier() {
+        let result = Identifier::new("bad identifier");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_should_serialize_validation_report_as_camel_case_json()
+    -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_report()?;
+        let json = serde_json::to_string_pretty(&report)?;
+        let expected = r#"{
+  "engineVersion": "0.1.0",
+  "source": {
+    "kind": "memory",
+    "bytes": 42
+  },
+  "status": "invalid",
+  "flavours": [
+    {
+      "family": "pdfa",
+      "part": 1,
+      "conformance": "b"
+    }
+  ],
+  "profileReports": [
+    {
+      "profile": {
+        "id": "pdfa-1b",
+        "name": "PDF/A-1B"
+      },
+      "isCompliant": false,
+      "checksExecuted": 1,
+      "rulesExecuted": 1,
+      "failedRules": 1,
+      "failedAssertions": [
+        {
+          "ordinal": 1,
+          "ruleId": "6.1.2-1",
+          "status": "failed",
+          "description": "Header must start at byte zero",
+          "location": {
+            "offset": 0
+          },
+          "message": "Header offset is non-zero",
+          "errorArguments": [
+            {
+              "name": "offset",
+              "value": "12"
+            }
+          ]
+        }
+      ],
+      "passedAssertions": [],
+      "unsupportedRules": []
+    }
+  ],
+  "parseFacts": [
+    {
+      "kind": "header",
+      "offset": 12,
+      "version": {
+        "major": 1,
+        "minor": 7
+      },
+      "hadLeadingBytes": true
+    }
+  ],
+  "warnings": [],
+  "taskDurations": []
+}"#;
+
+        assert_eq!(json, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_compact_json_report() -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_report()?;
+        let mut output = Vec::new();
+
+        JsonReportWriter::compact()
+            .write_report(&report, &mut output)
+            .map_err(Box::<dyn StdError>::from)?;
+
+        let json = String::from_utf8(output)?;
+        assert!(json.contains("\"engineVersion\":\"0.1.0\""));
+        Ok(())
     }
 }

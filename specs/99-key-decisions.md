@@ -56,3 +56,11 @@ Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
 - Pinned by: [20-reporting-design.md](./20-reporting-design.md), [90-roadmap.md](./90-roadmap.md)
 - Date: 2026-05-15
 
+## D7 — Remove the server placeholder until explicitly scoped
+
+- Context: workspace application shape.
+- Alternatives considered: keep `apps/server` as a placeholder; rename it to `apps/cli`; keep both apps.
+- Decision: remove the server placeholder and add `apps/cli` as the M0 application crate.
+- Why: the roadmap and implementation plan define an embeddable library plus CLI. A network service has no product, security, or API spec yet, and keeping a placeholder crate makes quality gates cover code outside the scoped product.
+- Pinned by: [61-crates-and-features.md](./61-crates-and-features.md), [91-impl-plan.md](./91-impl-plan.md)
+- Date: 2026-05-15
