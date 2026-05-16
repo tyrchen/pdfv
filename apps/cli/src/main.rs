@@ -14,16 +14,17 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
     process::ExitCode,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pdfv_core::{
     BatchReport, BoundedText, BuiltinProfileRepository, FeatureSelection, FlavourSelection,
-    MaxDisplayedFailures, ObjectTypeName, PasswordSecret, PdfvError, PolicySet, ReportFormat,
-    ResourceLimits, ValidationFlavour, ValidationOptions, ValidationStatus, ValidationWarning,
-    Validator,
+    InputKind, InputSummary, MaxDisplayedFailures, ObjectTypeName, PasswordSecret, PdfvError,
+    PolicySet, RepairAction, RepairBatchReport, RepairRefusal, RepairReport, RepairStatus,
+    ReportFormat, ResourceLimits, ValidationFlavour, ValidationOptions, ValidationStatus,
+    ValidationWarning, Validator,
 };
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -63,6 +64,8 @@ struct Cli {
 enum Command {
     /// Validate one or more PDF files.
     Validate(Box<ValidateArgs>),
+    /// Safely write metadata repair outputs without modifying inputs in place.
+    RepairMetadata(Box<RepairMetadataArgs>),
     /// Inspect built-in validation profiles.
     Profiles {
         /// Profile catalog command.
@@ -136,6 +139,35 @@ struct ValidateArgs {
     password_env: Option<String>,
 }
 
+/// Arguments for `pdfv repair-metadata`.
+#[derive(Debug, Args)]
+struct RepairMetadataArgs {
+    /// PDF files to repair.
+    #[arg(value_name = "PATH", required = true)]
+    paths: Vec<PathBuf>,
+    /// Directory where repaired outputs are written.
+    #[arg(long, value_name = "DIR")]
+    output_dir: PathBuf,
+    /// Prefix added to each output filename.
+    #[arg(long, default_value = "")]
+    prefix: String,
+    /// Output report format.
+    #[arg(long, value_enum)]
+    format: Option<FormatArg>,
+    /// Built-in validation flavour or `auto`.
+    #[arg(long, value_parser = parse_flavour_selection)]
+    flavour: Option<FlavourSelection>,
+    /// Maximum concurrent repair jobs.
+    #[arg(long, default_value = "1", value_parser = parse_jobs)]
+    jobs: NonZeroU32,
+    /// Write the repair report to a file instead of stdout.
+    #[arg(long, value_name = "PATH")]
+    output: Option<PathBuf>,
+    /// Omit input paths from reports.
+    #[arg(long)]
+    redact_paths: bool,
+}
+
 /// CLI output format values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum FormatArg {
@@ -149,6 +181,10 @@ enum FormatArg {
     Xml,
     /// Deprecated compatibility alias for XML output.
     Mrr,
+    /// Raw processor-style XML output.
+    Raw,
+    /// Static HTML output.
+    Html,
 }
 
 impl From<FormatArg> for ReportFormat {
@@ -158,6 +194,8 @@ impl From<FormatArg> for ReportFormat {
             FormatArg::JsonPretty => Self::JsonPretty,
             FormatArg::Text => Self::Text,
             FormatArg::Xml | FormatArg::Mrr => Self::Xml,
+            FormatArg::Raw => Self::RawXml,
+            FormatArg::Html => Self::Html,
         }
     }
 }
@@ -198,6 +236,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<CliExit> {
     match cli.command {
         Command::Validate(args) => run_validate(&args),
+        Command::RepairMetadata(args) => run_repair_metadata(&args),
         Command::Profiles {
             command: ProfilesCommand::List,
         } => run_profiles_list(),
@@ -247,6 +286,47 @@ fn run_validate(args: &ValidateArgs) -> Result<CliExit> {
         let mut handle = stdout.lock();
         write_reports(format, batch, started, args.recursive, &mut handle)?;
         handle.flush().context("failed to flush report output")?;
+    }
+    Ok(exit)
+}
+
+fn run_repair_metadata(args: &RepairMetadataArgs) -> Result<CliExit> {
+    let started = Instant::now();
+    let output_dir = validate_output_dir(&args.output_dir)?;
+    let prefix = validate_repair_prefix(&args.prefix)?;
+    let format = args
+        .format
+        .map_or(ReportFormat::Json, FormatArg::into_report_format);
+    let options = ValidationOptions::builder()
+        .flavour(args.flavour.clone().unwrap_or_default())
+        .resource_limits(validated_resource_limits(ResourceLimits::default())?)
+        .build();
+    let validator = Validator::new(options).context("failed to initialize repair validator")?;
+    let paths = discover_inputs(&args.paths, false)?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(usize::try_from(args.jobs.get()).unwrap_or(usize::MAX))
+        .build()
+        .context("failed to build repair worker pool")?;
+    let mut reports = pool.install(|| repair_paths(&validator, &paths, &output_dir, &prefix));
+    if args.redact_paths {
+        redact_repair_paths(&mut reports);
+    }
+    let batch = RepairBatchReport::from_items(reports, Vec::new(), started.elapsed());
+    let exit = repair_exit(&batch);
+    if let Some(output_path) = &args.output {
+        let mut output = File::create(output_path)
+            .with_context(|| format!("failed to create {}", output_path.display()))?;
+        write_repair_reports(format, &batch, &mut output)?;
+        output
+            .flush()
+            .context("failed to flush repair report output")?;
+    } else {
+        let stdout = io::stdout();
+        let mut handle = stdout.lock();
+        write_repair_reports(format, &batch, &mut handle)?;
+        handle
+            .flush()
+            .context("failed to flush repair report output")?;
     }
     Ok(exit)
 }
@@ -308,6 +388,26 @@ fn write_reports<W: Write>(
         format
             .write_batch(&report, output)
             .context("failed to write batch report")?;
+    }
+    Ok(())
+}
+
+fn write_repair_reports<W: Write>(
+    format: ReportFormat,
+    batch: &RepairBatchReport,
+    output: &mut W,
+) -> Result<()> {
+    if batch.items.len() == 1 {
+        let Some(report) = batch.items.first() else {
+            return Err(anyhow::anyhow!("repair produced no reports"));
+        };
+        format
+            .write_repair_report(report, output)
+            .context("failed to write repair report")?;
+    } else {
+        format
+            .write_repair_batch(batch, output)
+            .context("failed to write repair batch report")?;
     }
     Ok(())
 }
@@ -684,9 +784,283 @@ fn validate_paths(validator: &Validator, paths: &[PathBuf]) -> ValidationBatch {
     batch
 }
 
+fn repair_paths(
+    validator: &Validator,
+    paths: &[PathBuf],
+    output_dir: &Path,
+    prefix: &str,
+) -> Vec<RepairReport> {
+    paths
+        .par_iter()
+        .map(|path| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                repair_one_path(validator, path, output_dir, prefix)
+            }))
+            .unwrap_or_else(|_| {
+                Ok(failed_repair_report(
+                    path,
+                    None,
+                    "repair worker panicked while processing input",
+                    Duration::ZERO,
+                ))
+            })
+            .unwrap_or_else(|error| {
+                failed_repair_report(path, None, &error.to_string(), Duration::ZERO)
+            })
+        })
+        .collect()
+}
+
+fn repair_one_path(
+    validator: &Validator,
+    path: &Path,
+    output_dir: &Path,
+    prefix: &str,
+) -> Result<RepairReport> {
+    let started = Instant::now();
+    let source = input_summary_for_path(path)?;
+    let output_path = repair_output_path(path, output_dir, prefix)?;
+    let input_canonical = std::fs::canonicalize(path)
+        .with_context(|| format!("failed to canonicalize input {}", path.display()))?;
+    if input_canonical == output_path {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::OutputWouldModifyInput,
+            started.elapsed(),
+        ));
+    }
+    let validation = validator
+        .validate_path(path)
+        .with_context(|| format!("failed to validate {}", path.display()))?;
+    if matches!(validation.status, ValidationStatus::ParseFailed) {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::ParseFailed {
+                reason: validation.warnings.first().map_or_else(
+                    || {
+                        BoundedText::new("parse failed", 128)
+                            .unwrap_or_else(|_| unreachable_bounded_text())
+                    },
+                    warning_message,
+                ),
+            },
+            started.elapsed(),
+        ));
+    }
+    if matches!(validation.status, ValidationStatus::Encrypted) {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::Encrypted,
+            started.elapsed(),
+        ));
+    }
+    let selected_profiles = if validation.flavours.is_empty() {
+        validation.profile_reports.len()
+    } else {
+        validation.flavours.len()
+    };
+    if selected_profiles != 1 {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::AmbiguousFlavour {
+                selected: u64::try_from(selected_profiles).unwrap_or(u64::MAX),
+            },
+            started.elapsed(),
+        ));
+    }
+    if !matches!(validation.status, ValidationStatus::Valid) {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::UnsupportedValidationStatus {
+                status: validation.status,
+            },
+            started.elapsed(),
+        ));
+    }
+    atomic_copy(path, &output_path)?;
+    Ok(RepairReport::builder()
+        .engine_version(pdfv_core::ENGINE_VERSION.to_owned())
+        .source(source)
+        .output_path(Some(output_path))
+        .status(RepairStatus::NoAction)
+        .actions(vec![RepairAction::CopiedUnchanged])
+        .refusal(None)
+        .warnings(Vec::new())
+        .task_durations(vec![pdfv_core::TaskDuration::from_duration(
+            pdfv_core::Identifier::new("repairMetadata")?,
+            started.elapsed(),
+        )])
+        .build())
+}
+
+fn input_summary_for_path(path: &Path) -> Result<InputSummary> {
+    let metadata =
+        std::fs::metadata(path).with_context(|| format!("failed to inspect {}", path.display()))?;
+    Ok(InputSummary::new(
+        InputKind::File,
+        Some(path.to_path_buf()),
+        Some(metadata.len()),
+    ))
+}
+
+fn repair_output_path(path: &Path, output_dir: &Path, prefix: &str) -> Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| repair_config_error("paths", "input path must have a UTF-8 file name"))?;
+    validate_output_filename(file_name)?;
+    let output_name = format!("{prefix}{file_name}");
+    validate_output_filename(&output_name)?;
+    Ok(output_dir.join(output_name))
+}
+
+fn atomic_copy(input: &Path, output_path: &Path) -> Result<()> {
+    let Some(parent) = output_path.parent() else {
+        return Err(repair_config_error("outputDir", "output path has no parent").into());
+    };
+    let mut source =
+        File::open(input).with_context(|| format!("failed to open {}", input.display()))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("failed to create temporary output in {}", parent.display()))?;
+    io::copy(&mut source, &mut temp)
+        .with_context(|| format!("failed to copy {} to temporary output", input.display()))?;
+    temp.flush().with_context(|| {
+        format!(
+            "failed to flush temporary output for {}",
+            output_path.display()
+        )
+    })?;
+    temp.persist(output_path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to finalize atomic output {}: {}",
+            output_path.display(),
+            error.error
+        )
+    })?;
+    Ok(())
+}
+
+fn refused_repair_report(
+    source: InputSummary,
+    refusal: RepairRefusal,
+    _elapsed: Duration,
+) -> RepairReport {
+    RepairReport::builder()
+        .engine_version(pdfv_core::ENGINE_VERSION.to_owned())
+        .source(source)
+        .output_path(None)
+        .status(RepairStatus::Refused)
+        .actions(Vec::new())
+        .refusal(Some(refusal))
+        .warnings(Vec::new())
+        .task_durations(Vec::new())
+        .build()
+}
+
+fn failed_repair_report(
+    path: &Path,
+    output_path: Option<PathBuf>,
+    reason: &str,
+    _elapsed: Duration,
+) -> RepairReport {
+    let source = InputSummary::new(InputKind::File, Some(path.to_path_buf()), None);
+    RepairReport::builder()
+        .engine_version(pdfv_core::ENGINE_VERSION.to_owned())
+        .source(source)
+        .output_path(output_path)
+        .status(RepairStatus::Failed)
+        .actions(Vec::new())
+        .refusal(None)
+        .warnings(vec![ValidationWarning::General {
+            message: BoundedText::new(reason, 512).unwrap_or_else(|_| unreachable_bounded_text()),
+        }])
+        .task_durations(Vec::new())
+        .build()
+}
+
 fn redact_report_paths(reports: &mut [pdfv_core::ValidationReport]) {
     for report in reports {
         report.source.path = None;
+    }
+}
+
+fn redact_repair_paths(reports: &mut [RepairReport]) {
+    for report in reports {
+        report.source.path = None;
+        report.output_path = None;
+    }
+}
+
+fn validate_output_dir(path: &Path) -> Result<PathBuf> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to inspect output directory {}", path.display()))?;
+    if !metadata.is_dir() {
+        return Err(repair_config_error("outputDir", "output directory is not a directory").into());
+    }
+    std::fs::canonicalize(path)
+        .with_context(|| format!("failed to canonicalize output directory {}", path.display()))
+}
+
+fn validate_repair_prefix(prefix: &str) -> Result<String> {
+    const MAX_REPAIR_PREFIX_BYTES: usize = 64;
+    let valid = prefix.len() <= MAX_REPAIR_PREFIX_BYTES
+        && prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if valid {
+        Ok(prefix.to_owned())
+    } else {
+        Err(repair_config_error(
+            "prefix",
+            "prefix must be ASCII letters, digits, dot, dash, or underscore and at most 64 bytes",
+        )
+        .into())
+    }
+}
+
+fn validate_output_filename(name: &str) -> Result<()> {
+    const MAX_OUTPUT_FILENAME_BYTES: usize = 255;
+    let valid = !name.is_empty()
+        && name.len() <= MAX_OUTPUT_FILENAME_BYTES
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|byte| byte != b'\0' && byte != b'/' && byte != b'\\');
+    if valid {
+        Ok(())
+    } else {
+        Err(repair_config_error("output", "output filename is invalid").into())
+    }
+}
+
+fn warning_message(warning: &ValidationWarning) -> BoundedText {
+    let message = match warning {
+        ValidationWarning::ParseFactCapReached { cap } => {
+            format!("parse fact cap reached: {cap}")
+        }
+        ValidationWarning::IncompatibleProfile { profile_id, reason } => {
+            format!(
+                "incompatible profile {}: {}",
+                profile_id.as_str(),
+                reason.as_str()
+            )
+        }
+        ValidationWarning::AutoDetection { message } => {
+            format!("auto detection: {}", message.as_str())
+        }
+        ValidationWarning::General { message } => message.as_str().to_owned(),
+        _ => String::from("validation warning"),
+    };
+    BoundedText::new(message, 512).unwrap_or_else(|_| unreachable_bounded_text())
+}
+
+fn repair_exit(batch: &RepairBatchReport) -> CliExit {
+    if batch.summary.failed > 0 {
+        CliExit::Internal
+    } else if batch.summary.refused > 0 {
+        CliExit::ParseFailed
+    } else {
+        CliExit::Valid
     }
 }
 
@@ -764,6 +1138,13 @@ fn feature_config_error(field: &'static str, reason: &'static str) -> PdfvError 
     PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
         field,
         reason: BoundedText::new(reason, 128).unwrap_or_else(|_| unreachable_bounded_text()),
+    })
+}
+
+fn repair_config_error(field: &'static str, reason: &'static str) -> PdfvError {
+    PdfvError::Repair(pdfv_core::RepairError::InvalidField {
+        field,
+        reason: BoundedText::new(reason, 256).unwrap_or_else(|_| unreachable_bounded_text()),
     })
 }
 
@@ -953,7 +1334,9 @@ fn default_report_format() -> ReportFormat {
 fn exit_for_error(error: Option<&PdfvError>) -> u8 {
     match error {
         Some(PdfvError::Profile(pdfv_core::ProfileError::UnsupportedSelection)) => EXIT_INCOMPLETE,
-        Some(PdfvError::Configuration(_) | PdfvError::Policy(_)) => EXIT_USAGE,
+        Some(PdfvError::Configuration(_) | PdfvError::Policy(_) | PdfvError::Repair(_)) => {
+            EXIT_USAGE
+        }
         _ => EXIT_INTERNAL,
     }
 }

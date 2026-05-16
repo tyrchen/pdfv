@@ -16,6 +16,7 @@ config.workspace = true
 pdfv-core = { workspace = true, features = ["custom-profiles"] }
 rayon.workspace = true
 serde.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 aes.workspace = true

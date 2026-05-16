@@ -3,6 +3,7 @@
 ## User-Facing
 
 - [JSON and Config Examples](json-examples.md)
+- [veraPDF CLI Compatibility](verapdf-cli-compatibility.md)
 - [Conformance Fixture Matrix](conformance-fixture-matrix.md)
 
 ## Research

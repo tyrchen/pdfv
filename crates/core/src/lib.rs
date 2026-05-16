@@ -102,6 +102,9 @@ pub enum PdfvError {
     /// Policy loading or evaluation failure.
     #[error("policy error: {0}")]
     Policy(#[from] PolicyError),
+    /// Metadata repair failure.
+    #[error("repair error: {0}")]
+    Repair(#[from] RepairError),
     /// Report serialization failure.
     #[error("report error: {0}")]
     Report(#[from] ReportError),
@@ -232,6 +235,26 @@ pub enum PolicyError {
     /// A policy rule could not be evaluated against the feature report.
     #[error("policy rule could not be evaluated: {reason}")]
     Evaluation {
+        /// Bounded reason string.
+        reason: BoundedText,
+    },
+}
+
+/// Metadata repair error.
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RepairError {
+    /// A repair option failed validation.
+    #[error("invalid repair field {field}: {reason}")]
+    InvalidField {
+        /// Field that failed validation.
+        field: &'static str,
+        /// Bounded reason string.
+        reason: BoundedText,
+    },
+    /// A repair operation could not be completed.
+    #[error("metadata repair failed: {reason}")]
+    Failed {
         /// Bounded reason string.
         reason: BoundedText,
     },
@@ -933,6 +956,181 @@ pub struct PolicyRuleResult {
     pub message: BoundedText,
 }
 
+/// Metadata repair report for one input.
+#[derive(Clone, Debug, Deserialize, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepairReport {
+    /// Engine version that produced the report.
+    pub engine_version: String,
+    /// Input summary.
+    pub source: InputSummary,
+    /// Optional output path when a repaired or unchanged file was written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<PathBuf>,
+    /// Overall repair status.
+    pub status: RepairStatus,
+    /// Actions completed for this input.
+    pub actions: Vec<RepairAction>,
+    /// Refusal reason when no output was produced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<RepairRefusal>,
+    /// User-visible repair warnings.
+    pub warnings: Vec<ValidationWarning>,
+    /// Task duration measurements.
+    pub task_durations: Vec<TaskDuration>,
+}
+
+impl RepairReport {
+    /// Returns true when the report describes a written output file.
+    #[must_use]
+    pub fn wrote_output(&self) -> bool {
+        matches!(
+            self.status,
+            RepairStatus::Succeeded | RepairStatus::NoAction
+        ) && self.output_path.is_some()
+    }
+}
+
+/// Batch metadata repair report.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepairBatchReport {
+    /// Item reports.
+    pub items: Vec<RepairReport>,
+    /// Batch summary.
+    pub summary: RepairBatchSummary,
+    /// Batch-level warnings.
+    pub warnings: Vec<ValidationWarning>,
+}
+
+impl RepairBatchReport {
+    /// Builds a repair batch report and computes summary counters.
+    #[must_use]
+    pub fn from_items(
+        items: Vec<RepairReport>,
+        warnings: Vec<ValidationWarning>,
+        elapsed: Duration,
+    ) -> Self {
+        let summary = RepairBatchSummary::from_items(&items, elapsed);
+        Self {
+            items,
+            summary,
+            warnings,
+        }
+    }
+}
+
+/// Batch metadata repair summary counters.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepairBatchSummary {
+    /// Total input count.
+    pub total_files: u64,
+    /// Inputs that produced a modified repair output.
+    pub succeeded: u64,
+    /// Inputs that needed no metadata change and were copied unchanged.
+    pub no_action: u64,
+    /// Inputs refused by the repair safety model.
+    pub refused: u64,
+    /// Inputs that failed while attempting an output write.
+    pub failed: u64,
+    /// Elapsed milliseconds.
+    pub elapsed_millis: u64,
+    /// Worst exit category.
+    pub worst_exit_category: ExitCategory,
+}
+
+impl RepairBatchSummary {
+    /// Computes summary counters from item reports.
+    #[must_use]
+    pub fn from_items(items: &[RepairReport], elapsed: Duration) -> Self {
+        let mut summary = Self {
+            total_files: u64::try_from(items.len()).unwrap_or(u64::MAX),
+            elapsed_millis: duration_millis(elapsed),
+            ..Self::default()
+        };
+        for item in items {
+            match item.status {
+                RepairStatus::Succeeded => summary.succeeded = summary.succeeded.saturating_add(1),
+                RepairStatus::NoAction => summary.no_action = summary.no_action.saturating_add(1),
+                RepairStatus::Refused => summary.refused = summary.refused.saturating_add(1),
+                RepairStatus::Failed => summary.failed = summary.failed.saturating_add(1),
+            }
+        }
+        summary.worst_exit_category = if summary.failed > 0 {
+            ExitCategory::InternalError
+        } else if summary.refused > 0 {
+            ExitCategory::ProcessingFailed
+        } else {
+            ExitCategory::Success
+        };
+        summary
+    }
+}
+
+/// Metadata repair status.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum RepairStatus {
+    /// Repair modified metadata and wrote an output file.
+    Succeeded,
+    /// No metadata change was needed; an unchanged output file was written.
+    NoAction,
+    /// Repair was explicitly refused before writing output.
+    Refused,
+    /// Repair failed while writing or finalizing output.
+    Failed,
+}
+
+/// Metadata repair action.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum RepairAction {
+    /// The input was copied unchanged to the output path.
+    CopiedUnchanged,
+    /// XMP metadata was repaired.
+    MetadataRewritten {
+        /// Bounded action description.
+        description: BoundedText,
+    },
+}
+
+/// Explicit reason metadata repair was refused.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum RepairRefusal {
+    /// Input could not be parsed as PDF.
+    ParseFailed {
+        /// Bounded reason.
+        reason: BoundedText,
+    },
+    /// Encrypted inputs are not repaired by this phase.
+    Encrypted,
+    /// Repair requires exactly one selected validation flavour.
+    AmbiguousFlavour {
+        /// Number of selected flavours.
+        selected: u64,
+    },
+    /// Validation failed and safe metadata rewrite support is unavailable.
+    UnsupportedValidationStatus {
+        /// Validation status that blocked repair.
+        status: ValidationStatus,
+    },
+    /// Output path would overwrite the input.
+    OutputWouldModifyInput,
+    /// Output path failed validation.
+    InvalidOutputPath {
+        /// Bounded reason.
+        reason: BoundedText,
+    },
+}
+
 /// Input summary included in reports.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
@@ -1541,6 +1739,10 @@ pub enum ReportFormat {
     Text,
     /// Machine-readable XML compatibility report.
     Xml,
+    /// Raw processor-style XML report.
+    RawXml,
+    /// Static human-readable HTML report.
+    Html,
 }
 
 impl ReportFormat {
@@ -1555,6 +1757,8 @@ impl ReportFormat {
             Self::JsonPretty => JsonReportWriter::pretty().write_report(report, out),
             Self::Text => TextReportWriter.write_report(report, out),
             Self::Xml => XmlReportWriter.write_report(report, out),
+            Self::RawXml => RawXmlReportWriter.write_report(report, out),
+            Self::Html => HtmlReportWriter.write_report(report, out),
         }
     }
 
@@ -1569,6 +1773,40 @@ impl ReportFormat {
             Self::JsonPretty => JsonReportWriter::pretty().write_batch(report, out),
             Self::Text => TextReportWriter.write_batch(report, out),
             Self::Xml => XmlReportWriter.write_batch(report, out),
+            Self::RawXml => RawXmlReportWriter.write_batch(report, out),
+            Self::Html => HtmlReportWriter.write_batch(report, out),
+        }
+    }
+
+    /// Writes a metadata repair report in this format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if serialization or writing fails.
+    pub fn write_repair_report<W: Write>(&self, report: &RepairReport, out: W) -> Result<()> {
+        match self {
+            Self::Json => JsonReportWriter::compact().write_repair_report(report, out),
+            Self::JsonPretty => JsonReportWriter::pretty().write_repair_report(report, out),
+            Self::Text => TextReportWriter.write_repair_report(report, out),
+            Self::Xml => XmlReportWriter.write_repair_report(report, out),
+            Self::RawXml => RawXmlReportWriter.write_repair_report(report, out),
+            Self::Html => HtmlReportWriter.write_repair_report(report, out),
+        }
+    }
+
+    /// Writes a batch metadata repair report in this format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if serialization or writing fails.
+    pub fn write_repair_batch<W: Write>(&self, report: &RepairBatchReport, out: W) -> Result<()> {
+        match self {
+            Self::Json => JsonReportWriter::compact().write_repair_batch(report, out),
+            Self::JsonPretty => JsonReportWriter::pretty().write_repair_batch(report, out),
+            Self::Text => TextReportWriter.write_repair_batch(report, out),
+            Self::Xml => XmlReportWriter.write_repair_batch(report, out),
+            Self::RawXml => RawXmlReportWriter.write_repair_batch(report, out),
+            Self::Html => HtmlReportWriter.write_repair_batch(report, out),
         }
     }
 }
@@ -1588,6 +1826,20 @@ pub trait ReportWriter {
     ///
     /// Returns [`PdfvError`] if serialization or writing fails.
     fn write_batch<W: Write>(&self, report: &BatchReport, out: W) -> Result<()>;
+
+    /// Writes a single metadata repair report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if serialization or writing fails.
+    fn write_repair_report<W: Write>(&self, report: &RepairReport, out: W) -> Result<()>;
+
+    /// Writes a batch metadata repair report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if serialization or writing fails.
+    fn write_repair_batch<W: Write>(&self, report: &RepairBatchReport, out: W) -> Result<()>;
 }
 
 /// JSON report writer.
@@ -1616,6 +1868,14 @@ impl ReportWriter for JsonReportWriter {
     }
 
     fn write_batch<W: Write>(&self, report: &BatchReport, out: W) -> Result<()> {
+        write_json(out, report, self.pretty)
+    }
+
+    fn write_repair_report<W: Write>(&self, report: &RepairReport, out: W) -> Result<()> {
+        write_json(out, report, self.pretty)
+    }
+
+    fn write_repair_batch<W: Write>(&self, report: &RepairBatchReport, out: W) -> Result<()> {
         write_json(out, report, self.pretty)
     }
 }
@@ -1664,6 +1924,40 @@ impl ReportWriter for TextReportWriter {
         }
         Ok(())
     }
+
+    fn write_repair_report<W: Write>(&self, report: &RepairReport, mut out: W) -> Result<()> {
+        write_text_repair_report(report, &mut out)
+    }
+
+    fn write_repair_batch<W: Write>(&self, report: &RepairBatchReport, mut out: W) -> Result<()> {
+        writeln!(
+            out,
+            "repair batch: {}",
+            exit_category_text(report.summary.worst_exit_category)
+        )
+        .map_err(write_error)?;
+        writeln!(out, "files: {}", report.summary.total_files).map_err(write_error)?;
+        writeln!(
+            out,
+            "summary: {} repaired, {} unchanged, {} refused, {} failed",
+            report.summary.succeeded,
+            report.summary.no_action,
+            report.summary.refused,
+            report.summary.failed,
+        )
+        .map_err(write_error)?;
+        writeln!(out, "items:").map_err(write_error)?;
+        for item in &report.items {
+            writeln!(
+                out,
+                "  {}: {}",
+                source_name(&item.source),
+                repair_status_text(item.status),
+            )
+            .map_err(write_error)?;
+        }
+        Ok(())
+    }
 }
 
 /// Machine-readable XML report writer.
@@ -1678,6 +1972,63 @@ impl ReportWriter for XmlReportWriter {
 
     fn write_batch<W: Write>(&self, report: &BatchReport, mut out: W) -> Result<()> {
         write_xml_batch(report, &mut out)
+    }
+
+    fn write_repair_report<W: Write>(&self, report: &RepairReport, mut out: W) -> Result<()> {
+        let batch = RepairBatchReport::from_items(vec![report.clone()], Vec::new(), Duration::ZERO);
+        write_xml_repair_batch(&batch, &mut out, "repairReport")
+    }
+
+    fn write_repair_batch<W: Write>(&self, report: &RepairBatchReport, mut out: W) -> Result<()> {
+        write_xml_repair_batch(report, &mut out, "repairReport")
+    }
+}
+
+/// Raw processor-style XML report writer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RawXmlReportWriter;
+
+impl ReportWriter for RawXmlReportWriter {
+    fn write_report<W: Write>(&self, report: &ValidationReport, mut out: W) -> Result<()> {
+        let batch = BatchReport::from_items(vec![report.clone()], Vec::new(), Duration::ZERO);
+        write_raw_xml_batch(&batch, &mut out)
+    }
+
+    fn write_batch<W: Write>(&self, report: &BatchReport, mut out: W) -> Result<()> {
+        write_raw_xml_batch(report, &mut out)
+    }
+
+    fn write_repair_report<W: Write>(&self, report: &RepairReport, mut out: W) -> Result<()> {
+        let batch = RepairBatchReport::from_items(vec![report.clone()], Vec::new(), Duration::ZERO);
+        write_xml_repair_batch(&batch, &mut out, "rawRepairReport")
+    }
+
+    fn write_repair_batch<W: Write>(&self, report: &RepairBatchReport, mut out: W) -> Result<()> {
+        write_xml_repair_batch(report, &mut out, "rawRepairReport")
+    }
+}
+
+/// Static HTML report writer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HtmlReportWriter;
+
+impl ReportWriter for HtmlReportWriter {
+    fn write_report<W: Write>(&self, report: &ValidationReport, mut out: W) -> Result<()> {
+        let batch = BatchReport::from_items(vec![report.clone()], Vec::new(), Duration::ZERO);
+        write_html_batch(&batch, &mut out)
+    }
+
+    fn write_batch<W: Write>(&self, report: &BatchReport, mut out: W) -> Result<()> {
+        write_html_batch(report, &mut out)
+    }
+
+    fn write_repair_report<W: Write>(&self, report: &RepairReport, mut out: W) -> Result<()> {
+        let batch = RepairBatchReport::from_items(vec![report.clone()], Vec::new(), Duration::ZERO);
+        write_html_repair_batch(&batch, &mut out)
+    }
+
+    fn write_repair_batch<W: Write>(&self, report: &RepairBatchReport, mut out: W) -> Result<()> {
+        write_html_repair_batch(report, &mut out)
     }
 }
 
@@ -1769,6 +2120,32 @@ fn write_text_report<W: Write>(report: &ValidationReport, out: &mut W) -> Result
     Ok(())
 }
 
+fn write_text_repair_report<W: Write>(report: &RepairReport, out: &mut W) -> Result<()> {
+    writeln!(
+        out,
+        "{}: {}",
+        source_name(&report.source),
+        repair_status_text(report.status),
+    )
+    .map_err(write_error)?;
+    if let Some(output_path) = &report.output_path {
+        writeln!(out, "output: {}", output_path.display()).map_err(write_error)?;
+    }
+    if !report.actions.is_empty() {
+        writeln!(out, "actions: {}", report.actions.len()).map_err(write_error)?;
+        for action in &report.actions {
+            writeln!(out, "  {}", repair_action_text(action)).map_err(write_error)?;
+        }
+    }
+    if let Some(refusal) = &report.refusal {
+        writeln!(out, "refusal: {}", repair_refusal_text(refusal)).map_err(write_error)?;
+    }
+    if !report.warnings.is_empty() {
+        writeln!(out, "warnings: {}", report.warnings.len()).map_err(write_error)?;
+    }
+    Ok(())
+}
+
 fn write_xml_batch<W: Write>(report: &BatchReport, out: &mut W) -> Result<()> {
     writeln!(out, r#"<?xml version="1.0" encoding="utf-8"?>"#).map_err(write_error)?;
     writeln!(out, "<report>").map_err(write_error)?;
@@ -1788,6 +2165,233 @@ fn write_xml_batch<W: Write>(report: &BatchReport, out: &mut W) -> Result<()> {
     write_xml_batch_summary(&report.summary, out)?;
     write_xml_warnings(&report.warnings, out, 2)?;
     writeln!(out, "</report>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_raw_xml_batch<W: Write>(report: &BatchReport, out: &mut W) -> Result<()> {
+    writeln!(out, r#"<?xml version="1.0" encoding="utf-8"?>"#).map_err(write_error)?;
+    writeln!(
+        out,
+        r#"<rawReport engine="pdfv-core" version="{}">"#,
+        XmlEscapedAttr::new(ENGINE_VERSION)?,
+    )
+    .map_err(write_error)?;
+    writeln!(
+        out,
+        r#"  <processorConfig tasks="validation"></processorConfig>"#
+    )
+    .map_err(write_error)?;
+    writeln!(out, "  <processorResults>").map_err(write_error)?;
+    for item in &report.items {
+        writeln!(
+            out,
+            r#"    <processorResult status="{}">"#,
+            status_text(item.status),
+        )
+        .map_err(write_error)?;
+        write_xml_item(&item.source, out)?;
+        for profile in &item.profile_reports {
+            write_xml_validation_report(item.status, profile, out)?;
+        }
+        if let Some(feature_report) = &item.feature_report {
+            write_xml_feature_report(feature_report, out)?;
+        }
+        if let Some(policy_report) = &item.policy_report {
+            write_xml_policy_report(policy_report, out)?;
+        }
+        write_xml_parse_facts(&item.parse_facts, out)?;
+        write_xml_warnings(&item.warnings, out, 6)?;
+        writeln!(out, "    </processorResult>").map_err(write_error)?;
+    }
+    writeln!(out, "  </processorResults>").map_err(write_error)?;
+    write_xml_batch_summary(&report.summary, out)?;
+    writeln!(out, "</rawReport>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_repair_batch<W: Write>(
+    report: &RepairBatchReport,
+    out: &mut W,
+    root: &str,
+) -> Result<()> {
+    writeln!(out, r#"<?xml version="1.0" encoding="utf-8"?>"#).map_err(write_error)?;
+    writeln!(
+        out,
+        r#"<{root} engine="pdfv-core" version="{}">"#,
+        XmlEscapedAttr::new(ENGINE_VERSION)?,
+    )
+    .map_err(write_error)?;
+    writeln!(out, "  <items>").map_err(write_error)?;
+    for item in &report.items {
+        write_xml_repair_item(item, out)?;
+    }
+    writeln!(out, "  </items>").map_err(write_error)?;
+    write_xml_repair_summary(&report.summary, out)?;
+    write_xml_warnings(&report.warnings, out, 2)?;
+    writeln!(out, "</{root}>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_repair_item<W: Write>(report: &RepairReport, out: &mut W) -> Result<()> {
+    writeln!(
+        out,
+        r#"    <repairItem status="{}">"#,
+        repair_status_text(report.status),
+    )
+    .map_err(write_error)?;
+    write_xml_item(&report.source, out)?;
+    if let Some(output_path) = &report.output_path {
+        writeln!(
+            out,
+            "      <output>{}</output>",
+            XmlEscapedText::new(&output_path.display().to_string())?,
+        )
+        .map_err(write_error)?;
+    }
+    if !report.actions.is_empty() {
+        writeln!(out, "      <actions>").map_err(write_error)?;
+        for action in &report.actions {
+            writeln!(
+                out,
+                r#"        <action kind="{}">{}</action>"#,
+                repair_action_kind(action),
+                XmlEscapedText::new(&repair_action_text(action))?,
+            )
+            .map_err(write_error)?;
+        }
+        writeln!(out, "      </actions>").map_err(write_error)?;
+    }
+    if let Some(refusal) = &report.refusal {
+        writeln!(
+            out,
+            r#"      <refusal kind="{}">{}</refusal>"#,
+            repair_refusal_kind(refusal),
+            XmlEscapedText::new(&repair_refusal_text(refusal))?,
+        )
+        .map_err(write_error)?;
+    }
+    write_xml_warnings(&report.warnings, out, 6)?;
+    writeln!(out, "    </repairItem>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_repair_summary<W: Write>(summary: &RepairBatchSummary, out: &mut W) -> Result<()> {
+    writeln!(
+        out,
+        r#"  <repairSummary totalJobs="{}" succeeded="{}" noAction="{}" refused="{}" failed="{}" elapsedMillis="{}"></repairSummary>"#,
+        summary.total_files,
+        summary.succeeded,
+        summary.no_action,
+        summary.refused,
+        summary.failed,
+        summary.elapsed_millis,
+    )
+    .map_err(write_error)?;
+    Ok(())
+}
+
+fn write_html_batch<W: Write>(report: &BatchReport, out: &mut W) -> Result<()> {
+    write_html_start(out, "pdfv validation report")?;
+    writeln!(out, "<h1>Validation Report</h1>").map_err(write_error)?;
+    writeln!(
+        out,
+        "<p>{} valid, {} invalid, {} parse failed, {} encrypted, {} incomplete.</p>",
+        report.summary.valid,
+        report.summary.invalid,
+        report.summary.parse_failures,
+        report.summary.encrypted,
+        report.summary.incomplete,
+    )
+    .map_err(write_error)?;
+    writeln!(
+        out,
+        "<table><thead><tr><th>Input</th><th>Status</th><th>Profiles</th><th>Features</\
+         th><th>Policy</th></tr></thead><tbody>"
+    )
+    .map_err(write_error)?;
+    for item in &report.items {
+        let features = item
+            .feature_report
+            .as_ref()
+            .map_or(String::from("-"), |features| {
+                features.objects.len().to_string()
+            });
+        let policy = item.policy_report.as_ref().map_or("-", |policy| {
+            if policy.is_compliant {
+                "compliant"
+            } else {
+                "non-compliant"
+            }
+        });
+        writeln!(
+            out,
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            HtmlEscapedText::new(&source_name(&item.source))?,
+            status_text(item.status),
+            HtmlEscapedText::new(&profile_list(item))?,
+            features,
+            policy,
+        )
+        .map_err(write_error)?;
+    }
+    writeln!(out, "</tbody></table>").map_err(write_error)?;
+    write_html_end(out)
+}
+
+fn write_html_repair_batch<W: Write>(report: &RepairBatchReport, out: &mut W) -> Result<()> {
+    write_html_start(out, "pdfv metadata repair report")?;
+    writeln!(out, "<h1>Metadata Repair Report</h1>").map_err(write_error)?;
+    writeln!(
+        out,
+        "<p>{} repaired, {} unchanged, {} refused, {} failed.</p>",
+        report.summary.succeeded,
+        report.summary.no_action,
+        report.summary.refused,
+        report.summary.failed,
+    )
+    .map_err(write_error)?;
+    writeln!(
+        out,
+        "<table><thead><tr><th>Input</th><th>Status</th><th>Output</th><th>Reason</th></tr></\
+         thead><tbody>"
+    )
+    .map_err(write_error)?;
+    for item in &report.items {
+        let output = item
+            .output_path
+            .as_ref()
+            .map_or_else(String::new, |path| path.display().to_string());
+        let reason = item
+            .refusal
+            .as_ref()
+            .map_or_else(String::new, repair_refusal_text);
+        writeln!(
+            out,
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            HtmlEscapedText::new(&source_name(&item.source))?,
+            repair_status_text(item.status),
+            HtmlEscapedText::new(&output)?,
+            HtmlEscapedText::new(&reason)?,
+        )
+        .map_err(write_error)?;
+    }
+    writeln!(out, "</tbody></table>").map_err(write_error)?;
+    write_html_end(out)
+}
+
+fn write_html_start<W: Write>(out: &mut W, title: &str) -> Result<()> {
+    writeln!(out, "<!doctype html>").map_err(write_error)?;
+    writeln!(
+        out,
+        r#"<html lang="en"><head><meta charset="utf-8"><title>{}</title><style>body{{font-family:system-ui,sans-serif;margin:2rem;color:#1f2937}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #d1d5db;padding:.4rem;text-align:left}}th{{background:#f3f4f6}}</style></head><body>"#,
+        HtmlEscapedText::new(title)?,
+    )
+    .map_err(write_error)?;
+    Ok(())
+}
+
+fn write_html_end<W: Write>(out: &mut W) -> Result<()> {
+    writeln!(out, "</body></html>").map_err(write_error)?;
     Ok(())
 }
 
@@ -2256,6 +2860,62 @@ fn status_text(status: ValidationStatus) -> &'static str {
     }
 }
 
+fn repair_status_text(status: RepairStatus) -> &'static str {
+    match status {
+        RepairStatus::Succeeded => "succeeded",
+        RepairStatus::NoAction => "no action",
+        RepairStatus::Refused => "refused",
+        RepairStatus::Failed => "failed",
+    }
+}
+
+fn repair_action_kind(action: &RepairAction) -> &'static str {
+    match action {
+        RepairAction::CopiedUnchanged => "copiedUnchanged",
+        RepairAction::MetadataRewritten { .. } => "metadataRewritten",
+    }
+}
+
+fn repair_action_text(action: &RepairAction) -> String {
+    match action {
+        RepairAction::CopiedUnchanged => String::from("copied unchanged"),
+        RepairAction::MetadataRewritten { description } => description.as_str().to_owned(),
+    }
+}
+
+fn repair_refusal_kind(refusal: &RepairRefusal) -> &'static str {
+    match refusal {
+        RepairRefusal::ParseFailed { .. } => "parseFailed",
+        RepairRefusal::Encrypted => "encrypted",
+        RepairRefusal::AmbiguousFlavour { .. } => "ambiguousFlavour",
+        RepairRefusal::UnsupportedValidationStatus { .. } => "unsupportedValidationStatus",
+        RepairRefusal::OutputWouldModifyInput => "outputWouldModifyInput",
+        RepairRefusal::InvalidOutputPath { .. } => "invalidOutputPath",
+    }
+}
+
+fn repair_refusal_text(refusal: &RepairRefusal) -> String {
+    match refusal {
+        RepairRefusal::ParseFailed { reason } => {
+            format!("input could not be parsed: {}", reason.as_str())
+        }
+        RepairRefusal::Encrypted => String::from("encrypted inputs are not repaired"),
+        RepairRefusal::AmbiguousFlavour { selected } => {
+            format!("repair requires exactly one selected flavour, got {selected}")
+        }
+        RepairRefusal::UnsupportedValidationStatus { status } => {
+            format!(
+                "metadata repair is unsupported for {} inputs",
+                status_text(*status)
+            )
+        }
+        RepairRefusal::OutputWouldModifyInput => {
+            String::from("output path would modify input in place")
+        }
+        RepairRefusal::InvalidOutputPath { reason } => reason.as_str().to_owned(),
+    }
+}
+
 fn exit_category_text(category: ExitCategory) -> &'static str {
     match category {
         ExitCategory::Success => "success",
@@ -2450,6 +3110,22 @@ impl fmt::Display for XmlEscapedAttr<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct HtmlEscapedText<'a>(&'a str);
+
+impl<'a> HtmlEscapedText<'a> {
+    fn new(value: &'a str) -> Result<Self> {
+        ensure_xml_text(value)?;
+        Ok(Self(value))
+    }
+}
+
+impl fmt::Display for HtmlEscapedText<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        XmlEscapedText(self.0).fmt(formatter)
+    }
+}
+
 fn ensure_xml_text(value: &str) -> Result<()> {
     if value.chars().all(is_xml_char) {
         return Ok(());
@@ -2472,15 +3148,17 @@ mod tests {
     use std::{
         error::Error as StdError,
         num::{NonZeroU32, NonZeroU64},
+        path::PathBuf,
         time::Duration,
     };
 
     use super::{
         Assertion, AssertionStatus, BatchReport, BoundedText, ErrorArgument, ExitCategory,
-        Identifier, InputKind, InputSummary, JsonReportWriter, MaxDisplayedFailures,
-        ObjectLocation, PdfVersion, ProfileIdentity, ProfileReport, ReportFormat, ReportWriter,
-        RuleId, TextReportWriter, ValidationOptions, ValidationReport, ValidationStatus,
-        XmlReportWriter,
+        HtmlReportWriter, Identifier, InputKind, InputSummary, JsonReportWriter,
+        MaxDisplayedFailures, ObjectLocation, PdfVersion, ProfileIdentity, ProfileReport,
+        RawXmlReportWriter, RepairAction, RepairBatchReport, RepairRefusal, RepairReport,
+        RepairStatus, ReportFormat, ReportWriter, RuleId, TextReportWriter, ValidationOptions,
+        ValidationReport, ValidationStatus, XmlReportWriter,
     };
 
     fn sample_report() -> std::result::Result<ValidationReport, Box<dyn StdError>> {
@@ -2535,6 +3213,23 @@ mod tests {
             .warnings(Vec::new())
             .task_durations(Vec::new())
             .build())
+    }
+
+    fn sample_repair_report() -> RepairReport {
+        RepairReport::builder()
+            .engine_version("0.1.0".to_owned())
+            .source(InputSummary::new(
+                InputKind::File,
+                Some(PathBuf::from("input.pdf")),
+                Some(42),
+            ))
+            .output_path(Some(PathBuf::from("out/repaired-input.pdf")))
+            .status(RepairStatus::NoAction)
+            .actions(vec![RepairAction::CopiedUnchanged])
+            .refusal(None)
+            .warnings(Vec::new())
+            .task_durations(Vec::new())
+            .build()
     }
 
     #[test]
@@ -2681,6 +3376,97 @@ first failures:
         assert!(xml.contains(r#"<details passedRules="0" failedRules="1""#));
         assert!(xml.contains(r#"<check ruleId="6.1.2-1" status="failed" location="offset 0">"#));
         assert!(xml.contains(r#"<batchSummary totalJobs="1""#));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_raw_xml_report_with_feature_and_policy_sections()
+    -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_report()?;
+        let mut output = Vec::new();
+
+        RawXmlReportWriter
+            .write_report(&report, &mut output)
+            .map_err(Box::<dyn StdError>::from)?;
+
+        let xml = String::from_utf8(output)?;
+        assert!(xml.contains("<rawReport"));
+        assert!(xml.contains(r#"<processorConfig tasks="validation"></processorConfig>"#));
+        assert!(xml.contains("<processorResult"));
+        assert!(xml.contains("<validationReport"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_static_html_report() -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_report()?;
+        let mut output = Vec::new();
+
+        HtmlReportWriter
+            .write_report(&report, &mut output)
+            .map_err(Box::<dyn StdError>::from)?;
+
+        let html = String::from_utf8(output)?;
+        assert!(html.contains("<!doctype html>"));
+        assert!(html.contains("<h1>Validation Report</h1>"));
+        assert!(html.contains("<table>"));
+        assert!(html.contains("pdfa-1b"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_serialize_repair_report_and_summary()
+    -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_repair_report();
+        let json = serde_json::to_string_pretty(&report)?;
+        assert!(json.contains(r#""status": "noAction""#));
+        assert!(json.contains(r#""kind": "copiedUnchanged""#));
+
+        let refused = RepairReport::builder()
+            .engine_version("0.1.0".to_owned())
+            .source(InputSummary::new(
+                InputKind::File,
+                Some(PathBuf::from("bad.pdf")),
+                None,
+            ))
+            .output_path(None)
+            .status(RepairStatus::Refused)
+            .actions(Vec::new())
+            .refusal(Some(RepairRefusal::Encrypted))
+            .warnings(Vec::new())
+            .task_durations(Vec::new())
+            .build();
+        let batch =
+            RepairBatchReport::from_items(vec![report, refused], Vec::new(), Duration::ZERO);
+
+        assert_eq!(batch.summary.no_action, 1);
+        assert_eq!(batch.summary.refused, 1);
+        assert_eq!(
+            batch.summary.worst_exit_category,
+            ExitCategory::ProcessingFailed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_repair_raw_xml_and_html() -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_repair_report();
+        let mut raw = Vec::new();
+        let mut html = Vec::new();
+
+        ReportFormat::RawXml
+            .write_repair_report(&report, &mut raw)
+            .map_err(Box::<dyn StdError>::from)?;
+        ReportFormat::Html
+            .write_repair_report(&report, &mut html)
+            .map_err(Box::<dyn StdError>::from)?;
+
+        let raw = String::from_utf8(raw)?;
+        let html = String::from_utf8(html)?;
+        assert!(raw.contains("<rawRepairReport"));
+        assert!(raw.contains(r#"<action kind="copiedUnchanged">copied unchanged</action>"#));
+        assert!(html.contains("<h1>Metadata Repair Report</h1>"));
+        assert!(html.contains("out/repaired-input.pdf"));
         Ok(())
     }
 

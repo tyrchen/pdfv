@@ -154,6 +154,44 @@ fn test_should_accept_mrr_as_deprecated_xml_alias() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn test_should_validate_pdf_and_emit_raw_xml_report() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "raw"])
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains("<rawReport").eval(&stdout));
+    assert!(contains("<processorConfig").eval(&stdout));
+    assert!(contains("<processorResult").eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_validate_pdf_and_emit_html_report() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "html"])
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains("<!doctype html>").eval(&stdout));
+    assert!(contains("<h1>Validation Report</h1>").eval(&stdout));
+    assert!(contains("valid.pdf").eval(&stdout));
+    Ok(())
+}
+
+#[test]
 fn test_should_extract_feature_report_to_json() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
@@ -169,6 +207,88 @@ fn test_should_extract_feature_report_to_json() -> Result<(), Box<dyn Error>> {
     assert!(contains(r#""featureReport""#).eval(&stdout));
     assert!(contains(r#""selectedFamilies":["catalog","page"]"#).eval(&stdout));
     assert!(contains(r#""family":"catalog""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_repair_metadata_to_prefixed_output_without_modifying_input()
+-> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let input = temp.path().join("valid.pdf");
+    let output_dir = temp.path().join("out");
+    std::fs::create_dir(&output_dir)?;
+    write_fixture(&input, MINIMAL_VALID)?;
+    let before = std::fs::read(&input)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args([
+            "repair-metadata",
+            "--output-dir",
+            output_dir.to_str().ok_or("output dir path must be UTF-8")?,
+            "--prefix",
+            "fixed-",
+            "--format",
+            "json",
+        ])
+        .arg(&input)
+        .output()?;
+
+    assert!(output.status.success());
+    let repaired = output_dir.join("fixed-valid.pdf");
+    assert_eq!(std::fs::read(&input)?, before);
+    assert_eq!(std::fs::read(&repaired)?, before);
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""status":"noAction""#).eval(&stdout));
+    assert!(contains(r#""kind":"copiedUnchanged""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_refuse_metadata_repair_for_parse_failure_and_remove_output()
+-> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let input = temp.path().join("not-a-pdf.pdf");
+    let output_dir = temp.path().join("out");
+    std::fs::create_dir(&output_dir)?;
+    write_fixture(&input, NOT_A_PDF)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args([
+            "repair-metadata",
+            "--output-dir",
+            output_dir.to_str().ok_or("output dir path must be UTF-8")?,
+            "--format",
+            "raw",
+        ])
+        .arg(&input)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!output_dir.join("not-a-pdf.pdf").exists());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains("<rawRepairReport").eval(&stdout));
+    assert!(contains(r#"<refusal kind="parseFailed">"#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_repair_output_directory_same_as_input_parent() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let input = temp.path().join("valid.pdf");
+    write_fixture(&input, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args([
+            "repair-metadata",
+            "--output-dir",
+            temp.path().to_str().ok_or("temp path must be UTF-8")?,
+        ])
+        .arg(&input)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""kind":"outputWouldModifyInput""#).eval(&stdout));
     Ok(())
 }
 
