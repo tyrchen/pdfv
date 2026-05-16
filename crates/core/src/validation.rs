@@ -15,7 +15,8 @@ use crate::{
     ParsedDocument, Parser, PdfName, PdfvError, ProfileReport, ProfileRepository, PropertyName,
     ResourceLimits, Result, Rule, RuleEvaluator, RuleId, RuleOutcome, TaskDuration,
     UnsupportedRule, ValidationError, ValidationOptions, ValidationReport, ValidationStatus,
-    profile::DefaultRuleEvaluator, xmp::FlavourDetector,
+    profile::DefaultRuleEvaluator,
+    xmp::{FlavourDetector, parse_document_xmp},
 };
 
 const CATALOG_DIRECT_PROPERTIES: &[&str] = &["Type", "Metadata", "Pages", "OutputIntents"];
@@ -595,7 +596,11 @@ impl Validator {
             Err(error) => return Err(error),
         };
 
+        let mut parsed = parsed;
         if parsed.is_encrypted() {
+            let xmp = parse_document_xmp(&parsed, &self.options.resource_limits, false)?;
+            parsed.parse_facts.extend(xmp.parse_facts);
+            parsed.warnings.extend(xmp.warnings);
             return base_report(
                 source_summary,
                 ValidationStatus::Encrypted,
@@ -605,7 +610,6 @@ impl Validator {
             );
         }
 
-        let mut parsed = parsed;
         let profiles = match &self.options.flavour {
             crate::FlavourSelection::Auto { default } => {
                 let detected = FlavourDetector::new(Arc::clone(&self.profiles)).detect(
@@ -619,6 +623,9 @@ impl Validator {
             }
             crate::FlavourSelection::Explicit { .. }
             | crate::FlavourSelection::CustomProfile { .. } => {
+                let xmp = parse_document_xmp(&parsed, &self.options.resource_limits, false)?;
+                parsed.parse_facts.extend(xmp.parse_facts);
+                parsed.warnings.extend(xmp.warnings);
                 self.profiles.profiles_for(&self.options.flavour)?
             }
         };

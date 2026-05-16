@@ -155,6 +155,13 @@ fn test_should_warn_and_fallback_for_malformed_xmp() -> Result<(), Box<dyn Error
     )?;
 
     assert_eq!(report.status, ValidationStatus::Incomplete);
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Xmp {
+            fact: XmpFact::Malformed { .. },
+            ..
+        }
+    )));
     assert!(report.warnings.iter().any(|warning| matches!(
         warning,
         pdfv_core::ValidationWarning::AutoDetection { message }
@@ -185,6 +192,70 @@ fn test_should_warn_for_incompatible_xmp_claim() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_should_skip_incompatible_xmp_profile_groups() -> Result<(), Box<dyn Error>> {
+    let report = Validator::new(
+        ValidationOptions::builder()
+            .flavour(FlavourSelection::Auto { default: None })
+            .build(),
+    )?
+    .validate_reader(
+        Cursor::new(pdf_with_metadata(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+                     xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"
+                     pdfaid:part="1"
+                     pdfaid:conformance="B"
+                     pdfuaid:part="2"/>
+  </rdf:RDF>
+</x:xmpmeta>"#,
+        )),
+        InputName::memory(),
+    )?;
+    let profile_ids = report
+        .profile_reports
+        .iter()
+        .map(|profile| profile.profile.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(profile_ids.contains(&"verapdf-pdfa-1b"));
+    assert!(!profile_ids.contains(&"verapdf-pdfua-2-iso32005"));
+    assert!(report.warnings.iter().any(|warning| matches!(
+        warning,
+        pdfv_core::ValidationWarning::IncompatibleProfile { profile_id, .. }
+            if profile_id.as_str() == "verapdf-pdfua-2-iso32005"
+    )));
+    Ok(())
+}
+
+#[test]
+fn test_should_expose_xmp_facts_for_explicit_profile_selection() -> Result<(), Box<dyn Error>> {
+    let flavour = pdfv_core::ValidationFlavour::new("pdfa", std::num::NonZeroU32::MIN, "b")?;
+    let report = Validator::new(
+        ValidationOptions::builder()
+            .flavour(FlavourSelection::Explicit { flavour })
+            .build(),
+    )?
+    .validate_reader(
+        Cursor::new(pdf_with_metadata(pdfa_xmp("1", "B"))),
+        InputName::memory(),
+    )?;
+
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Xmp {
+            fact:
+                XmpFact::FlavourClaim {
+                    display_flavour,
+                    ..
+                },
+            ..
+        } if display_flavour.as_str() == "pdfa-1b"
+    )));
+    Ok(())
+}
+
+#[test]
 fn test_should_reject_xmp_doctype_without_external_resource_path() -> Result<(), Box<dyn Error>> {
     let report = Validator::new(
         ValidationOptions::builder()
@@ -200,6 +271,13 @@ fn test_should_reject_xmp_doctype_without_external_resource_path() -> Result<(),
     )?;
 
     assert_eq!(report.status, ValidationStatus::Incomplete);
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Xmp {
+            fact: XmpFact::HostileXmlRejected { .. },
+            ..
+        }
+    )));
     assert!(report.warnings.iter().any(|warning| matches!(
         warning,
         pdfv_core::ValidationWarning::AutoDetection { message }

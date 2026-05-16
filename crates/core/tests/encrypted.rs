@@ -15,8 +15,8 @@ use aes::{
 };
 use md5::{Digest, Md5};
 use pdfv_core::{
-    CosObject, InputName, ObjectKey, ParseFact, ParseOptions, Parser, PasswordSecret,
-    ResourceLimits, ValidationOptions, ValidationStatus, Validator,
+    CosObject, FlavourSelection, InputName, ObjectKey, ParseFact, ParseOptions, Parser,
+    PasswordSecret, ResourceLimits, ValidationOptions, ValidationStatus, Validator, XmpFact,
 };
 use rc4::{Rc4, StreamCipher};
 use sha2::{Sha256, Sha384, Sha512};
@@ -745,6 +745,85 @@ fn test_should_leave_metadata_stream_unencrypted_when_encrypt_metadata_false()
     Ok(())
 }
 
+#[test]
+fn test_should_report_clear_xmp_when_encrypt_metadata_false_without_password()
+-> Result<(), Box<dyn Error>> {
+    let fixture = encrypted_xmp_metadata_fixture(false)?;
+    let options = ValidationOptions::builder()
+        .flavour(FlavourSelection::Auto { default: None })
+        .build();
+
+    let report =
+        Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
+
+    assert_eq!(report.status, ValidationStatus::Encrypted);
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Xmp {
+            fact:
+                XmpFact::FlavourClaim {
+                    display_flavour,
+                    ..
+                },
+            ..
+        } if display_flavour.as_str() == "pdfa-1b"
+    )));
+    Ok(())
+}
+
+#[test]
+fn test_should_report_xmp_after_successful_metadata_decryption() -> Result<(), Box<dyn Error>> {
+    let fixture = encrypted_xmp_metadata_fixture(true)?;
+    let password = PasswordSecret::new("user")?;
+    let options = ValidationOptions::builder()
+        .flavour(FlavourSelection::Auto { default: None })
+        .password(Some(password))
+        .build();
+
+    let report =
+        Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
+
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Encryption {
+            decrypted: true,
+            ..
+        }
+    )));
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Xmp {
+            fact:
+                XmpFact::FlavourClaim {
+                    display_flavour,
+                    ..
+                },
+            ..
+        } if display_flavour.as_str() == "pdfa-1b"
+    )));
+    Ok(())
+}
+
+#[test]
+fn test_should_not_parse_encrypted_xmp_metadata_without_password() -> Result<(), Box<dyn Error>> {
+    let fixture = encrypted_xmp_metadata_fixture(true)?;
+    let options = ValidationOptions::builder()
+        .flavour(FlavourSelection::Auto { default: None })
+        .build();
+
+    let report =
+        Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
+
+    assert_eq!(report.status, ValidationStatus::Encrypted);
+    assert!(
+        !report
+            .parse_facts
+            .iter()
+            .any(|fact| matches!(fact, ParseFact::Xmp { .. }))
+    );
+    Ok(())
+}
+
 fn unsupported_revision_fixture() -> Vec<u8> {
     let encrypt_dictionary = "<< /Filter /Standard /V 5 /R 7 /Length 256 /O <00> /U <00> /P -4 >>";
     pdf_bytes(b"plain", b"plain", encrypt_dictionary)
@@ -792,6 +871,60 @@ fn encrypted_metadata_false_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
         ),
         false,
     )
+}
+
+fn encrypted_xmp_metadata_fixture(encrypt_metadata: bool) -> Result<Vec<u8>, Box<dyn Error>> {
+    let owner_key = owner_key(Revision::R4, 16, OWNER_PASSWORD);
+    let mut owner_entry = padded_password(USER_PASSWORD).to_vec();
+    for round in 0_u8..=19 {
+        owner_entry = rc4_crypt(&xor_key(&owner_key, round), &owner_entry)?;
+    }
+    let file_key = file_key(
+        Revision::R4,
+        16,
+        USER_PASSWORD,
+        &owner_entry,
+        encrypt_metadata,
+    );
+    let mut user_entry = user_value_r4(&file_key)?;
+    user_entry.resize(32, 0);
+    let title = encrypt_object(
+        Revision::R4,
+        &file_key,
+        object_key(1),
+        CipherMethod::Rc4,
+        b"secret-title",
+    )?;
+    let xmp = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+                     pdfaid:part="1"
+                     pdfaid:conformance="B"/>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+    let metadata = if encrypt_metadata {
+        encrypt_object(
+            Revision::R4,
+            &file_key,
+            object_key(2),
+            CipherMethod::Rc4,
+            xmp,
+        )?
+    } else {
+        xmp.to_vec()
+    };
+    let encrypt_dictionary = format!(
+        "<< /Filter /Standard /V 4 /R 4 /Length 128 /O <{}> /U <{}> /P -4 /EncryptMetadata {} /CF \
+         << /StdCF << /CFM /V2 /Length 16 /AuthEvent /DocOpen >> >> /StmF /StdCF /StrF /StdCF >>",
+        hex(&owner_entry),
+        hex(&user_entry),
+        if encrypt_metadata { "true" } else { "false" },
+    );
+    Ok(pdf_bytes_with_catalog_metadata(
+        &title,
+        &metadata,
+        &encrypt_dictionary,
+    ))
 }
 
 fn encrypted_rc4_named_crypt_flate_stream_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
@@ -931,6 +1064,54 @@ fn pdf_bytes_with_stream_header(
         2,
         stream_header.as_bytes(),
         stream,
+    );
+    push_object(&mut bytes, &mut offsets, 3, encrypt_dictionary.as_bytes());
+    let xref_offset = bytes.len();
+    bytes.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
+    bytes.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets.iter().skip(1) {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(
+        format!(
+            "trailer\n<< /Root 1 0 R /Encrypt 3 0 R /Size {} /ID [<{}> <{}>] \
+             >>\nstartxref\n{xref_offset}\n%%EOF\n",
+            offsets.len(),
+            hex(DOCUMENT_ID),
+            hex(DOCUMENT_ID),
+        )
+        .as_bytes(),
+    );
+    bytes
+}
+
+fn pdf_bytes_with_catalog_metadata(
+    title: &[u8],
+    metadata: &[u8],
+    encrypt_dictionary: &str,
+) -> Vec<u8> {
+    let mut bytes = b"%PDF-1.7\n".to_vec();
+    let mut offsets = vec![0_usize];
+    push_object(
+        &mut bytes,
+        &mut offsets,
+        1,
+        format!(
+            "<< /Type /Catalog /Title <{}> /Metadata 2 0 R >>",
+            hex(title)
+        )
+        .as_bytes(),
+    );
+    push_object_stream(
+        &mut bytes,
+        &mut offsets,
+        2,
+        format!(
+            "<< /Type /Metadata /Subtype /XML /Length {} >>\nstream\n",
+            metadata.len()
+        )
+        .as_bytes(),
+        metadata,
     );
     push_object(&mut bytes, &mut offsets, 3, encrypt_dictionary.as_bytes());
     let xref_offset = bytes.len();

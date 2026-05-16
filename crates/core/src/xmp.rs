@@ -93,6 +93,18 @@ pub struct DetectedFlavours {
     pub warnings: Vec<ValidationWarning>,
 }
 
+/// Report-safe XMP parse result independent of profile selection.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub(crate) struct XmpParseResult {
+    /// Parsed packet, when XML was parseable.
+    pub packet: Option<XmpPacket>,
+    /// Report-safe parse facts generated during parsing.
+    pub parse_facts: Vec<ParseFact>,
+    /// Structured warnings generated during parsing.
+    pub warnings: Vec<ValidationWarning>,
+}
+
 /// Profile selector backed by XMP identification claims.
 #[derive(Clone)]
 pub struct FlavourDetector {
@@ -123,27 +135,16 @@ impl FlavourDetector {
         default: Option<&ValidationFlavour>,
         limits: &ResourceLimits,
     ) -> Result<DetectedFlavours> {
-        let mut warnings = Vec::new();
-        let Some((object, bytes)) = catalog_xmp_bytes(document, limits, &mut warnings)? else {
-            return self.fallback(default, "catalog metadata stream is missing");
-        };
-        let parser = XmpParser;
-        let packet = match parser.parse_packet(object, &bytes, limits) {
-            Ok(packet) => packet,
-            Err(PdfvError::Parse(ParseError::LimitExceeded { limit })) => {
-                return Err(ParseError::LimitExceeded { limit }.into());
-            }
-            Err(error) => {
-                let reason = BoundedText::new(error.to_string(), 512)
-                    .unwrap_or_else(|_| BoundedText::unchecked("XMP parse failed"));
-                return self.fallback_with_warning(
-                    default,
-                    ValidationWarning::AutoDetection { message: reason },
-                );
-            }
+        let parsed_xmp = parse_document_xmp(document, limits, true)?;
+        let Some(packet) = parsed_xmp.packet else {
+            let mut fallback = self.fallback(default, "catalog metadata stream is missing")?;
+            fallback.parse_facts = parsed_xmp.parse_facts;
+            fallback.warnings = parsed_xmp.warnings;
+            return Ok(fallback);
         };
 
-        let mut parse_facts = xmp_parse_facts(&packet)?;
+        let mut parse_facts = parsed_xmp.parse_facts;
+        let mut warnings = parsed_xmp.warnings;
         let mut profiles = Vec::new();
         for claim in &packet.identification {
             match self
@@ -166,10 +167,10 @@ impl FlavourDetector {
             fallback.packet = Some(packet);
             return Ok(fallback);
         }
-        warnings.extend(packet_warnings(&packet)?);
+        let compatible_profiles = select_compatible_profiles(profiles, &mut warnings)?;
         Ok(DetectedFlavours {
             packet: Some(packet),
-            profiles,
+            profiles: compatible_profiles,
             parse_facts,
             warnings,
         })
@@ -239,6 +240,7 @@ struct PacketBuilder<'a> {
     depth: u32,
     elements: u64,
     namespaces: BTreeMap<String, BoundedText>,
+    current_namespaces: BTreeMap<String, BoundedText>,
     properties: BTreeMap<(String, String), XmpProperty>,
     stack: Vec<ElementFrame>,
     facts: Vec<XmpFact>,
@@ -254,6 +256,7 @@ impl<'a> PacketBuilder<'a> {
             depth: 0,
             elements: 0,
             namespaces: BTreeMap::new(),
+            current_namespaces: BTreeMap::new(),
             properties: BTreeMap::new(),
             stack: Vec::with_capacity(usize::try_from(limits.max_xmp_depth).unwrap_or(0)),
             facts: Vec::new(),
@@ -321,12 +324,14 @@ impl<'a> PacketBuilder<'a> {
         if local.as_str() == "xmpmeta" || local.as_str() == "RDF" {
             self.saw_packet_wrapper = true;
         }
+        let previous_namespaces = self.current_namespaces.clone();
         self.read_namespaces(element)?;
         let namespace = self.resolve_prefix(&prefix)?;
         let frame = ElementFrame {
             namespace,
             local,
             text: String::new(),
+            previous_namespaces,
         };
         self.capture_attr_properties(element)?;
         self.stack.push(frame);
@@ -342,8 +347,9 @@ impl<'a> PacketBuilder<'a> {
         };
         let value = frame.text.trim().to_owned();
         if !value.is_empty() && is_identification_property(&frame.namespace, &frame.local) {
-            self.insert_property(frame, &value)?;
+            self.insert_property(&frame, &value)?;
         }
+        self.current_namespaces = frame.previous_namespaces;
         self.depth = self.depth.checked_sub(1).ok_or(ParseError::LimitExceeded {
             limit: "max_xmp_depth",
         })?;
@@ -394,7 +400,7 @@ impl<'a> PacketBuilder<'a> {
             .into_iter()
             .map(|(prefix, uri)| {
                 Ok(NamespaceBinding {
-                    prefix: Identifier::new(prefix)?,
+                    prefix: identifier_allow_empty(prefix)?,
                     uri,
                 })
             })
@@ -433,8 +439,10 @@ impl<'a> PacketBuilder<'a> {
                     .into());
                 }
                 let value = String::from_utf8_lossy(attr.value.as_ref()).into_owned();
-                self.namespaces
-                    .insert(prefix, BoundedText::new(value, 512)?);
+                let value = BoundedText::new(value, 512)?;
+                self.current_namespaces
+                    .insert(prefix.clone(), value.clone());
+                self.namespaces.insert(prefix, value);
             }
         }
         Ok(())
@@ -460,14 +468,15 @@ impl<'a> PacketBuilder<'a> {
                     namespace,
                     local,
                     text: String::new(),
+                    previous_namespaces: BTreeMap::new(),
                 };
-                self.insert_property(frame, value.trim())?;
+                self.insert_property(&frame, value.trim())?;
             }
         }
         Ok(())
     }
 
-    fn insert_property(&mut self, frame: ElementFrame, value: &str) -> Result<()> {
+    fn insert_property(&mut self, frame: &ElementFrame, value: &str) -> Result<()> {
         let text = BoundedText::new(value.to_owned(), self.limits.max_xmp_text_bytes)?;
         self.properties.insert(
             (
@@ -475,8 +484,8 @@ impl<'a> PacketBuilder<'a> {
                 frame.local.as_str().to_owned(),
             ),
             XmpProperty {
-                namespace: frame.namespace,
-                local: frame.local,
+                namespace: frame.namespace.clone(),
+                local: frame.local.clone(),
                 value: text,
             },
         );
@@ -486,12 +495,12 @@ impl<'a> PacketBuilder<'a> {
     fn resolve_prefix(&self, prefix: &Identifier) -> Result<BoundedText> {
         if prefix.as_str().is_empty() {
             return Ok(self
-                .namespaces
+                .current_namespaces
                 .get("")
                 .cloned()
                 .unwrap_or_else(|| BoundedText::unchecked("")));
         }
-        self.namespaces
+        self.current_namespaces
             .get(prefix.as_str())
             .cloned()
             .ok_or_else(|| {
@@ -588,6 +597,7 @@ struct ElementFrame {
     namespace: BoundedText,
     local: Identifier,
     text: String,
+    previous_namespaces: BTreeMap<String, BoundedText>,
 }
 
 #[derive(Clone, Debug)]
@@ -623,9 +633,124 @@ fn catalog_xmp_bytes(
         });
         return Ok(None);
     };
-    let bytes = stream.decoded_bytes(limits)?;
+    let mut xmp_limits = limits.clone();
+    xmp_limits.max_stream_decode_bytes = limits.max_stream_decode_bytes.min(limits.max_xmp_bytes);
+    let bytes = stream.decoded_bytes(&xmp_limits)?;
     enforce_xmp_len(bytes.len(), limits.max_xmp_bytes)?;
     Ok(Some((*metadata_key, bytes)))
+}
+
+/// Parses catalog XMP metadata without deciding validation profiles.
+///
+/// # Errors
+///
+/// Returns [`PdfvError`] when XMP byte/depth/count limits are exceeded.
+pub(crate) fn parse_document_xmp(
+    document: &crate::ParsedDocument,
+    limits: &ResourceLimits,
+    report_absent_metadata: bool,
+) -> Result<XmpParseResult> {
+    let mut warnings = Vec::new();
+    let Some((object, bytes)) = catalog_xmp_bytes(document, limits, &mut warnings)? else {
+        if report_absent_metadata {
+            warnings.push(ValidationWarning::AutoDetection {
+                message: BoundedText::unchecked("catalog metadata stream is missing"),
+            });
+        }
+        return Ok(XmpParseResult {
+            packet: None,
+            parse_facts: Vec::new(),
+            warnings,
+        });
+    };
+    if document.is_encrypted() && !looks_like_xml(&bytes) {
+        return Ok(XmpParseResult {
+            packet: None,
+            parse_facts: Vec::new(),
+            warnings,
+        });
+    }
+    let parser = XmpParser;
+    match parser.parse_packet(object, &bytes, limits) {
+        Ok(packet) => {
+            warnings.extend(packet_warnings(&packet)?);
+            let parse_facts = xmp_parse_facts(&packet)?;
+            Ok(XmpParseResult {
+                packet: Some(packet),
+                parse_facts,
+                warnings,
+            })
+        }
+        Err(PdfvError::Parse(ParseError::LimitExceeded { limit })) => {
+            Err(ParseError::LimitExceeded { limit }.into())
+        }
+        Err(error) => {
+            let reason = BoundedText::new(error.to_string(), 512)
+                .unwrap_or_else(|_| BoundedText::unchecked("XMP parse failed"));
+            let fact = malformed_fact(reason.clone());
+            let parse_facts = vec![ParseFact::Xmp { object, fact }];
+            warnings.push(ValidationWarning::AutoDetection { message: reason });
+            Ok(XmpParseResult {
+                packet: None,
+                parse_facts,
+                warnings,
+            })
+        }
+    }
+}
+
+fn malformed_fact(reason: BoundedText) -> XmpFact {
+    if reason.as_str().contains("DTD")
+        || reason.as_str().contains("entity")
+        || reason.as_str().contains("forbidden")
+    {
+        XmpFact::HostileXmlRejected { reason }
+    } else {
+        XmpFact::Malformed { reason }
+    }
+}
+
+fn looks_like_xml(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| byte == b'<')
+}
+
+fn select_compatible_profiles(
+    profiles: Vec<ValidationProfile>,
+    warnings: &mut Vec<ValidationWarning>,
+) -> Result<Vec<ValidationProfile>> {
+    let Some(first_group) = profiles
+        .first()
+        .map(|profile| compatibility_group(&profile.flavour))
+    else {
+        return Ok(Vec::new());
+    };
+    let mut selected = Vec::new();
+    for profile in profiles {
+        if compatibility_group(&profile.flavour) == first_group {
+            selected.push(profile);
+        } else {
+            warnings.push(ValidationWarning::IncompatibleProfile {
+                profile_id: profile.identity.id,
+                reason: BoundedText::new(
+                    "detected XMP claim is incompatible with the first selected PDF specification \
+                     generation",
+                    256,
+                )?,
+            });
+        }
+    }
+    Ok(selected)
+}
+
+fn compatibility_group(flavour: &ValidationFlavour) -> &'static str {
+    match (flavour.family.as_str(), flavour.part.get()) {
+        ("pdfa", 1..=3) | ("pdfua", 1) => "pdf-1",
+        _ => "pdf-2",
+    }
 }
 
 fn xmp_parse_facts(packet: &XmpPacket) -> Result<Vec<ParseFact>> {
@@ -694,9 +819,17 @@ fn split_xml_name(name: &[u8]) -> Result<(Identifier, Identifier)> {
         None => (&[][..], name),
     };
     Ok((
-        Identifier::new(String::from_utf8_lossy(prefix).into_owned())?,
+        identifier_allow_empty(String::from_utf8_lossy(prefix).into_owned())?,
         Identifier::new(String::from_utf8_lossy(local).into_owned())?,
     ))
+}
+
+fn identifier_allow_empty(value: String) -> Result<Identifier> {
+    if value.is_empty() {
+        Ok(Identifier::unchecked(""))
+    } else {
+        Identifier::new(value).map_err(Into::into)
+    }
 }
 
 fn is_identification_property(namespace: &BoundedText, local: &Identifier) -> bool {
@@ -812,6 +945,29 @@ mod tests {
 
         assert!(flavours.contains(&"pdfua-2-iso32005"));
         assert!(flavours.contains(&"wtpdf-1-0-reuse"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_restore_scoped_namespace_bindings() -> crate::Result<()> {
+        let xml = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:id="http://www.aiim.org/pdfa/ns/id/">
+      <wrapper xmlns:id="http://www.aiim.org/pdfua/ns/id/">
+        <id:part>2</id:part>
+      </wrapper>
+      <id:part>3</id:part>
+      <id:conformance>U</id:conformance>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+
+        let packet = XmpParser.parse_packet(key(), xml, &ResourceLimits::default())?;
+
+        assert!(packet.identification.iter().any(|claim| {
+            claim.display_flavour.as_str() == "pdfa-3u"
+                && claim.kind == super::XmpIdentificationKind::PdfA
+        }));
         Ok(())
     }
 
