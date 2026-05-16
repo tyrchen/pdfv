@@ -68,6 +68,7 @@ User-visible result: compatibility features are available for organizations comp
 Exit criteria:
 
 - Decision on MRR/XML compatibility from `spike-mrr-compatibility.md`.
+- XML compatibility output available through `pdfv validate --format xml`; `mrr` accepted only as a deprecated alias.
 - Larger profile coverage, richer feature facts, and optional password/decryption support if scoped.
 - Public conformance fixture matrix published.
 
@@ -85,4 +86,3 @@ For one focused developer:
 
 - Engineer order: [91-impl-plan.md](./91-impl-plan.md)
 - Load-bearing choices: [99-key-decisions.md](./99-key-decisions.md)
-

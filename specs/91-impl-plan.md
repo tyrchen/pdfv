@@ -112,3 +112,13 @@ Risk is retired before broad work: expression IR, stream limits, and profile sou
 
 The smallest shippable slice stays end-to-end: M0 includes parser, profile, validation, report, and CLI, but constrains profile breadth.
 
+## 11. Phase 7 — M4 compatibility report surface
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 7.1 | Complete `spike-mrr-compatibility.md` and record the XML/MRR naming decision. | docs/research, 20, 50, 90, 99 | 0.5-1 day |
+| 7.2 | Implement XML compatibility report writer for single and batch validation reports. | 20, 70, 72 | 1-2 days |
+| 7.3 | Expose `pdfv validate --format xml` and deprecated `--format mrr` alias. | 50, 72 | 0.5 day |
+| 7.4 | Update product-facing README and report examples. | 00, 20, 50, 72 | 0.5 day |
+
+Exit criteria: `spike-mrr-compatibility.md` is published; XML report output is available from library and CLI; `mrr` maps to the same writer as a deprecated alias; tests cover single XML output and alias behavior; standard gates pass.

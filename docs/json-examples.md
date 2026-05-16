@@ -95,3 +95,30 @@ output:
   path: report.json
   redactPaths: true
 ```
+
+## XML Compatibility
+
+Use `--format xml` when a workflow expects a machine-readable XML report. `mrr` is accepted as a deprecated CLI alias for compatibility with older veraPDF scripts.
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<report>
+  <buildInformation>
+    <releaseDetails id="pdfv-core" version="0.1.0"></releaseDetails>
+  </buildInformation>
+  <jobs>
+    <job>
+      <item size="80">
+        <name>tests/fixtures/minimal-valid.pdf</name>
+      </item>
+      <validationReport profileName="pdfv M0 built-in profile" statement="PDF file is compliant with Validation Profile requirements." isCompliant="true">
+        <details passedRules="4" failedRules="0" passedChecks="4" failedChecks="0" unsupportedRules="0"></details>
+      </validationReport>
+    </job>
+  </jobs>
+  <batchSummary totalJobs="1" failedToParse="0" encrypted="0" incomplete="0" internalErrors="0">
+    <validationReports compliant="1" nonCompliant="0" failedJobs="0">1</validationReports>
+    <duration elapsedMillis="0"></duration>
+  </batchSummary>
+</report>
+```

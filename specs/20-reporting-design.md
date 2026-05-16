@@ -4,7 +4,7 @@ Status: draft · Owner: pdfv · Depends on: [10-data-model.md](./10-data-model.m
 
 ## 1. Purpose
 
-Reporting turns `ValidationReport` and `BatchReport` into stable user-facing output. It does not validate, parse, or decide CLI exit codes. JSON is the machine contract; text is a human-readable summary.
+Reporting turns `ValidationReport` and `BatchReport` into stable user-facing output. It does not validate, parse, or decide CLI exit codes. JSON is the stable Rust/CI machine contract; XML is a bounded compatibility report for organizations migrating from veraPDF workflows; text is a human-readable summary.
 
 ## 2. Interface
 
@@ -13,6 +13,7 @@ pub enum ReportFormat {
     Json,
     JsonPretty,
     Text,
+    Xml,
 }
 
 pub trait ReportWriter {
@@ -49,23 +50,38 @@ first failures:
 
 Text output is not parsed by automation. Automation uses JSON.
 
-## 5. Batch summaries
+## 5. XML compatibility contract
+
+XML output is a compatibility subset of veraPDF's machine-readable report shape. The canonical CLI spelling is `--format xml`; `mrr` remains a deprecated compatibility alias because current veraPDF documentation states that `xml` and `mrr` refer to the same report format and that `mrr` is deprecated starting with veraPDF 1.24.
+
+The XML writer streams from `ValidationReport`/`BatchReport` and includes:
+
+- `<report>` root with pdfv build information
+- `<jobs><job>` entries for each input
+- `<item>` name and optional size
+- `<validationReport profileName statement isCompliant>`
+- `<details passedRules failedRules passedChecks failedChecks unsupportedRules>`
+- bounded failed/passed checks, unsupported rules, parse facts, warnings, and batch summary
+
+The XML compatibility surface is intentionally report-only. It does not implement veraPDF raw XML, HTML, feature reports, repair reports, policy reports, or log embedding.
+
+## 6. Batch summaries
 
 Batch summaries track total files, valid, invalid, parse failures, encrypted, incomplete, internal errors, elapsed time, and worst exit category. They are computed from item reports and do not re-run validation.
 
-## 6. AGENTS.md binding
+## 7. AGENTS.md binding
 
 - Error Handling: report serialization failures return `ReportError`.
 - Safety & Security: never include raw PDF bytes in output; file paths are displayed as provided by CLI unless `--redact-paths` is active.
-- Serialization: serde derives use `camelCase`; snapshot tests cover JSON.
+- Serialization: serde derives use `camelCase`; snapshot tests cover JSON; XML writer escapes attributes/text and never emits raw PDF bytes.
 - Testing: JSON snapshot tests, text golden tests, batch summary unit tests.
 - Logging & Observability: report writing itself does not log report contents.
 - Performance: streaming writers avoid building duplicate large strings.
 - Documentation: output examples live in CLI and library docs.
 
-## 7. Cross-references
+## 8. Cross-references
 
 - ← Depends on: [10-data-model.md](./10-data-model.md), [13-validation-engine-design.md](./13-validation-engine-design.md)
 - → Consumed by: [50-cli-design.md](./50-cli-design.md)
 - ↔ Related research: veraPDF report handlers in `ProcessorFactory` choose text/raw/XML/HTML/JSON by format (`vendors/veraPDF-library/core/src/main/java/org/verapdf/processor/ProcessorFactory.java:128`).
-
+- ↔ Related research: [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md)

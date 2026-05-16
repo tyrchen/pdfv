@@ -98,6 +98,44 @@ fn test_should_emit_batch_report_for_multiple_inputs() -> Result<(), Box<dyn Err
 }
 
 #[test]
+fn test_should_validate_pdf_and_emit_xml_report() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "xml"])
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#"<?xml version="1.0" encoding="utf-8"?>"#).eval(&stdout));
+    assert!(contains("<validationReport").eval(&stdout));
+    assert!(contains(r#"isCompliant="true""#).eval(&stdout));
+    assert!(contains(r#"<batchSummary totalJobs="1""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_accept_mrr_as_deprecated_xml_alias() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "mrr"])
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains("<report>").eval(&stdout));
+    assert!(contains("<validationReport").eval(&stdout));
+    Ok(())
+}
+
+#[test]
 fn test_should_discover_recursive_inputs_with_bounded_jobs() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let nested = temp.path().join("nested");

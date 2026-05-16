@@ -64,3 +64,12 @@ Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
 - Why: the roadmap and implementation plan define an embeddable library plus CLI. A network service has no product, security, or API spec yet, and keeping a placeholder crate makes quality gates cover code outside the scoped product.
 - Pinned by: [61-crates-and-features.md](./61-crates-and-features.md), [91-impl-plan.md](./91-impl-plan.md)
 - Date: 2026-05-15
+
+## D8 — Canonicalize machine-readable compatibility output as XML
+
+- Context: M4 report compatibility.
+- Alternatives considered: keep JSON/text only; implement `mrr` as the primary format name; implement `xml` with `mrr` as an alias; implement veraPDF raw XML/HTML/report bundles.
+- Decision: add `ReportFormat::Xml`, expose `pdfv validate --format xml`, and accept `--format mrr` only as a deprecated alias to the same writer.
+- Why: current veraPDF documentation says `xml` and `mrr` refer to the same report format and `mrr` is deprecated starting with veraPDF 1.24. The product should match current terminology while keeping migration scripts easy to adapt.
+- Pinned by: [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md), [90-roadmap.md](./90-roadmap.md), [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md)
+- Date: 2026-05-16

@@ -13,7 +13,7 @@ pdfv validate <paths>...
     --flavour <auto|pdfa-1b|pdfa-2b|...>
     --default-flavour <flavour>
     --profile <path>
-    --format <json|json-pretty|text>
+    --format <json|json-pretty|text|xml|mrr>
     --output <path>
     --recursive
     --jobs <N>
@@ -58,6 +58,8 @@ output:
   format: json
 ```
 
+`output.format: xml` selects the XML compatibility report. `mrr` is accepted on the CLI as a deprecated alias for `xml`; configs should use `xml` so machine-readable output names align with current veraPDF documentation.
+
 ## 5. Concurrency
 
 The CLI runs one `ValidationSession` per file with bounded parallelism. The first implementation may use `rayon 1.12.0` for synchronous file parallelism or Tokio `spawn_blocking` if a future async service shares the binary. Shared state is limited to immutable profiles and report aggregation through message passing.
@@ -78,4 +80,4 @@ The CLI runs one `ValidationSession` per file with bounded parallelism. The firs
 - ← Depends on: [20-reporting-design.md](./20-reporting-design.md)
 - → Consumed by: [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md)
 - ↔ Related research: veraPDF CLI is a config adapter over processor config and chooses single/multi-process execution (`vendors/veraPDF-apps/cli/src/main/java/org/verapdf/cli/VeraPdfCli.java:111`, `vendors/veraPDF-apps/cli/src/main/java/org/verapdf/cli/commands/VeraCliArgParser.java:572`).
-
+- ↔ Related research: [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md)

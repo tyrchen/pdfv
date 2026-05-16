@@ -120,6 +120,10 @@ enum FormatArg {
     JsonPretty,
     /// Human-readable text output.
     Text,
+    /// Machine-readable XML compatibility output.
+    Xml,
+    /// Deprecated compatibility alias for XML output.
+    Mrr,
 }
 
 impl From<FormatArg> for ReportFormat {
@@ -128,6 +132,7 @@ impl From<FormatArg> for ReportFormat {
             FormatArg::Json => Self::Json,
             FormatArg::JsonPretty => Self::JsonPretty,
             FormatArg::Text => Self::Text,
+            FormatArg::Xml | FormatArg::Mrr => Self::Xml,
         }
     }
 }

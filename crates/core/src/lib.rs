@@ -203,6 +203,12 @@ pub enum ReportError {
         #[from]
         source: serde_json::Error,
     },
+    /// XML serialization failed.
+    #[error("XML serialization failed: {message}")]
+    Xml {
+        /// Bounded diagnostic message.
+        message: BoundedText,
+    },
     /// Output write failed.
     #[error("report output write failed")]
     Write {
@@ -1032,6 +1038,8 @@ pub enum ReportFormat {
     JsonPretty,
     /// Human-readable text.
     Text,
+    /// Machine-readable XML compatibility report.
+    Xml,
 }
 
 impl ReportFormat {
@@ -1045,6 +1053,7 @@ impl ReportFormat {
             Self::Json => JsonReportWriter::compact().write_report(report, out),
             Self::JsonPretty => JsonReportWriter::pretty().write_report(report, out),
             Self::Text => TextReportWriter.write_report(report, out),
+            Self::Xml => XmlReportWriter.write_report(report, out),
         }
     }
 
@@ -1058,6 +1067,7 @@ impl ReportFormat {
             Self::Json => JsonReportWriter::compact().write_batch(report, out),
             Self::JsonPretty => JsonReportWriter::pretty().write_batch(report, out),
             Self::Text => TextReportWriter.write_batch(report, out),
+            Self::Xml => XmlReportWriter.write_batch(report, out),
         }
     }
 }
@@ -1155,6 +1165,21 @@ impl ReportWriter for TextReportWriter {
     }
 }
 
+/// Machine-readable XML report writer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct XmlReportWriter;
+
+impl ReportWriter for XmlReportWriter {
+    fn write_report<W: Write>(&self, report: &ValidationReport, mut out: W) -> Result<()> {
+        let batch = BatchReport::from_items(vec![report.clone()], Vec::new(), Duration::ZERO);
+        write_xml_batch(&batch, &mut out)
+    }
+
+    fn write_batch<W: Write>(&self, report: &BatchReport, mut out: W) -> Result<()> {
+        write_xml_batch(report, &mut out)
+    }
+}
+
 fn write_json<W, T>(out: W, value: &T, pretty: bool) -> Result<()>
 where
     W: Write,
@@ -1206,6 +1231,284 @@ fn write_text_report<W: Write>(report: &ValidationReport, out: &mut W) -> Result
     if !report.warnings.is_empty() {
         writeln!(out, "warnings: {}", report.warnings.len()).map_err(write_error)?;
     }
+    Ok(())
+}
+
+fn write_xml_batch<W: Write>(report: &BatchReport, out: &mut W) -> Result<()> {
+    writeln!(out, r#"<?xml version="1.0" encoding="utf-8"?>"#).map_err(write_error)?;
+    writeln!(out, "<report>").map_err(write_error)?;
+    writeln!(out, "  <buildInformation>").map_err(write_error)?;
+    writeln!(
+        out,
+        r#"    <releaseDetails id="pdfv-core" version="{}"></releaseDetails>"#,
+        XmlEscapedAttr::new(ENGINE_VERSION)?,
+    )
+    .map_err(write_error)?;
+    writeln!(out, "  </buildInformation>").map_err(write_error)?;
+    writeln!(out, "  <jobs>").map_err(write_error)?;
+    for item in &report.items {
+        write_xml_job(item, out)?;
+    }
+    writeln!(out, "  </jobs>").map_err(write_error)?;
+    write_xml_batch_summary(&report.summary, out)?;
+    write_xml_warnings(&report.warnings, out, 2)?;
+    writeln!(out, "</report>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_job<W: Write>(report: &ValidationReport, out: &mut W) -> Result<()> {
+    writeln!(out, "    <job>").map_err(write_error)?;
+    write_xml_item(&report.source, out)?;
+    for profile in &report.profile_reports {
+        write_xml_validation_report(report.status, profile, out)?;
+    }
+    if report.profile_reports.is_empty() {
+        writeln!(
+            out,
+            r#"      <validationReport profileName="" statement="{}" isCompliant="false">"#,
+            XmlEscapedAttr::new(status_statement(report.status))?,
+        )
+        .map_err(write_error)?;
+        writeln!(
+            out,
+            r#"        <details passedRules="0" failedRules="0" passedChecks="0" failedChecks="0" unsupportedRules="0"></details>"#,
+        )
+        .map_err(write_error)?;
+        writeln!(out, "      </validationReport>").map_err(write_error)?;
+    }
+    write_xml_parse_facts(&report.parse_facts, out)?;
+    write_xml_warnings(&report.warnings, out, 6)?;
+    writeln!(out, "    </job>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_item<W: Write>(source: &InputSummary, out: &mut W) -> Result<()> {
+    let size = source
+        .bytes
+        .map_or_else(String::new, |bytes| format!(r#" size="{bytes}""#));
+    writeln!(out, "      <item{size}>").map_err(write_error)?;
+    let name = source_name(source);
+    writeln!(out, "        <name>{}</name>", XmlEscapedText::new(&name)?).map_err(write_error)?;
+    writeln!(out, "      </item>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_validation_report<W: Write>(
+    status: ValidationStatus,
+    profile: &ProfileReport,
+    out: &mut W,
+) -> Result<()> {
+    writeln!(
+        out,
+        r#"      <validationReport profileName="{}" statement="{}" isCompliant="{}">"#,
+        XmlEscapedAttr::new(profile.profile.name.as_str())?,
+        XmlEscapedAttr::new(status_statement(status))?,
+        profile.is_compliant,
+    )
+    .map_err(write_error)?;
+    let failed_checks = u64::try_from(profile.failed_assertions.len()).unwrap_or(u64::MAX);
+    let unsupported_rules = u64::try_from(profile.unsupported_rules.len()).unwrap_or(u64::MAX);
+    let passed_checks = profile.checks_executed.saturating_sub(failed_checks);
+    let passed_rules = profile.rules_executed.saturating_sub(profile.failed_rules);
+    writeln!(
+        out,
+        r#"        <details passedRules="{passed_rules}" failedRules="{}" passedChecks="{passed_checks}" failedChecks="{failed_checks}" unsupportedRules="{unsupported_rules}"></details>"#,
+        profile.failed_rules,
+    )
+    .map_err(write_error)?;
+    write_xml_assertions("failedChecks", &profile.failed_assertions, out)?;
+    write_xml_assertions("passedChecks", &profile.passed_assertions, out)?;
+    write_xml_unsupported_rules(&profile.unsupported_rules, out)?;
+    writeln!(out, "      </validationReport>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_assertions<W: Write>(
+    element: &str,
+    assertions: &[Assertion],
+    out: &mut W,
+) -> Result<()> {
+    if assertions.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "        <{element}>").map_err(write_error)?;
+    for assertion in assertions {
+        writeln!(
+            out,
+            r#"          <check ruleId="{}" status="{}" location="{}">"#,
+            XmlEscapedAttr::new(assertion.rule_id.0.as_str())?,
+            assertion_status_text(assertion.status),
+            XmlEscapedAttr::new(&location_text(&assertion.location))?,
+        )
+        .map_err(write_error)?;
+        writeln!(
+            out,
+            "            <description>{}</description>",
+            XmlEscapedText::new(assertion.description.as_str())?,
+        )
+        .map_err(write_error)?;
+        if let Some(message) = &assertion.message {
+            writeln!(
+                out,
+                "            <message>{}</message>",
+                XmlEscapedText::new(message.as_str())?,
+            )
+            .map_err(write_error)?;
+        }
+        if !assertion.error_arguments.is_empty() {
+            writeln!(out, "            <errorArguments>").map_err(write_error)?;
+            for argument in &assertion.error_arguments {
+                writeln!(
+                    out,
+                    r#"              <argument name="{}">{}</argument>"#,
+                    XmlEscapedAttr::new(argument.name.as_str())?,
+                    XmlEscapedText::new(argument.value.as_str())?,
+                )
+                .map_err(write_error)?;
+            }
+            writeln!(out, "            </errorArguments>").map_err(write_error)?;
+        }
+        writeln!(out, "          </check>").map_err(write_error)?;
+    }
+    writeln!(out, "        </{element}>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_unsupported_rules<W: Write>(rules: &[UnsupportedRule], out: &mut W) -> Result<()> {
+    if rules.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "        <unsupportedRules>").map_err(write_error)?;
+    for rule in rules {
+        writeln!(
+            out,
+            r#"          <rule profileId="{}" ruleId="{}">"#,
+            XmlEscapedAttr::new(rule.profile_id.as_str())?,
+            XmlEscapedAttr::new(rule.rule_id.0.as_str())?,
+        )
+        .map_err(write_error)?;
+        if let Some(fragment) = &rule.expression_fragment {
+            writeln!(
+                out,
+                "            <expression>{}</expression>",
+                XmlEscapedText::new(fragment.as_str())?,
+            )
+            .map_err(write_error)?;
+        }
+        writeln!(
+            out,
+            "            <reason>{}</reason>",
+            XmlEscapedText::new(rule.reason.as_str())?,
+        )
+        .map_err(write_error)?;
+        writeln!(out, "          </rule>").map_err(write_error)?;
+    }
+    writeln!(out, "        </unsupportedRules>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_parse_facts<W: Write>(facts: &[ParseFact], out: &mut W) -> Result<()> {
+    if facts.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "      <parseFacts>").map_err(write_error)?;
+    for fact in facts {
+        match fact {
+            ParseFact::Header {
+                offset,
+                version,
+                had_leading_bytes,
+            } => writeln!(
+                out,
+                r#"        <header offset="{offset}" version="{}.{}" hadLeadingBytes="{had_leading_bytes}"></header>"#,
+                version.major,
+                version.minor,
+            )
+            .map_err(write_error)?,
+            ParseFact::PostEofData { bytes } => {
+                writeln!(out, r#"        <postEofData bytes="{bytes}"></postEofData>"#)
+                    .map_err(write_error)?;
+            }
+            ParseFact::Xref { section, fact } => writeln!(
+                out,
+                r#"        <xref location="{}" fact="{}"></xref>"#,
+                XmlEscapedAttr::new(&location_text(section))?,
+                XmlEscapedAttr::new(&xref_fact_text(fact))?,
+            )
+            .map_err(write_error)?,
+            ParseFact::Stream { object, fact } => writeln!(
+                out,
+                r#"        <stream object="{} {}" fact="{}"></stream>"#,
+                object.number,
+                object.generation,
+                XmlEscapedAttr::new(&stream_fact_text(fact))?,
+            )
+            .map_err(write_error)?,
+            ParseFact::Encryption { encrypted, handler } => writeln!(
+                out,
+                r#"        <encryption encrypted="{encrypted}" handler="{}"></encryption>"#,
+                XmlEscapedAttr::new(handler.as_ref().map_or("", Identifier::as_str))?,
+            )
+            .map_err(write_error)?,
+        }
+    }
+    writeln!(out, "      </parseFacts>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_warnings<W: Write>(
+    warnings: &[ValidationWarning],
+    out: &mut W,
+    indent: usize,
+) -> Result<()> {
+    if warnings.is_empty() {
+        return Ok(());
+    }
+    let spaces = " ".repeat(indent);
+    writeln!(out, "{spaces}<warnings>").map_err(write_error)?;
+    for warning in warnings {
+        writeln!(
+            out,
+            "{spaces}  <warning>{}</warning>",
+            XmlEscapedText::new(&warning_text(warning))?,
+        )
+        .map_err(write_error)?;
+    }
+    writeln!(out, "{spaces}</warnings>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_batch_summary<W: Write>(summary: &BatchSummary, out: &mut W) -> Result<()> {
+    writeln!(
+        out,
+        r#"  <batchSummary totalJobs="{}" failedToParse="{}" encrypted="{}" incomplete="{}" internalErrors="{}">"#,
+        summary.total_files,
+        summary.parse_failures,
+        summary.encrypted,
+        summary.incomplete,
+        summary.internal_errors,
+    )
+    .map_err(write_error)?;
+    writeln!(
+        out,
+        r#"    <validationReports compliant="{}" nonCompliant="{}" failedJobs="{}">{}</validationReports>"#,
+        summary.valid,
+        summary.invalid,
+        summary
+            .parse_failures
+            .saturating_add(summary.encrypted)
+            .saturating_add(summary.incomplete)
+            .saturating_add(summary.internal_errors),
+        summary.valid.saturating_add(summary.invalid),
+    )
+    .map_err(write_error)?;
+    writeln!(
+        out,
+        r#"    <duration elapsedMillis="{}"></duration>"#,
+        summary.elapsed_millis,
+    )
+    .map_err(write_error)?;
+    writeln!(out, "  </batchSummary>").map_err(write_error)?;
     Ok(())
 }
 
@@ -1292,6 +1595,71 @@ fn assertion_message(assertion: &Assertion) -> &str {
         .as_str()
 }
 
+fn assertion_status_text(status: AssertionStatus) -> &'static str {
+    match status {
+        AssertionStatus::Passed => "passed",
+        AssertionStatus::Failed => "failed",
+    }
+}
+
+fn status_statement(status: ValidationStatus) -> &'static str {
+    match status {
+        ValidationStatus::Valid => "PDF file is compliant with Validation Profile requirements.",
+        ValidationStatus::Invalid => {
+            "PDF file is not compliant with Validation Profile requirements."
+        }
+        ValidationStatus::Encrypted => "PDF file is encrypted and could not be validated.",
+        ValidationStatus::Incomplete => "Validation did not complete for all required rules.",
+        ValidationStatus::ParseFailed => "PDF file could not be parsed.",
+    }
+}
+
+fn xref_fact_text(fact: &XrefFact) -> String {
+    match fact {
+        XrefFact::EolMarkersComply => String::from("eolMarkersComply"),
+        XrefFact::MalformedClassic => String::from("malformedClassic"),
+        XrefFact::XrefStreamUnsupported => String::from("xrefStreamUnsupported"),
+        XrefFact::XrefStreamParsed {
+            entries,
+            compressed_entries,
+        } => format!("xrefStreamParsed entries={entries} compressedEntries={compressed_entries}"),
+        XrefFact::ObjectStreamParsed => String::from("objectStreamParsed"),
+    }
+}
+
+fn stream_fact_text(fact: &StreamFact) -> String {
+    match fact {
+        StreamFact::Length {
+            declared,
+            discovered,
+        } => format!("length declared={declared} discovered={discovered}"),
+        StreamFact::KeywordSpacing {
+            stream_keyword_crlf_compliant,
+            endstream_keyword_eol_compliant,
+        } => format!(
+            "keywordSpacing streamKeywordCRLFCompliant={stream_keyword_crlf_compliant} \
+             endstreamKeywordEolCompliant={endstream_keyword_eol_compliant}"
+        ),
+        StreamFact::Decoded { bytes } => format!("decoded bytes={bytes}"),
+    }
+}
+
+fn warning_text(warning: &ValidationWarning) -> String {
+    match warning {
+        ValidationWarning::ParseFactCapReached { cap } => {
+            format!("parse fact cap reached: {cap}")
+        }
+        ValidationWarning::IncompatibleProfile { profile_id, reason } => {
+            format!(
+                "incompatible profile {}: {}",
+                profile_id.as_str(),
+                reason.as_str()
+            )
+        }
+        ValidationWarning::General { message } => message.as_str().to_owned(),
+    }
+}
+
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -1303,6 +1671,65 @@ fn write_error(source: std::io::Error) -> PdfvError {
 fn format_optional_path(path: Option<&PathBuf>) -> String {
     path.map(|path| format!(" at {}", path.display()))
         .unwrap_or_default()
+}
+
+#[derive(Clone, Copy, Debug)]
+struct XmlEscapedText<'a>(&'a str);
+
+impl<'a> XmlEscapedText<'a> {
+    fn new(value: &'a str) -> Result<Self> {
+        ensure_xml_text(value)?;
+        Ok(Self(value))
+    }
+}
+
+impl fmt::Display for XmlEscapedText<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for character in self.0.chars() {
+            match character {
+                '&' => formatter.write_str("&amp;")?,
+                '<' => formatter.write_str("&lt;")?,
+                '>' => formatter.write_str("&gt;")?,
+                '"' => formatter.write_str("&quot;")?,
+                '\'' => formatter.write_str("&apos;")?,
+                _ => formatter.write_str(character.encode_utf8(&mut [0; 4]))?,
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct XmlEscapedAttr<'a>(&'a str);
+
+impl<'a> XmlEscapedAttr<'a> {
+    fn new(value: &'a str) -> Result<Self> {
+        ensure_xml_text(value)?;
+        Ok(Self(value))
+    }
+}
+
+impl fmt::Display for XmlEscapedAttr<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        XmlEscapedText(self.0).fmt(formatter)
+    }
+}
+
+fn ensure_xml_text(value: &str) -> Result<()> {
+    if value.chars().all(is_xml_char) {
+        return Ok(());
+    }
+    Err(ReportError::Xml {
+        message: BoundedText::unchecked("text contains characters forbidden by XML 1.0"),
+    }
+    .into())
+}
+
+fn is_xml_char(character: char) -> bool {
+    matches!(character, '\u{09}' | '\u{0A}' | '\u{0D}')
+        || ('\u{20}'..='\u{D7FF}').contains(&character)
+        || ('\u{E000}'..='\u{FFFD}').contains(&character)
+        || ('\u{10000}'..='\u{10FFFF}').contains(&character)
 }
 
 #[cfg(test)]
@@ -1318,6 +1745,7 @@ mod tests {
         Identifier, InputKind, InputSummary, JsonReportWriter, MaxDisplayedFailures,
         ObjectLocation, PdfVersion, ProfileIdentity, ProfileReport, ReportFormat, ReportWriter,
         RuleId, TextReportWriter, ValidationOptions, ValidationReport, ValidationStatus,
+        XmlReportWriter,
     };
 
     fn sample_report() -> std::result::Result<ValidationReport, Box<dyn StdError>> {
@@ -1503,6 +1931,43 @@ first failures:
     }
 
     #[test]
+    fn test_should_write_xml_report() -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_report()?;
+        let mut output = Vec::new();
+
+        XmlReportWriter
+            .write_report(&report, &mut output)
+            .map_err(Box::<dyn StdError>::from)?;
+
+        let xml = String::from_utf8(output)?;
+        assert!(xml.contains(r#"<?xml version="1.0" encoding="utf-8"?>"#));
+        assert!(xml.contains("<report>"));
+        assert!(xml.contains(r#"<validationReport profileName="PDF/A-1B""#));
+        assert!(xml.contains(r#"<details passedRules="0" failedRules="1""#));
+        assert!(xml.contains(r#"<check ruleId="6.1.2-1" status="failed" location="offset 0">"#));
+        assert!(xml.contains(r#"<batchSummary totalJobs="1""#));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_reject_xml_forbidden_text() -> std::result::Result<(), Box<dyn StdError>> {
+        let mut report = sample_report()?;
+        let Some(profile) = report.profile_reports.first_mut() else {
+            return Err("sample report must contain profile".into());
+        };
+        profile.profile.name = BoundedText::unchecked("bad\u{1}profile");
+        let mut output = Vec::new();
+
+        let result = XmlReportWriter.write_report(&report, &mut output);
+
+        assert!(matches!(
+            result,
+            Err(super::PdfvError::Report(super::ReportError::Xml { .. }))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn test_should_dispatch_pretty_json_report_format() -> std::result::Result<(), Box<dyn StdError>>
     {
         let report = sample_report()?;
@@ -1514,6 +1979,20 @@ first failures:
 
         let json = String::from_utf8(output)?;
         assert!(json.contains("\n  \"engineVersion\": \"0.1.0\""));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_dispatch_xml_report_format() -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_report()?;
+        let mut output = Vec::new();
+
+        ReportFormat::Xml
+            .write_report(&report, &mut output)
+            .map_err(Box::<dyn StdError>::from)?;
+
+        let xml = String::from_utf8(output)?;
+        assert!(xml.contains("<validationReport"));
         Ok(())
     }
 
