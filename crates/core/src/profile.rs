@@ -52,9 +52,13 @@ impl ProfileRepository for BuiltinProfileRepository {
                     Some(flavour) => flavour.clone(),
                     None => pdfa_1b_flavour()?,
                 };
+                ensure_m0_flavour(&flavour)?;
                 Ok(vec![m0_profile(flavour)?])
             }
-            FlavourSelection::Explicit { flavour } => Ok(vec![m0_profile(flavour.clone())?]),
+            FlavourSelection::Explicit { flavour } => {
+                ensure_m0_flavour(flavour)?;
+                Ok(vec![m0_profile(flavour.clone())?])
+            }
             FlavourSelection::CustomProfile { .. } => {
                 Err(ProfileError::UnsupportedSelection.into())
             }
@@ -555,6 +559,14 @@ fn has_parse_fact(facts: &[ParseFact], name: &str) -> bool {
 
 fn pdfa_1b_flavour() -> Result<ValidationFlavour> {
     Ok(ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)
+}
+
+fn ensure_m0_flavour(flavour: &ValidationFlavour) -> Result<()> {
+    if flavour == &pdfa_1b_flavour()? {
+        Ok(())
+    } else {
+        Err(ProfileError::UnsupportedSelection.into())
+    }
 }
 
 fn m0_profile(flavour: ValidationFlavour) -> Result<ValidationProfile> {

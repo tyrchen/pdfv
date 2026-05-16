@@ -10,5 +10,11 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 clap.workspace = true
 pdfv-core.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true

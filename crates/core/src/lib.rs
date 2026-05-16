@@ -20,6 +20,7 @@ mod validation;
 
 use std::{
     fmt,
+    io::Write,
     num::{NonZeroU32, NonZeroU64},
     path::PathBuf,
     time::Duration,
@@ -838,6 +839,23 @@ pub struct BatchReport {
     pub warnings: Vec<ValidationWarning>,
 }
 
+impl BatchReport {
+    /// Builds a batch report and computes summary counters from item reports.
+    #[must_use]
+    pub fn from_items(
+        items: Vec<ValidationReport>,
+        warnings: Vec<ValidationWarning>,
+        elapsed: Duration,
+    ) -> Self {
+        let summary = BatchSummary::from_items(&items, elapsed);
+        Self {
+            items,
+            summary,
+            warnings,
+        }
+    }
+}
+
 /// Batch summary counters.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TypedBuilder)]
 #[non_exhaustive]
@@ -861,6 +879,45 @@ pub struct BatchSummary {
     pub elapsed_millis: u64,
     /// Worst exit category.
     pub worst_exit_category: ExitCategory,
+}
+
+impl BatchSummary {
+    /// Computes batch summary counters from item reports.
+    #[must_use]
+    pub fn from_items(items: &[ValidationReport], elapsed: Duration) -> Self {
+        let mut summary = Self {
+            total_files: u64::try_from(items.len()).unwrap_or(u64::MAX),
+            elapsed_millis: duration_millis(elapsed),
+            ..Self::default()
+        };
+        for report in items {
+            match report.status {
+                ValidationStatus::Valid => summary.valid = summary.valid.saturating_add(1),
+                ValidationStatus::Invalid => summary.invalid = summary.invalid.saturating_add(1),
+                ValidationStatus::ParseFailed => {
+                    summary.parse_failures = summary.parse_failures.saturating_add(1);
+                }
+                ValidationStatus::Encrypted => {
+                    summary.encrypted = summary.encrypted.saturating_add(1);
+                }
+                ValidationStatus::Incomplete => {
+                    summary.incomplete = summary.incomplete.saturating_add(1);
+                }
+            }
+        }
+        summary.worst_exit_category = if summary.parse_failures > 0
+            || summary.encrypted > 0
+            || summary.incomplete > 0
+            || summary.internal_errors > 0
+        {
+            ExitCategory::ProcessingFailed
+        } else if summary.invalid > 0 {
+            ExitCategory::ValidationFailed
+        } else {
+            ExitCategory::Success
+        };
+        summary
+    }
 }
 
 /// CLI-oriented exit category represented in batch summaries.
@@ -892,6 +949,34 @@ pub enum ReportFormat {
     Text,
 }
 
+impl ReportFormat {
+    /// Writes a validation report in this format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if serialization or writing fails.
+    pub fn write_report<W: Write>(&self, report: &ValidationReport, out: W) -> Result<()> {
+        match self {
+            Self::Json => JsonReportWriter::compact().write_report(report, out),
+            Self::JsonPretty => JsonReportWriter::pretty().write_report(report, out),
+            Self::Text => TextReportWriter.write_report(report, out),
+        }
+    }
+
+    /// Writes a batch validation report in this format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if serialization or writing fails.
+    pub fn write_batch<W: Write>(&self, report: &BatchReport, out: W) -> Result<()> {
+        match self {
+            Self::Json => JsonReportWriter::compact().write_batch(report, out),
+            Self::JsonPretty => JsonReportWriter::pretty().write_batch(report, out),
+            Self::Text => TextReportWriter.write_batch(report, out),
+        }
+    }
+}
+
 /// Report writer interface.
 pub trait ReportWriter {
     /// Writes a single validation report.
@@ -899,14 +984,14 @@ pub trait ReportWriter {
     /// # Errors
     ///
     /// Returns [`PdfvError`] if serialization or writing fails.
-    fn write_report<W: std::io::Write>(&self, report: &ValidationReport, out: W) -> Result<()>;
+    fn write_report<W: Write>(&self, report: &ValidationReport, out: W) -> Result<()>;
 
     /// Writes a batch validation report.
     ///
     /// # Errors
     ///
     /// Returns [`PdfvError`] if serialization or writing fails.
-    fn write_batch<W: std::io::Write>(&self, report: &BatchReport, out: W) -> Result<()>;
+    fn write_batch<W: Write>(&self, report: &BatchReport, out: W) -> Result<()>;
 }
 
 /// JSON report writer.
@@ -930,18 +1015,64 @@ impl JsonReportWriter {
 }
 
 impl ReportWriter for JsonReportWriter {
-    fn write_report<W: std::io::Write>(&self, report: &ValidationReport, out: W) -> Result<()> {
+    fn write_report<W: Write>(&self, report: &ValidationReport, out: W) -> Result<()> {
         write_json(out, report, self.pretty)
     }
 
-    fn write_batch<W: std::io::Write>(&self, report: &BatchReport, out: W) -> Result<()> {
+    fn write_batch<W: Write>(&self, report: &BatchReport, out: W) -> Result<()> {
         write_json(out, report, self.pretty)
+    }
+}
+
+/// Human-readable text report writer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TextReportWriter;
+
+impl ReportWriter for TextReportWriter {
+    fn write_report<W: Write>(&self, report: &ValidationReport, mut out: W) -> Result<()> {
+        write_text_report(report, &mut out)
+    }
+
+    fn write_batch<W: Write>(&self, report: &BatchReport, mut out: W) -> Result<()> {
+        writeln!(
+            out,
+            "batch: {}",
+            exit_category_text(report.summary.worst_exit_category)
+        )
+        .map_err(write_error)?;
+        writeln!(out, "files: {}", report.summary.total_files).map_err(write_error)?;
+        writeln!(
+            out,
+            "summary: {} valid, {} invalid, {} parse failed, {} encrypted, {} incomplete, {} \
+             internal errors",
+            report.summary.valid,
+            report.summary.invalid,
+            report.summary.parse_failures,
+            report.summary.encrypted,
+            report.summary.incomplete,
+            report.summary.internal_errors,
+        )
+        .map_err(write_error)?;
+        if !report.warnings.is_empty() {
+            writeln!(out, "warnings: {}", report.warnings.len()).map_err(write_error)?;
+        }
+        writeln!(out, "items:").map_err(write_error)?;
+        for item in &report.items {
+            writeln!(
+                out,
+                "  {}: {}",
+                source_name(&item.source),
+                status_text(item.status)
+            )
+            .map_err(write_error)?;
+        }
+        Ok(())
     }
 }
 
 fn write_json<W, T>(out: W, value: &T, pretty: bool) -> Result<()>
 where
-    W: std::io::Write,
+    W: Write,
     T: Serialize,
 {
     if pretty {
@@ -950,6 +1081,138 @@ where
         serde_json::to_writer(out, value).map_err(ReportError::from)?;
     }
     Ok(())
+}
+
+fn write_text_report<W: Write>(report: &ValidationReport, out: &mut W) -> Result<()> {
+    writeln!(
+        out,
+        "{}: {}",
+        source_name(&report.source),
+        status_text(report.status),
+    )
+    .map_err(write_error)?;
+    writeln!(out, "profiles: {}", profile_list(report)).map_err(write_error)?;
+    let checks = check_counts(report);
+    writeln!(
+        out,
+        "checks: {} passed, {} failed, {} unsupported",
+        checks.passed, checks.failed, checks.unsupported,
+    )
+    .map_err(write_error)?;
+    let failures = report
+        .profile_reports
+        .iter()
+        .flat_map(|profile| profile.failed_assertions.iter())
+        .take(5)
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        writeln!(out, "first failures:").map_err(write_error)?;
+        for assertion in failures {
+            writeln!(
+                out,
+                "  {} at {}: {}",
+                assertion.rule_id.0.as_str(),
+                location_text(&assertion.location),
+                assertion_message(assertion),
+            )
+            .map_err(write_error)?;
+        }
+    }
+    if !report.warnings.is_empty() {
+        writeln!(out, "warnings: {}", report.warnings.len()).map_err(write_error)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CheckCounts {
+    passed: u64,
+    failed: u64,
+    unsupported: u64,
+}
+
+fn check_counts(report: &ValidationReport) -> CheckCounts {
+    report
+        .profile_reports
+        .iter()
+        .fold(CheckCounts::default(), |mut counts, profile| {
+            let failed = profile.failed_rules;
+            let unsupported = u64::try_from(profile.unsupported_rules.len()).unwrap_or(u64::MAX);
+            counts.failed = counts.failed.saturating_add(failed);
+            counts.unsupported = counts.unsupported.saturating_add(unsupported);
+            counts.passed = counts
+                .passed
+                .saturating_add(profile.checks_executed.saturating_sub(failed));
+            counts
+        })
+}
+
+fn profile_list(report: &ValidationReport) -> String {
+    let profiles = report
+        .profile_reports
+        .iter()
+        .map(|profile| profile.profile.id.as_str())
+        .collect::<Vec<_>>();
+    if profiles.is_empty() {
+        String::from("-")
+    } else {
+        profiles.join(", ")
+    }
+}
+
+fn source_name(source: &InputSummary) -> String {
+    source.path.as_ref().map_or_else(
+        || String::from("<memory>"),
+        |path| path.display().to_string(),
+    )
+}
+
+fn status_text(status: ValidationStatus) -> &'static str {
+    match status {
+        ValidationStatus::Valid => "valid",
+        ValidationStatus::Invalid => "invalid",
+        ValidationStatus::Encrypted => "encrypted",
+        ValidationStatus::Incomplete => "incomplete",
+        ValidationStatus::ParseFailed => "parse failed",
+    }
+}
+
+fn exit_category_text(category: ExitCategory) -> &'static str {
+    match category {
+        ExitCategory::Success => "success",
+        ExitCategory::ValidationFailed => "validation failed",
+        ExitCategory::ProcessingFailed => "processing failed",
+        ExitCategory::InternalError => "internal error",
+    }
+}
+
+fn location_text(location: &ObjectLocation) -> String {
+    if let Some(path) = &location.path {
+        return path.to_string();
+    }
+    if let Some(object) = location.object {
+        return format!("object {} {}", object.number, object.generation);
+    }
+    if let Some(offset) = location.offset {
+        return format!("offset {offset}");
+    }
+    String::from("unknown")
+}
+
+fn assertion_message(assertion: &Assertion) -> &str {
+    assertion
+        .message
+        .as_ref()
+        .unwrap_or(&assertion.description)
+        .as_str()
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn write_error(source: std::io::Error) -> PdfvError {
+    ReportError::Write { source }.into()
 }
 
 fn format_optional_path(path: Option<&PathBuf>) -> String {
@@ -962,13 +1225,14 @@ mod tests {
     use std::{
         error::Error as StdError,
         num::{NonZeroU32, NonZeroU64},
+        time::Duration,
     };
 
     use super::{
-        Assertion, AssertionStatus, BoundedText, ErrorArgument, Identifier, InputKind,
-        InputSummary, JsonReportWriter, MaxDisplayedFailures, ObjectLocation, PdfVersion,
-        ProfileIdentity, ProfileReport, ReportWriter, RuleId, ValidationOptions, ValidationReport,
-        ValidationStatus,
+        Assertion, AssertionStatus, BatchReport, BoundedText, ErrorArgument, ExitCategory,
+        Identifier, InputKind, InputSummary, JsonReportWriter, MaxDisplayedFailures,
+        ObjectLocation, PdfVersion, ProfileIdentity, ProfileReport, ReportFormat, ReportWriter,
+        RuleId, TextReportWriter, ValidationOptions, ValidationReport, ValidationStatus,
     };
 
     fn sample_report() -> std::result::Result<ValidationReport, Box<dyn StdError>> {
@@ -1129,6 +1393,68 @@ mod tests {
 
         let json = String::from_utf8(output)?;
         assert!(json.contains("\"engineVersion\":\"0.1.0\""));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_text_report() -> std::result::Result<(), Box<dyn StdError>> {
+        let report = sample_report()?;
+        let mut output = Vec::new();
+
+        TextReportWriter
+            .write_report(&report, &mut output)
+            .map_err(Box::<dyn StdError>::from)?;
+
+        let text = String::from_utf8(output)?;
+        let expected = "\
+<memory>: invalid
+profiles: pdfa-1b
+checks: 0 passed, 1 failed, 0 unsupported
+first failures:
+  6.1.2-1 at offset 0: Header offset is non-zero
+";
+        assert_eq!(text, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_dispatch_pretty_json_report_format() -> std::result::Result<(), Box<dyn StdError>>
+    {
+        let report = sample_report()?;
+        let mut output = Vec::new();
+
+        ReportFormat::JsonPretty
+            .write_report(&report, &mut output)
+            .map_err(Box::<dyn StdError>::from)?;
+
+        let json = String::from_utf8(output)?;
+        assert!(json.contains("\n  \"engineVersion\": \"0.1.0\""));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_compute_batch_summary() -> std::result::Result<(), Box<dyn StdError>> {
+        let valid = ValidationReport::builder()
+            .engine_version("0.1.0".to_owned())
+            .source(InputSummary::new(InputKind::Memory, None, Some(42)))
+            .status(ValidationStatus::Valid)
+            .flavours(Vec::new())
+            .profile_reports(Vec::new())
+            .parse_facts(Vec::new())
+            .warnings(Vec::new())
+            .task_durations(Vec::new())
+            .build();
+        let invalid = sample_report()?;
+
+        let batch = BatchReport::from_items(vec![valid, invalid], Vec::new(), Duration::ZERO);
+
+        assert_eq!(batch.summary.total_files, 2);
+        assert_eq!(batch.summary.valid, 1);
+        assert_eq!(batch.summary.invalid, 1);
+        assert_eq!(
+            batch.summary.worst_exit_category,
+            ExitCategory::ValidationFailed
+        );
         Ok(())
     }
 }
