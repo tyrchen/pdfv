@@ -4,12 +4,12 @@ resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
-authors = ["Your Name <YourName@yourdomain.com>"]
+authors = ["Tyr Chen <tyr.chen@gmail.com>"]
 edition = "2024"
 license = "MPL-2.0"
 documentation = "https://docs.rs/"
-repository = "https://github.com/tchen/pdfv"
-homepage = "https://github.com/tchen/pdfv"
+repository = "https://github.com/tyrchen/pdfv"
+homepage = "https://github.com/tyrchen/pdfv"
 readme = "README.md"
 
 [workspace.dependencies]
@@ -20,6 +20,8 @@ serde_json = "1.0.149"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros"] }
 typed-builder = "0.23.2"
+proptest = "1.11.0"
+rstest = "0.26.1"
 
 # workspace crates
 pdfv-core = { path = "crates/core" }

@@ -14,6 +14,10 @@
 //! assert_eq!(source.kind, InputKind::Memory);
 //! ```
 
+mod parser;
+mod profile;
+mod validation;
+
 use std::{
     fmt,
     num::{NonZeroU32, NonZeroU64},
@@ -21,9 +25,22 @@ use std::{
     time::Duration,
 };
 
+pub use parser::{
+    CosObject, Dictionary, IndirectObject, ObjectStore, ParsedDocument, Parser, PdfName, PdfSource,
+    PdfString, StreamObject, Trailer,
+};
+pub use profile::{
+    BinaryOp, BuiltinFunction, BuiltinProfileRepository, ErrorTemplate, ModelValue, ObjectTypeName,
+    ProfileRepository, PropertyName, PropertyPath, Rule, RuleEvaluator, RuleExpr, RuleOutcome,
+    UnaryOp, ValidationProfile,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use typed_builder::TypedBuilder;
+pub use validation::{
+    CatalogModel, InputName, LinkName, MetadataModel, ModelGraph, ModelObject, ModelObjectRef,
+    ObjectIdentity, Validator,
+};
 
 /// Current library version embedded in generated reports.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -86,6 +103,12 @@ pub enum ParseError {
         /// Bounded diagnostic message.
         message: BoundedText,
     },
+    /// A referenced object was missing or had the wrong shape.
+    #[error("missing PDF object: {message}")]
+    MissingObject {
+        /// Bounded diagnostic message.
+        message: BoundedText,
+    },
 }
 
 /// Profile-specific error.
@@ -103,6 +126,24 @@ pub enum ProfileError {
         /// Bounded reason string.
         reason: BoundedText,
     },
+    /// A rule expression exceeded a configured evaluation budget.
+    #[error("rule evaluation budget exceeded: {budget}")]
+    BudgetExceeded {
+        /// Budget that was exceeded.
+        budget: &'static str,
+    },
+    /// A rule referenced a property that does not exist on the model object.
+    #[error("unknown model property {property}")]
+    UnknownProperty {
+        /// Property name.
+        property: BoundedText,
+    },
+    /// A rule expression had a type mismatch.
+    #[error("rule expression type mismatch: {message}")]
+    TypeMismatch {
+        /// Bounded diagnostic message.
+        message: BoundedText,
+    },
 }
 
 /// Validation-specific error.
@@ -114,6 +155,12 @@ pub enum ValidationError {
     SubsystemUnavailable {
         /// Subsystem name.
         subsystem: &'static str,
+    },
+    /// Validation traversal exceeded a configured resource limit.
+    #[error("validation traversal limit exceeded: {limit}")]
+    LimitExceeded {
+        /// Limit that was exceeded.
+        limit: &'static str,
     },
 }
 
@@ -182,7 +229,7 @@ impl BoundedText {
         &self.0
     }
 
-    fn unchecked(value: impl Into<String>) -> Self {
+    pub(crate) fn unchecked(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 }
@@ -237,6 +284,10 @@ impl Identifier {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub(crate) fn unchecked(value: impl Into<String>) -> Self {
+        Self(value.into())
     }
 }
 
@@ -600,7 +651,7 @@ pub struct ObjectLocation {
 }
 
 /// Indirect PDF object key.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[non_exhaustive]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObjectKey {
@@ -699,6 +750,8 @@ pub struct PdfVersion {
 pub enum XrefFact {
     /// Classic xref section had compliant EOL markers.
     EolMarkersComply,
+    /// Classic xref section was malformed but recoverable.
+    MalformedClassic,
     /// Xref stream was detected and is unsupported in M0.
     XrefStreamUnsupported,
 }
