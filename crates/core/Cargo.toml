@@ -16,15 +16,22 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 typed-builder.workspace = true
+flate2 = { workspace = true, optional = true }
 
 [dev-dependencies]
+criterion.workspace = true
+flate2.workspace = true
 proptest.workspace = true
 rstest.workspace = true
 serde_json.workspace = true
 
+[[bench]]
+name = "parser_m1"
+harness = false
+
 [features]
 default = ["json", "flate"]
 json = []
-flate = []
+flate = ["dep:flate2"]
 custom-profiles = []
 bench = []

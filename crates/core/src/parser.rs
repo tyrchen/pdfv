@@ -2,8 +2,9 @@
 
 use std::{
     collections::BTreeMap,
-    io::{Read, Seek, SeekFrom},
+    io::{Cursor, Read, Seek, SeekFrom},
     num::NonZeroU32,
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -65,7 +66,7 @@ impl Parser {
             .read_to_end(&mut bytes)
             .map_err(|source| crate::PdfvError::Io { path: None, source })?;
 
-        ByteParser::new(&bytes, self.limits.clone()).parse_document()
+        ByteParser::new(bytes, self.limits.clone()).parse_document()
     }
 }
 
@@ -350,10 +351,65 @@ pub struct StreamObject {
     pub discovered_length: u64,
     /// Stream filters as name objects.
     pub filters: Vec<PdfName>,
+    /// Shared source bytes used for lazy stream decoding.
+    #[serde(skip, default = "empty_source")]
+    pub raw_source: Arc<[u8]>,
     /// Whether the `stream` keyword is followed by CRLF.
     pub stream_keyword_crlf_compliant: bool,
     /// Whether `endstream` is preceded by an EOL marker.
     pub endstream_keyword_eol_compliant: bool,
+}
+
+impl StreamObject {
+    /// Returns decoded stream bytes, enforcing `max_stream_decode_bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] when a filter is unsupported, decompression fails,
+    /// or decoded output exceeds the configured limit.
+    pub fn decoded_bytes(
+        &self,
+        limits: &ResourceLimits,
+    ) -> std::result::Result<Vec<u8>, ParseError> {
+        let raw_start =
+            usize::try_from(self.raw_range.start).map_err(|_| ParseError::ArithmeticOverflow {
+                context: "stream raw range",
+            })?;
+        let raw_end =
+            usize::try_from(self.raw_range.end).map_err(|_| ParseError::ArithmeticOverflow {
+                context: "stream raw range",
+            })?;
+        let mut current = self
+            .raw_source
+            .get(raw_start..raw_end)
+            .ok_or(ParseError::Malformed {
+                message: bounded("stream raw range out of bounds"),
+            })?
+            .to_vec();
+        for filter in &self.filters {
+            if filter.matches("FlateDecode") || filter.matches("Fl") {
+                current = decode_flate_limited(&current, limits.max_stream_decode_bytes)?;
+            } else {
+                return Err(ParseError::UnsupportedFilter {
+                    filter: BoundedText::unchecked(String::from_utf8_lossy(filter.as_bytes())),
+                });
+            }
+        }
+        let decoded_len =
+            u64::try_from(current.len()).map_err(|_| ParseError::ArithmeticOverflow {
+                context: "decoded stream length",
+            })?;
+        if decoded_len > limits.max_stream_decode_bytes {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_stream_decode_bytes",
+            });
+        }
+        Ok(current)
+    }
+}
+
+fn empty_source() -> Arc<[u8]> {
+    Arc::from(Vec::<u8>::new())
 }
 
 /// Raw stream byte range in the source file.
@@ -367,8 +423,8 @@ pub struct StreamRange {
     pub end: u64,
 }
 
-struct ByteParser<'a> {
-    bytes: &'a [u8],
+struct ByteParser {
+    bytes: Arc<[u8]>,
     limits: ResourceLimits,
     pos: usize,
     parse_facts: Vec<ParseFact>,
@@ -381,10 +437,17 @@ enum NumberToken {
     Real(f64),
 }
 
-impl<'a> ByteParser<'a> {
-    fn new(bytes: &'a [u8], limits: ResourceLimits) -> Self {
+#[derive(Clone, Copy, Debug)]
+struct XrefStreamSummary {
+    decoded_bytes: usize,
+    entries: u64,
+    compressed_entries: u64,
+}
+
+impl ByteParser {
+    fn new(bytes: Vec<u8>, limits: ResourceLimits) -> Self {
         Self {
-            bytes,
+            bytes: Arc::from(bytes),
             limits,
             pos: 0,
             parse_facts: Vec::new(),
@@ -450,6 +513,8 @@ impl<'a> ByteParser<'a> {
             }
         }
 
+        self.materialize_stream_backed_structures(&mut objects, &mut trailers)?;
+
         let catalog = trailers
             .iter()
             .rev()
@@ -474,8 +539,254 @@ impl<'a> ByteParser<'a> {
         })
     }
 
+    fn materialize_stream_backed_structures(
+        &mut self,
+        objects: &mut ObjectStore,
+        trailers: &mut Vec<Trailer>,
+    ) -> std::result::Result<(), ParseError> {
+        let streams = objects
+            .values()
+            .filter_map(|object| match &object.object {
+                CosObject::Stream(stream) => Some((object.key, object.offset, stream.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut expanded_objects = Vec::new();
+        for (key, offset, stream) in streams {
+            if matches!(stream.dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("XRef"))
+            {
+                let summary = self.parse_xref_stream(key, &stream)?;
+                let decoded_len = u64::try_from(summary.decoded_bytes).map_err(|_| {
+                    ParseError::ArithmeticOverflow {
+                        context: "decoded xref stream length",
+                    }
+                })?;
+                self.push_fact(ParseFact::Stream {
+                    object: key,
+                    fact: StreamFact::Decoded { bytes: decoded_len },
+                });
+                trailers.push(Trailer {
+                    dictionary: stream.dictionary.clone(),
+                    offset,
+                });
+                self.push_fact(ParseFact::Xref {
+                    section: ObjectLocation {
+                        object: Some(key),
+                        offset: Some(offset),
+                        path: None,
+                    },
+                    fact: XrefFact::XrefStreamParsed {
+                        entries: summary.entries,
+                        compressed_entries: summary.compressed_entries,
+                    },
+                });
+            }
+            if matches!(stream.dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("ObjStm"))
+            {
+                let decoded = stream.decoded_bytes(&self.limits)?;
+                let decoded_len =
+                    u64::try_from(decoded.len()).map_err(|_| ParseError::ArithmeticOverflow {
+                        context: "decoded stream length",
+                    })?;
+                self.push_fact(ParseFact::Stream {
+                    object: key,
+                    fact: StreamFact::Decoded { bytes: decoded_len },
+                });
+                let mut parsed_objects = self.parse_object_stream(key, &stream, &decoded)?;
+                expanded_objects.append(&mut parsed_objects);
+                self.push_fact(ParseFact::Xref {
+                    section: ObjectLocation {
+                        object: Some(key),
+                        offset: Some(offset),
+                        path: None,
+                    },
+                    fact: XrefFact::ObjectStreamParsed,
+                });
+            }
+        }
+        for object in expanded_objects {
+            if objects.get(&object.key).is_none() {
+                let next_count =
+                    u64::try_from(objects.len()).map_err(|_| ParseError::ArithmeticOverflow {
+                        context: "object count",
+                    })? + 1;
+                if next_count > self.limits.max_objects {
+                    return Err(ParseError::LimitExceeded {
+                        limit: "max_objects",
+                    });
+                }
+                objects.insert(object);
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_xref_stream(
+        &self,
+        _stream_key: ObjectKey,
+        stream: &StreamObject,
+    ) -> std::result::Result<XrefStreamSummary, ParseError> {
+        let size = non_negative_u64_from_dictionary(&stream.dictionary, "Size")?;
+        if size > self.limits.max_objects {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_objects",
+            });
+        }
+        let widths = xref_widths(&stream.dictionary)?;
+        let indexes = xref_indexes(&stream.dictionary, size)?;
+        let entry_width = widths
+            .iter()
+            .try_fold(0_usize, |sum, width| sum.checked_add(*width))
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "xref stream entry width",
+            })?;
+        if entry_width == 0 {
+            return Err(ParseError::Malformed {
+                message: bounded("xref stream entry width must be non-zero"),
+            });
+        }
+        let decoded = stream.decoded_bytes(&self.limits)?;
+        let total_entries = indexes
+            .iter()
+            .try_fold(0_u64, |sum, (_, count)| sum.checked_add(*count))
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "xref stream entries",
+            })?;
+        if total_entries > self.limits.max_objects {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_objects",
+            });
+        }
+        let required_bytes = usize::try_from(total_entries)
+            .ok()
+            .and_then(|entries| entries.checked_mul(entry_width))
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "xref stream bytes",
+            })?;
+        if decoded.len() < required_bytes {
+            return Err(ParseError::Malformed {
+                message: bounded("xref stream data shorter than declared entries"),
+            });
+        }
+
+        let mut pos = 0_usize;
+        let mut compressed_entries = 0_u64;
+        for (_first_object, count) in indexes {
+            for _ in 0..count {
+                let entry_type = if widths[0] == 0 {
+                    1
+                } else {
+                    read_be_uint(&decoded, &mut pos, widths[0])?
+                };
+                let _field_two = read_be_uint(&decoded, &mut pos, widths[1])?;
+                let _field_three = read_be_uint(&decoded, &mut pos, widths[2])?;
+                if entry_type == 2 {
+                    compressed_entries = compressed_entries.checked_add(1).ok_or(
+                        ParseError::ArithmeticOverflow {
+                            context: "compressed xref entries",
+                        },
+                    )?;
+                }
+            }
+        }
+        Ok(XrefStreamSummary {
+            decoded_bytes: decoded.len(),
+            entries: total_entries,
+            compressed_entries,
+        })
+    }
+
+    fn parse_object_stream(
+        &self,
+        stream_key: ObjectKey,
+        stream: &StreamObject,
+        decoded: &[u8],
+    ) -> std::result::Result<Vec<IndirectObject>, ParseError> {
+        let count_u64 = non_negative_u64_from_dictionary(&stream.dictionary, "N")?;
+        if count_u64 > self.limits.max_objects {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_objects",
+            });
+        }
+        let first = non_negative_usize_from_dictionary(&stream.dictionary, "First")?;
+        if first > decoded.len() {
+            return Err(ParseError::Malformed {
+                message: bounded("object stream first offset exceeds decoded bytes"),
+            });
+        }
+        let count = usize::try_from(count_u64).map_err(|_| ParseError::LimitExceeded {
+            limit: "max_objects",
+        })?;
+        if count > 0 && count > first / 4 {
+            return Err(ParseError::Malformed {
+                message: bounded("object stream header too short for object count"),
+            });
+        }
+        let mut parser = ByteParser::new(decoded.to_vec(), self.limits.clone());
+        let mut headers = Vec::with_capacity(count);
+        for _ in 0..count {
+            let Some(number) = parser.parse_unsigned_u32()? else {
+                return Err(ParseError::Malformed {
+                    message: bounded("object stream missing object number"),
+                });
+            };
+            parser.skip_required_ws()?;
+            let Some(relative_offset) = parser.parse_unsigned::<usize>()? else {
+                return Err(ParseError::Malformed {
+                    message: bounded("object stream missing object offset"),
+                });
+            };
+            let Some(number) = NonZeroU32::new(number) else {
+                return Err(ParseError::Malformed {
+                    message: bounded("object number must be non-zero"),
+                });
+            };
+            headers.push((
+                ObjectKey {
+                    number,
+                    generation: 0,
+                },
+                relative_offset,
+            ));
+        }
+
+        let mut objects = Vec::with_capacity(count);
+        for (key, relative_offset) in headers {
+            let object_pos =
+                first
+                    .checked_add(relative_offset)
+                    .ok_or(ParseError::ArithmeticOverflow {
+                        context: "object stream offset",
+                    })?;
+            if object_pos >= decoded.len() {
+                return Err(ParseError::Malformed {
+                    message: bounded("object stream object offset exceeds decoded bytes"),
+                });
+            }
+            parser.pos = object_pos;
+            let object = parser.parse_object(0)?;
+            let offset = u64::try_from(object_pos)
+                .ok()
+                .and_then(|relative| stream.raw_range.start.checked_add(relative))
+                .ok_or(ParseError::ArithmeticOverflow {
+                    context: "object stream object offset",
+                })?;
+            if key == stream_key {
+                return Err(ParseError::Malformed {
+                    message: bounded("object stream cannot contain itself"),
+                });
+            }
+            objects.push(IndirectObject {
+                key,
+                offset,
+                object,
+            });
+        }
+        Ok(objects)
+    }
+
     fn parse_header(&mut self) -> std::result::Result<(u64, PdfVersion), ParseError> {
-        let Some(header_pos) = find_bytes(self.bytes, HEADER_MARKER, 0) else {
+        let Some(header_pos) = find_bytes(&self.bytes, HEADER_MARKER, 0) else {
             return Err(ParseError::Malformed {
                 message: bounded("missing PDF header"),
             });
@@ -861,7 +1172,7 @@ impl<'a> ByteParser<'a> {
             .and_then(|length| usize::try_from(length).ok())
             .and_then(|length| data_start.checked_add(length));
         let declared_keyword =
-            declared_end.and_then(|offset| endstream_after_optional_eol(self.bytes, offset));
+            declared_end.and_then(|offset| endstream_after_optional_eol(&self.bytes, offset));
         let (data_end, endstream_pos) = if let (Some(data_end), Some(keyword_pos)) =
             (declared_end, declared_keyword)
         {
@@ -882,11 +1193,11 @@ impl<'a> ByteParser<'a> {
                     message: bounded("missing endstream"),
                 })?;
             (
-                trim_eol_before(self.bytes, data_start, keyword_pos),
+                trim_eol_before(&self.bytes, data_start, keyword_pos),
                 keyword_pos,
             )
         };
-        let endstream_keyword_eol_compliant = has_eol_before(self.bytes, endstream_pos);
+        let endstream_keyword_eol_compliant = has_eol_before(&self.bytes, endstream_pos);
         let discovered_length =
             u64::try_from(data_end.saturating_sub(data_start)).map_err(|_| {
                 ParseError::ArithmeticOverflow {
@@ -897,16 +1208,6 @@ impl<'a> ByteParser<'a> {
         self.consume_bytes(ENDSTREAM_MARKER)?;
 
         let filters = stream_filters(&dictionary);
-        if matches!(dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("XRef")) {
-            self.push_fact(ParseFact::Xref {
-                section: ObjectLocation {
-                    object: Some(key),
-                    offset: None,
-                    path: None,
-                },
-                fact: XrefFact::XrefStreamUnsupported,
-            });
-        }
         self.push_fact(ParseFact::Stream {
             object: key,
             fact: StreamFact::Length {
@@ -935,6 +1236,7 @@ impl<'a> ByteParser<'a> {
             declared_length,
             discovered_length,
             filters,
+            raw_source: Arc::clone(&self.bytes),
             stream_keyword_crlf_compliant,
             endstream_keyword_eol_compliant,
         })
@@ -978,7 +1280,7 @@ impl<'a> ByteParser<'a> {
                 if offset.is_none()
                     || generation.is_none()
                     || !matches!(marker, Some(b'n' | b'f'))
-                    || !line_had_eol(self.bytes, line_start, self.pos)
+                    || !line_had_eol(&self.bytes, line_start, self.pos)
                 {
                     compliant = false;
                 }
@@ -1301,6 +1603,141 @@ fn integer_from_dictionary(dictionary: &Dictionary, key: &str) -> Option<i64> {
     }
 }
 
+fn non_negative_usize_from_dictionary(
+    dictionary: &Dictionary,
+    key: &'static str,
+) -> std::result::Result<usize, ParseError> {
+    let value = non_negative_u64_from_dictionary(dictionary, key)?;
+    usize::try_from(value).map_err(|_| ParseError::Malformed {
+        message: BoundedText::unchecked(format!("invalid object stream {key}")),
+    })
+}
+
+fn non_negative_u64_from_dictionary(
+    dictionary: &Dictionary,
+    key: &'static str,
+) -> std::result::Result<u64, ParseError> {
+    let Some(value) = integer_from_dictionary(dictionary, key) else {
+        return Err(ParseError::Malformed {
+            message: BoundedText::unchecked(format!("missing integer dictionary key {key}")),
+        });
+    };
+    u64::try_from(value).map_err(|_| ParseError::Malformed {
+        message: BoundedText::unchecked(format!("invalid non-negative dictionary key {key}")),
+    })
+}
+
+fn xref_widths(dictionary: &Dictionary) -> std::result::Result<[usize; 3], ParseError> {
+    let Some(CosObject::Array(values)) = dictionary.get("W") else {
+        return Err(ParseError::Malformed {
+            message: bounded("xref stream missing W array"),
+        });
+    };
+    if values.len() != 3 {
+        return Err(ParseError::Malformed {
+            message: bounded("xref stream W array must have three entries"),
+        });
+    }
+    let mut widths = [0_usize; 3];
+    for (index, value) in values.iter().enumerate() {
+        let CosObject::Integer(width) = value else {
+            return Err(ParseError::Malformed {
+                message: bounded("xref stream W entry must be integer"),
+            });
+        };
+        let width = usize::try_from(*width).map_err(|_| ParseError::Malformed {
+            message: bounded("xref stream W entry must be non-negative"),
+        })?;
+        if width > 8 {
+            return Err(ParseError::Malformed {
+                message: bounded("xref stream W entry exceeds supported width"),
+            });
+        }
+        let Some(slot) = widths.get_mut(index) else {
+            return Err(ParseError::Malformed {
+                message: bounded("xref stream W index out of bounds"),
+            });
+        };
+        *slot = width;
+    }
+    Ok(widths)
+}
+
+fn xref_indexes(
+    dictionary: &Dictionary,
+    size: u64,
+) -> std::result::Result<Vec<(u64, u64)>, ParseError> {
+    let Some(index_object) = dictionary.get("Index") else {
+        return Ok(vec![(0, size)]);
+    };
+    let CosObject::Array(values) = index_object else {
+        return Err(ParseError::Malformed {
+            message: bounded("xref stream Index must be an array"),
+        });
+    };
+    if values.len() % 2 != 0 {
+        return Err(ParseError::Malformed {
+            message: bounded("xref stream Index must contain pairs"),
+        });
+    }
+    let mut indexes = Vec::with_capacity(values.len() / 2);
+    for pair in values.chunks(2) {
+        let first = integer_value(pair.first(), "xref stream Index first")?;
+        let count = integer_value(pair.get(1), "xref stream Index count")?;
+        let first = u64::try_from(first).map_err(|_| ParseError::Malformed {
+            message: bounded("xref stream Index first must be non-negative"),
+        })?;
+        let count = u64::try_from(count).map_err(|_| ParseError::Malformed {
+            message: bounded("xref stream Index count must be non-negative"),
+        })?;
+        first
+            .checked_add(count)
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "xref stream Index",
+            })?;
+        indexes.push((first, count));
+    }
+    Ok(indexes)
+}
+
+fn integer_value(
+    value: Option<&CosObject>,
+    context: &'static str,
+) -> std::result::Result<i64, ParseError> {
+    match value {
+        Some(CosObject::Integer(value)) => Ok(*value),
+        _ => Err(ParseError::Malformed {
+            message: BoundedText::unchecked(format!("{context} must be integer")),
+        }),
+    }
+}
+
+fn read_be_uint(
+    bytes: &[u8],
+    pos: &mut usize,
+    width: usize,
+) -> std::result::Result<u64, ParseError> {
+    let end = pos
+        .checked_add(width)
+        .ok_or(ParseError::ArithmeticOverflow {
+            context: "xref stream field",
+        })?;
+    let field = bytes.get(*pos..end).ok_or(ParseError::Malformed {
+        message: bounded("xref stream field out of bounds"),
+    })?;
+    let mut value = 0_u64;
+    for byte in field {
+        value = value
+            .checked_mul(256)
+            .and_then(|current| current.checked_add(u64::from(*byte)))
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "xref stream field",
+            })?;
+    }
+    *pos = end;
+    Ok(value)
+}
+
 fn object_ref_from_dictionary(dictionary: &Dictionary, key: &str) -> Option<ObjectKey> {
     match dictionary.get(key) {
         Some(CosObject::Reference(value)) => Some(*value),
@@ -1333,9 +1770,68 @@ fn encryption_handler(dictionary: &Dictionary) -> Option<Identifier> {
     Identifier::new(text).ok()
 }
 
+#[cfg(feature = "flate")]
+fn decode_flate_limited(
+    bytes: &[u8],
+    max_decode_bytes: u64,
+) -> std::result::Result<Vec<u8>, ParseError> {
+    use flate2::read::{DeflateDecoder, ZlibDecoder};
+
+    read_limited(ZlibDecoder::new(Cursor::new(bytes)), max_decode_bytes)
+        .or_else(|_| read_limited(DeflateDecoder::new(Cursor::new(bytes)), max_decode_bytes))
+}
+
+#[cfg(not(feature = "flate"))]
+fn decode_flate_limited(
+    _bytes: &[u8],
+    _max_decode_bytes: u64,
+) -> std::result::Result<Vec<u8>, ParseError> {
+    Err(ParseError::UnsupportedFilter {
+        filter: BoundedText::unchecked("FlateDecode"),
+    })
+}
+
+#[cfg(feature = "flate")]
+fn read_limited(
+    mut reader: impl Read,
+    max_decode_bytes: u64,
+) -> std::result::Result<Vec<u8>, ParseError> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|source| ParseError::StreamDecode {
+                message: BoundedText::unchecked(source.to_string()),
+            })?;
+        if read == 0 {
+            return Ok(output);
+        }
+        let next_len = u64::try_from(output.len())
+            .ok()
+            .and_then(|len| {
+                u64::try_from(read)
+                    .ok()
+                    .and_then(|read| len.checked_add(read))
+            })
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "decoded stream length",
+            })?;
+        if next_len > max_decode_bytes {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_stream_decode_bytes",
+            });
+        }
+        let chunk = buffer.get(..read).ok_or(ParseError::Malformed {
+            message: bounded("decode buffer range out of bounds"),
+        })?;
+        output.extend_from_slice(chunk);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{error::Error, io::Cursor};
 
     use proptest::prelude::*;
     use rstest::rstest;
@@ -1359,6 +1855,16 @@ startxref
 %%EOF
 "
         .to_vec()
+    }
+
+    fn xref_stream_data(entries: &[(u8, u32, u16)]) -> Vec<u8> {
+        let mut data = Vec::with_capacity(entries.len() * 7);
+        for (entry_type, field_two, field_three) in entries {
+            data.push(*entry_type);
+            data.extend(field_two.to_be_bytes());
+            data.extend(field_three.to_be_bytes());
+        }
+        data
     }
 
     #[test]
@@ -1476,20 +1982,81 @@ trailer
     }
 
     #[test]
-    fn test_should_record_unsupported_xref_stream_fact() -> crate::Result<()> {
-        let bytes = br"%PDF-1.7
+    fn test_should_parse_xref_stream_as_trailer_source() -> crate::Result<()> {
+        let xref_data = xref_stream_data(&[(0, 0, 65_535), (1, 9, 0), (1, 45, 0)]);
+        let mut bytes = br"%PDF-1.7
 1 0 obj
 << /Type /Catalog >>
 endobj
 2 0 obj
-<< /Type /XRef /Length 0 >>
+<< /Type /XRef /Size 3 /W [1 4 2] /Index [0 3] /Length "
+            .to_vec();
+        bytes.extend(xref_data.len().to_string().as_bytes());
+        bytes.extend(
+            br" /Root 1 0 R >>
+stream
+",
+        );
+        bytes.extend(xref_data);
+        bytes.extend(
+            br"
+endstream
+endobj
+%%EOF
+",
+        );
+
+        let document = Parser::default().parse(Cursor::new(bytes))?;
+
+        assert!(document.catalog.is_some());
+        assert!(document.parse_facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ParseFact::Xref {
+                    fact: crate::XrefFact::XrefStreamParsed { .. },
+                    ..
+                }
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_parse_flate_xref_stream_with_compressed_entry() -> Result<(), Box<dyn Error>> {
+        use std::io::Write;
+
+        use flate2::{Compression, write::ZlibEncoder};
+
+        let xref_data = xref_stream_data(&[(2, 2, 0), (1, 3, 0)]);
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&xref_data)?;
+        let compressed = encoder.finish()?;
+        let mut bytes = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog >>
+endobj
+2 0 obj
+<< /Type /ObjStm /N 0 /First 0 /Length 0 >>
 stream
 endstream
 endobj
-trailer
-<< /Root 1 0 R >>
+3 0 obj
+<< /Type /XRef /Size 3 /W [1 4 2] /Index [1 2] /Filter /FlateDecode /Length "
+            .to_vec();
+        bytes.extend(compressed.len().to_string().as_bytes());
+        bytes.extend(
+            br" /Root 1 0 R >>
+stream
+",
+        );
+        bytes.extend(compressed);
+        bytes.extend(
+            br"
+endstream
+endobj
 %%EOF
-";
+",
+        );
 
         let document = Parser::default().parse(Cursor::new(bytes))?;
 
@@ -1497,7 +2064,102 @@ trailer
             matches!(
                 fact,
                 ParseFact::Xref {
-                    fact: crate::XrefFact::XrefStreamUnsupported,
+                    fact: crate::XrefFact::XrefStreamParsed {
+                        entries: 2,
+                        compressed_entries: 1
+                    },
+                    ..
+                }
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_expand_unfiltered_object_stream() -> crate::Result<()> {
+        let object_stream = b"1 0 << /Type /Catalog >>";
+        let mut bytes = br"%PDF-1.7
+2 0 obj
+<< /Type /ObjStm /N 1 /First 4 /Length "
+            .to_vec();
+        bytes.extend(object_stream.len().to_string().as_bytes());
+        bytes.extend(
+            br" >>
+stream
+",
+        );
+        bytes.extend(object_stream);
+        bytes.extend(
+            br"
+endstream
+endobj
+3 0 obj
+<< /Type /XRef /Size 4 /W [1 1 1] /Index [0 0] /Length 0 /Root 1 0 R >>
+stream
+endstream
+endobj
+%%EOF
+",
+        );
+
+        let document = Parser::default().parse(Cursor::new(bytes))?;
+
+        assert!(document.catalog.is_some());
+        assert_eq!(document.objects.len(), 3);
+        assert!(document.parse_facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ParseFact::Xref {
+                    fact: crate::XrefFact::ObjectStreamParsed,
+                    ..
+                }
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_decode_flate_object_stream_with_limit() -> Result<(), Box<dyn Error>> {
+        use std::io::Write;
+
+        use flate2::{Compression, write::ZlibEncoder};
+
+        let object_stream = b"1 0 << /Type /Catalog >>";
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(object_stream)?;
+        let compressed = encoder.finish()?;
+        let mut bytes = br"%PDF-1.7
+2 0 obj
+<< /Type /ObjStm /N 1 /First 4 /Filter /FlateDecode /Length "
+            .to_vec();
+        bytes.extend(compressed.len().to_string().as_bytes());
+        bytes.extend(
+            br" >>
+stream
+",
+        );
+        bytes.extend(compressed);
+        bytes.extend(
+            br"
+endstream
+endobj
+3 0 obj
+<< /Type /XRef /Size 4 /W [1 1 1] /Index [0 0] /Length 0 /Root 1 0 R >>
+stream
+endstream
+endobj
+%%EOF
+",
+        );
+
+        let document = Parser::default().parse(Cursor::new(bytes))?;
+
+        assert!(document.catalog.is_some());
+        assert!(document.parse_facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ParseFact::Stream {
+                    fact: StreamFact::Decoded { bytes: 24 },
                     ..
                 }
             )

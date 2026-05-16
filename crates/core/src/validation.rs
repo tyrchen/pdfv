@@ -12,7 +12,7 @@ use std::{
 use crate::{
     Assertion, BoundedText, BuiltinProfileRepository, ENGINE_VERSION, ErrorArgument, Identifier,
     IndirectObject, InputKind, InputSummary, ModelValue, ObjectKey, ObjectLocation, ObjectTypeName,
-    ParsedDocument, Parser, PdfvError, ProfileReport, ProfileRepository, PropertyName,
+    ParsedDocument, Parser, PdfName, PdfvError, ProfileReport, ProfileRepository, PropertyName,
     ResourceLimits, Result, Rule, RuleEvaluator, RuleId, RuleOutcome, TaskDuration,
     UnsupportedRule, ValidationError, ValidationOptions, ValidationReport, ValidationStatus,
     profile::DefaultRuleEvaluator,
@@ -235,6 +235,18 @@ impl ValidationSession {
         let metadata_model = catalog_model
             .as_ref()
             .and_then(|catalog| MetadataModel::new(&self.document, catalog.metadata));
+        let page_models = catalog_model
+            .as_ref()
+            .map(|catalog| PageModel::from_catalog(&self.document, catalog, &self.limits))
+            .transpose()?
+            .unwrap_or_default();
+        let font_models = FontModel::from_pages(&self.document, &page_models);
+        let annotation_models = AnnotationModel::from_pages(&self.document, &page_models);
+        let output_intent_models = catalog_model
+            .as_ref()
+            .map(|catalog| OutputIntentModel::from_catalog(&self.document, catalog))
+            .unwrap_or_default();
+        let content_stream_models = ContentStreamModel::from_pages(&self.document, &page_models);
         let stream_models = self
             .document
             .objects
@@ -250,6 +262,17 @@ impl ValidationSession {
         let mut stack = Vec::from([ModelObjectRef::Document(&document_model)]);
         let mut visited = HashSet::new();
         let mut deferred = Vec::new();
+        let links = ModelLinks {
+            graph: &graph,
+            catalog: catalog_model.as_ref(),
+            metadata: metadata_model.as_ref(),
+            pages: &page_models,
+            fonts: &font_models,
+            annotations: &annotation_models,
+            output_intents: &output_intent_models,
+            content_streams: &content_stream_models,
+            streams: &stream_models,
+        };
 
         while let Some(object) = stack.pop() {
             let visited_key = object.identity_key();
@@ -273,12 +296,7 @@ impl ValidationSession {
                 }
                 .into());
             }
-            for linked in object.linked_objects(
-                &graph,
-                catalog_model.as_ref(),
-                metadata_model.as_ref(),
-                &stream_models,
-            )? {
+            for linked in object.linked_objects(&links)? {
                 stack.push(linked);
             }
         }
@@ -310,6 +328,20 @@ impl LinkName {
     }
 }
 
+/// Borrowed model graph link sources used during lazy traversal.
+#[derive(Debug)]
+pub struct ModelLinks<'a> {
+    graph: &'a ModelGraph<'a>,
+    catalog: Option<&'a CatalogModel<'a>>,
+    metadata: Option<&'a MetadataModel<'a>>,
+    pages: &'a [PageModel<'a>],
+    fonts: &'a [FontModel<'a>],
+    annotations: &'a [AnnotationModel<'a>],
+    output_intents: &'a [OutputIntentModel<'a>],
+    content_streams: &'a [ContentStreamModel<'a>],
+    streams: &'a [StreamModel<'a>],
+}
+
 /// Validation model object.
 pub trait ModelObject {
     /// Optional stable object identity.
@@ -333,13 +365,7 @@ pub trait ModelObject {
     /// # Errors
     ///
     /// Returns [`PdfvError`] when link materialization fails.
-    fn linked_objects<'a>(
-        &'a self,
-        graph: &'a ModelGraph<'a>,
-        catalog: Option<&'a CatalogModel<'a>>,
-        metadata: Option<&'a MetadataModel<'a>>,
-        streams: &'a [StreamModel<'a>],
-    ) -> Result<Vec<ModelObjectRef<'a>>>;
+    fn linked_objects<'a>(&'a self, links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>>;
 }
 
 /// Borrowed validation model object reference.
@@ -351,6 +377,16 @@ pub enum ModelObjectRef<'a> {
     Catalog(&'a CatalogModel<'a>),
     /// Metadata stream object.
     Metadata(&'a MetadataModel<'a>),
+    /// Page dictionary object.
+    Page(&'a PageModel<'a>),
+    /// Font dictionary object.
+    Font(&'a FontModel<'a>),
+    /// Annotation dictionary object.
+    Annotation(&'a AnnotationModel<'a>),
+    /// Output intent dictionary object.
+    OutputIntent(&'a OutputIntentModel<'a>),
+    /// Page content stream object.
+    ContentStream(&'a ContentStreamModel<'a>),
     /// Basic stream object.
     Stream(&'a StreamModel<'a>),
 }
@@ -363,6 +399,11 @@ impl<'a> ModelObjectRef<'a> {
             Self::Document(model) => model.document,
             Self::Catalog(model) => model.document,
             Self::Metadata(model) => model.document,
+            Self::Page(model) => model.document,
+            Self::Font(model) => model.document,
+            Self::Annotation(model) => model.document,
+            Self::OutputIntent(model) => model.document,
+            Self::ContentStream(model) => model.document,
             Self::Stream(model) => model.document,
         }
     }
@@ -374,6 +415,11 @@ impl<'a> ModelObjectRef<'a> {
             Self::Document(model) => model.object_type(),
             Self::Catalog(model) => model.object_type(),
             Self::Metadata(model) => model.object_type(),
+            Self::Page(model) => model.object_type(),
+            Self::Font(model) => model.object_type(),
+            Self::Annotation(model) => model.object_type(),
+            Self::OutputIntent(model) => model.object_type(),
+            Self::ContentStream(model) => model.object_type(),
             Self::Stream(model) => model.object_type(),
         }
     }
@@ -388,6 +434,11 @@ impl<'a> ModelObjectRef<'a> {
             Self::Document(model) => model.property(name),
             Self::Catalog(model) => model.property(name),
             Self::Metadata(model) => model.property(name),
+            Self::Page(model) => model.property(name),
+            Self::Font(model) => model.property(name),
+            Self::Annotation(model) => model.property(name),
+            Self::OutputIntent(model) => model.property(name),
+            Self::ContentStream(model) => model.property(name),
             Self::Stream(model) => model.property(name),
         }
     }
@@ -409,6 +460,47 @@ impl<'a> ModelObjectRef<'a> {
                 offset: Some(model.offset),
                 path: Some(BoundedText::unchecked("root/catalog[0]/metadata[0]")),
             },
+            Self::Page(model) => ObjectLocation {
+                object: Some(model.key),
+                offset: Some(model.offset),
+                path: Some(BoundedText::unchecked(format!(
+                    "root/page[{}]",
+                    model.ordinal
+                ))),
+            },
+            Self::Font(model) => ObjectLocation {
+                object: model.key,
+                offset: model.offset,
+                path: Some(BoundedText::unchecked(format!(
+                    "root/page[{}]/font[{}]",
+                    model.page_ordinal,
+                    String::from_utf8_lossy(model.name.as_bytes())
+                ))),
+            },
+            Self::Annotation(model) => ObjectLocation {
+                object: model.key,
+                offset: model.offset,
+                path: Some(BoundedText::unchecked(format!(
+                    "root/page[{}]/annotation[{}]",
+                    model.page_ordinal, model.ordinal
+                ))),
+            },
+            Self::OutputIntent(model) => ObjectLocation {
+                object: model.key,
+                offset: model.offset,
+                path: Some(BoundedText::unchecked(format!(
+                    "root/catalog[0]/outputIntent[{}]",
+                    model.ordinal
+                ))),
+            },
+            Self::ContentStream(model) => ObjectLocation {
+                object: Some(model.key),
+                offset: Some(model.offset),
+                path: Some(BoundedText::unchecked(format!(
+                    "root/page[{}]/contentStream[{}]",
+                    model.page_ordinal, model.ordinal
+                ))),
+            },
             Self::Stream(model) => ObjectLocation {
                 object: Some(model.key),
                 offset: Some(model.offset),
@@ -425,6 +517,23 @@ impl<'a> ModelObjectRef<'a> {
             Self::Document(_) => BoundedText::unchecked("root"),
             Self::Catalog(_) => BoundedText::unchecked("root/catalog[0]"),
             Self::Metadata(_) => BoundedText::unchecked("root/catalog[0]/metadata[0]"),
+            Self::Page(model) => BoundedText::unchecked(format!("root/page[{}]", model.ordinal)),
+            Self::Font(model) => BoundedText::unchecked(format!(
+                "root/page[{}]/font[{}]",
+                model.page_ordinal,
+                String::from_utf8_lossy(model.name.as_bytes())
+            )),
+            Self::Annotation(model) => BoundedText::unchecked(format!(
+                "root/page[{}]/annotation[{}]",
+                model.page_ordinal, model.ordinal
+            )),
+            Self::OutputIntent(model) => {
+                BoundedText::unchecked(format!("root/catalog[0]/outputIntent[{}]", model.ordinal))
+            }
+            Self::ContentStream(model) => BoundedText::unchecked(format!(
+                "root/page[{}]/contentStream[{}]",
+                model.page_ordinal, model.ordinal
+            )),
             Self::Stream(model) => {
                 BoundedText::unchecked(format!("root/stream[{}]", model.key.number))
             }
@@ -440,22 +549,43 @@ impl<'a> ModelObjectRef<'a> {
             Self::Metadata(model) => {
                 format!("metadata:{}:{}", model.key.number, model.key.generation)
             }
+            Self::Page(model) => format!("page:{}:{}", model.key.number, model.key.generation),
+            Self::Font(model) => format!(
+                "font:{}:{}:{}",
+                model.page_ordinal,
+                model.key.map_or(0, |key| key.number.get()),
+                String::from_utf8_lossy(model.name.as_bytes())
+            ),
+            Self::Annotation(model) => format!(
+                "annotation:{}:{}:{}",
+                model.page_ordinal,
+                model.ordinal,
+                model.key.map_or(0, |key| key.number.get())
+            ),
+            Self::OutputIntent(model) => format!(
+                "outputIntent:{}:{}",
+                model.ordinal,
+                model.key.map_or(0, |key| key.number.get())
+            ),
+            Self::ContentStream(model) => format!(
+                "contentStream:{}:{}:{}",
+                model.page_ordinal, model.key.number, model.key.generation
+            ),
             Self::Stream(model) => format!("stream:{}:{}", model.key.number, model.key.generation),
         }
     }
 
-    fn linked_objects(
-        self,
-        graph: &'a ModelGraph<'a>,
-        catalog: Option<&'a CatalogModel<'a>>,
-        metadata: Option<&'a MetadataModel<'a>>,
-        streams: &'a [StreamModel<'a>],
-    ) -> Result<Vec<ModelObjectRef<'a>>> {
+    fn linked_objects(self, links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
         match self {
-            Self::Document(model) => model.linked_objects(graph, catalog, metadata, streams),
-            Self::Catalog(model) => model.linked_objects(graph, catalog, metadata, streams),
-            Self::Metadata(model) => model.linked_objects(graph, catalog, metadata, streams),
-            Self::Stream(model) => model.linked_objects(graph, catalog, metadata, streams),
+            Self::Document(model) => model.linked_objects(links),
+            Self::Catalog(model) => model.linked_objects(links),
+            Self::Metadata(model) => model.linked_objects(links),
+            Self::Page(model) => model.linked_objects(links),
+            Self::Font(model) => model.linked_objects(links),
+            Self::Annotation(model) => model.linked_objects(links),
+            Self::OutputIntent(model) => model.linked_objects(links),
+            Self::ContentStream(model) => model.linked_objects(links),
+            Self::Stream(model) => model.linked_objects(links),
         }
     }
 }
@@ -531,19 +661,13 @@ impl ModelObject for DocumentModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'a>(
-        &'a self,
-        graph: &'a ModelGraph<'a>,
-        catalog: Option<&'a CatalogModel<'a>>,
-        _metadata: Option<&'a MetadataModel<'a>>,
-        streams: &'a [StreamModel<'a>],
-    ) -> Result<Vec<ModelObjectRef<'a>>> {
+    fn linked_objects<'a>(&'a self, links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut objects = Vec::new();
-        if let Some(catalog) = catalog {
+        if let Some(catalog) = links.catalog {
             objects.push(ModelObjectRef::Catalog(catalog));
         }
-        for stream in streams.iter().rev() {
-            if Some(stream.key) != graph.document.catalog {
+        for stream in links.streams.iter().rev() {
+            if Some(stream.key) != links.graph.document.catalog {
                 objects.push(ModelObjectRef::Stream(stream));
             }
         }
@@ -558,6 +682,7 @@ pub struct CatalogModel<'a> {
     key: ObjectKey,
     offset: u64,
     metadata: Option<ObjectKey>,
+    pages: Option<ObjectKey>,
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
@@ -571,11 +696,16 @@ impl<'a> CatalogModel<'a> {
             Some(crate::CosObject::Reference(key)) => Some(*key),
             _ => None,
         };
+        let pages = match dictionary.get("Pages") {
+            Some(crate::CosObject::Reference(key)) => Some(*key),
+            _ => None,
+        };
         Some(Self {
             document,
             key,
             offset: object.offset,
             metadata,
+            pages,
             object_type: ObjectTypeName::unchecked("catalog"),
             supertypes: vec![ObjectTypeName::unchecked("object")],
             links: vec![LinkName(Identifier::unchecked("metadata"))],
@@ -616,17 +746,21 @@ impl ModelObject for CatalogModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'a>(
-        &'a self,
-        _graph: &'a ModelGraph<'a>,
-        _catalog: Option<&'a CatalogModel<'a>>,
-        metadata: Option<&'a MetadataModel<'a>>,
-        _streams: &'a [StreamModel<'a>],
-    ) -> Result<Vec<ModelObjectRef<'a>>> {
-        Ok(metadata
+    fn linked_objects<'a>(&'a self, links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
+        let mut objects = links
+            .metadata
             .map(ModelObjectRef::Metadata)
             .into_iter()
-            .collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        objects.extend(
+            links
+                .output_intents
+                .iter()
+                .rev()
+                .map(ModelObjectRef::OutputIntent),
+        );
+        objects.extend(links.pages.iter().rev().map(ModelObjectRef::Page));
+        Ok(objects)
     }
 }
 
@@ -695,15 +829,556 @@ impl ModelObject for MetadataModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'a>(
-        &'a self,
-        _graph: &'a ModelGraph<'a>,
-        _catalog: Option<&'a CatalogModel<'a>>,
-        _metadata: Option<&'a MetadataModel<'a>>,
-        _streams: &'a [StreamModel<'a>],
-    ) -> Result<Vec<ModelObjectRef<'a>>> {
+    fn linked_objects<'a>(&'a self, _links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
+}
+
+/// Page dictionary model wrapper.
+#[derive(Debug)]
+pub struct PageModel<'a> {
+    document: &'a ParsedDocument,
+    key: ObjectKey,
+    offset: u64,
+    ordinal: usize,
+    dictionary: &'a crate::Dictionary,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> PageModel<'a> {
+    fn from_catalog(
+        document: &'a ParsedDocument,
+        catalog: &CatalogModel<'_>,
+        limits: &ResourceLimits,
+    ) -> Result<Vec<Self>> {
+        let Some(pages_root) = catalog.pages else {
+            return Ok(Vec::new());
+        };
+        let mut stack = vec![pages_root];
+        let mut pages = Vec::new();
+        let mut visited = HashSet::new();
+        while let Some(key) = stack.pop() {
+            if !visited.insert(key) {
+                continue;
+            }
+            let Some(object) = document.objects.get(&key) else {
+                continue;
+            };
+            let Some(dictionary) = object.object.as_dictionary() else {
+                continue;
+            };
+            match dictionary.get("Type") {
+                Some(crate::CosObject::Name(name)) if name.matches("Page") => {
+                    pages.push(Self {
+                        document,
+                        key,
+                        offset: object.offset,
+                        ordinal: pages.len(),
+                        dictionary,
+                        object_type: ObjectTypeName::unchecked("page"),
+                        supertypes: vec![ObjectTypeName::unchecked("object")],
+                        links: vec![
+                            LinkName(Identifier::unchecked("fonts")),
+                            LinkName(Identifier::unchecked("annotations")),
+                            LinkName(Identifier::unchecked("contentStreams")),
+                        ],
+                    });
+                }
+                _ => {
+                    for kid in object_refs_from_array(dictionary.get("Kids"))
+                        .into_iter()
+                        .rev()
+                    {
+                        stack.push(kid);
+                    }
+                }
+            }
+            if u64::try_from(visited.len()).map_err(|_| ValidationError::LimitExceeded {
+                limit: "max_objects",
+            })? > limits.max_objects
+            {
+                return Err(ValidationError::LimitExceeded {
+                    limit: "max_objects",
+                }
+                .into());
+            }
+        }
+        Ok(pages)
+    }
+}
+
+impl ModelObject for PageModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!("page:{}:{}", self.key.number, self.key.generation),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("page")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "hasContents" => Ok(ModelValue::Bool(self.dictionary.get("Contents").is_some())),
+            "hasResources" => Ok(ModelValue::Bool(self.dictionary.get("Resources").is_some())),
+            "annotationCount" => Ok(ModelValue::Number(usize_to_f64(
+                object_refs_or_direct_count(self.dictionary.get("Annots")),
+            )?)),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'b>(&'b self, links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+        let mut objects = Vec::new();
+        objects.extend(
+            links
+                .content_streams
+                .iter()
+                .rev()
+                .filter(|stream| stream.page_ordinal == self.ordinal)
+                .map(ModelObjectRef::ContentStream),
+        );
+        objects.extend(
+            links
+                .annotations
+                .iter()
+                .rev()
+                .filter(|annotation| annotation.page_ordinal == self.ordinal)
+                .map(ModelObjectRef::Annotation),
+        );
+        objects.extend(
+            links
+                .fonts
+                .iter()
+                .rev()
+                .filter(|font| font.page_ordinal == self.ordinal)
+                .map(ModelObjectRef::Font),
+        );
+        Ok(objects)
+    }
+}
+
+/// Font dictionary model wrapper.
+#[derive(Debug)]
+pub struct FontModel<'a> {
+    document: &'a ParsedDocument,
+    page_ordinal: usize,
+    key: Option<ObjectKey>,
+    offset: Option<u64>,
+    name: PdfName,
+    dictionary: &'a crate::Dictionary,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> FontModel<'a> {
+    fn from_pages(document: &'a ParsedDocument, pages: &[PageModel<'a>]) -> Vec<Self> {
+        let mut fonts = Vec::new();
+        for page in pages {
+            let Some(resources) =
+                resolve_dictionary_value(document, page.dictionary.get("Resources"))
+            else {
+                continue;
+            };
+            let Some(crate::CosObject::Dictionary(fonts_dictionary)) = resources.get("Font") else {
+                continue;
+            };
+            for (name, value) in fonts_dictionary.iter() {
+                if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
+                    fonts.push(Self {
+                        document,
+                        page_ordinal: page.ordinal,
+                        key,
+                        offset,
+                        name: name.clone(),
+                        dictionary,
+                        object_type: ObjectTypeName::unchecked("font"),
+                        supertypes: vec![ObjectTypeName::unchecked("object")],
+                        links: Vec::new(),
+                    });
+                }
+            }
+        }
+        fonts
+    }
+}
+
+impl ModelObject for FontModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!(
+                "font:{}:{}",
+                self.page_ordinal,
+                String::from_utf8_lossy(self.name.as_bytes())
+            ),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("font")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "embedded" => Ok(ModelValue::Bool(
+                self.dictionary.get("FontDescriptor").is_some(),
+            )),
+            "hasSubtype" => Ok(ModelValue::Bool(self.dictionary.get("Subtype").is_some())),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'b>(&'b self, _links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Annotation dictionary model wrapper.
+#[derive(Debug)]
+pub struct AnnotationModel<'a> {
+    document: &'a ParsedDocument,
+    page_ordinal: usize,
+    ordinal: usize,
+    key: Option<ObjectKey>,
+    offset: Option<u64>,
+    dictionary: &'a crate::Dictionary,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> AnnotationModel<'a> {
+    fn from_pages(document: &'a ParsedDocument, pages: &[PageModel<'a>]) -> Vec<Self> {
+        let mut annotations = Vec::new();
+        for page in pages {
+            for (ordinal, value) in array_values(page.dictionary.get("Annots")).enumerate() {
+                if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
+                    annotations.push(Self {
+                        document,
+                        page_ordinal: page.ordinal,
+                        ordinal,
+                        key,
+                        offset,
+                        dictionary,
+                        object_type: ObjectTypeName::unchecked("annotation"),
+                        supertypes: vec![ObjectTypeName::unchecked("object")],
+                        links: Vec::new(),
+                    });
+                }
+            }
+        }
+        annotations
+    }
+}
+
+impl ModelObject for AnnotationModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!("annotation:{}:{}", self.page_ordinal, self.ordinal),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("annotation")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "hasSubtype" => Ok(ModelValue::Bool(self.dictionary.get("Subtype").is_some())),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'b>(&'b self, _links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Output intent dictionary model wrapper.
+#[derive(Debug)]
+pub struct OutputIntentModel<'a> {
+    document: &'a ParsedDocument,
+    ordinal: usize,
+    key: Option<ObjectKey>,
+    offset: Option<u64>,
+    dictionary: &'a crate::Dictionary,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> OutputIntentModel<'a> {
+    fn from_catalog(document: &'a ParsedDocument, catalog: &CatalogModel<'_>) -> Vec<Self> {
+        let Some(catalog_object) = document.objects.get(&catalog.key) else {
+            return Vec::new();
+        };
+        let Some(catalog_dictionary) = catalog_object.object.as_dictionary() else {
+            return Vec::new();
+        };
+        let mut output_intents = Vec::new();
+        for (ordinal, value) in array_values(catalog_dictionary.get("OutputIntents")).enumerate() {
+            if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
+                output_intents.push(Self {
+                    document,
+                    ordinal,
+                    key,
+                    offset,
+                    dictionary,
+                    object_type: ObjectTypeName::unchecked("outputIntent"),
+                    supertypes: vec![ObjectTypeName::unchecked("object")],
+                    links: Vec::new(),
+                });
+            }
+        }
+        output_intents
+    }
+}
+
+impl ModelObject for OutputIntentModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!("outputIntent:{}", self.ordinal),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("outputIntent")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "hasDestOutputProfile" => Ok(ModelValue::Bool(
+                self.dictionary.get("DestOutputProfile").is_some(),
+            )),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'b>(&'b self, _links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Page content stream model wrapper.
+#[derive(Debug)]
+pub struct ContentStreamModel<'a> {
+    document: &'a ParsedDocument,
+    page_ordinal: usize,
+    ordinal: usize,
+    key: ObjectKey,
+    offset: u64,
+    stream: &'a crate::StreamObject,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> ContentStreamModel<'a> {
+    fn from_pages(document: &'a ParsedDocument, pages: &[PageModel<'a>]) -> Vec<Self> {
+        let mut streams = Vec::new();
+        for page in pages {
+            for (ordinal, key) in object_refs_from_value(page.dictionary.get("Contents"))
+                .into_iter()
+                .enumerate()
+            {
+                let Some(object) = document.objects.get(&key) else {
+                    continue;
+                };
+                let crate::CosObject::Stream(stream) = &object.object else {
+                    continue;
+                };
+                streams.push(Self {
+                    document,
+                    page_ordinal: page.ordinal,
+                    ordinal,
+                    key,
+                    offset: object.offset,
+                    stream,
+                    object_type: ObjectTypeName::unchecked("contentStream"),
+                    supertypes: vec![
+                        ObjectTypeName::unchecked("stream"),
+                        ObjectTypeName::unchecked("object"),
+                    ],
+                    links: Vec::new(),
+                });
+            }
+        }
+        streams
+    }
+}
+
+impl ModelObject for ContentStreamModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!(
+                "contentStream:{}:{}:{}",
+                self.page_ordinal, self.key.number, self.key.generation
+            ),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("contentStream")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "declaredLength" => Ok(ModelValue::Number(u64_to_f64(
+                self.stream
+                    .declared_length
+                    .unwrap_or(self.stream.discovered_length),
+            )?)),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'b>(&'b self, _links: &ModelLinks<'b>) -> Result<Vec<ModelObjectRef<'b>>> {
+        Ok(Vec::new())
+    }
+}
+
+fn resolve_dictionary_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&'a crate::CosObject>,
+) -> Option<&'a crate::Dictionary> {
+    match value {
+        Some(crate::CosObject::Dictionary(dictionary)) => Some(dictionary),
+        Some(crate::CosObject::Reference(key)) => document.objects.get(key)?.object.as_dictionary(),
+        _ => None,
+    }
+}
+
+fn resolve_named_dictionary<'a>(
+    document: &'a ParsedDocument,
+    value: &'a crate::CosObject,
+) -> Option<(Option<ObjectKey>, Option<u64>, &'a crate::Dictionary)> {
+    match value {
+        crate::CosObject::Dictionary(dictionary) => Some((None, None, dictionary)),
+        crate::CosObject::Reference(key) => {
+            let object = document.objects.get(key)?;
+            let dictionary = object.object.as_dictionary()?;
+            Some((Some(*key), Some(object.offset), dictionary))
+        }
+        _ => None,
+    }
+}
+
+fn object_refs_from_array(value: Option<&crate::CosObject>) -> Vec<ObjectKey> {
+    match value {
+        Some(crate::CosObject::Array(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                crate::CosObject::Reference(key) => Some(*key),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn object_refs_from_value(value: Option<&crate::CosObject>) -> Vec<ObjectKey> {
+    match value {
+        Some(crate::CosObject::Reference(key)) => vec![*key],
+        Some(crate::CosObject::Array(_)) => object_refs_from_array(value),
+        _ => Vec::new(),
+    }
+}
+
+fn object_refs_or_direct_count(value: Option<&crate::CosObject>) -> usize {
+    match value {
+        Some(crate::CosObject::Array(values)) => values.len(),
+        Some(_) => 1,
+        None => 0,
+    }
+}
+
+fn array_values(value: Option<&crate::CosObject>) -> impl Iterator<Item = &crate::CosObject> {
+    value
+        .and_then(|value| match value {
+            crate::CosObject::Array(values) => Some(values.as_slice()),
+            _ => None,
+        })
+        .into_iter()
+        .flatten()
 }
 
 /// Stream model wrapper.
@@ -783,13 +1458,7 @@ impl ModelObject for StreamModel<'_> {
         &self.links
     }
 
-    fn linked_objects<'a>(
-        &'a self,
-        _graph: &'a ModelGraph<'a>,
-        _catalog: Option<&'a CatalogModel<'a>>,
-        _metadata: Option<&'a MetadataModel<'a>>,
-        _streams: &'a [StreamModel<'a>],
-    ) -> Result<Vec<ModelObjectRef<'a>>> {
+    fn linked_objects<'a>(&'a self, _links: &ModelLinks<'a>) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
 }
@@ -820,6 +1489,11 @@ impl<'a> RuleIndex<'a> {
             ModelObjectRef::Document(model) => model.super_types(),
             ModelObjectRef::Catalog(model) => model.super_types(),
             ModelObjectRef::Metadata(model) => model.super_types(),
+            ModelObjectRef::Page(model) => model.super_types(),
+            ModelObjectRef::Font(model) => model.super_types(),
+            ModelObjectRef::Annotation(model) => model.super_types(),
+            ModelObjectRef::OutputIntent(model) => model.super_types(),
+            ModelObjectRef::ContentStream(model) => model.super_types(),
             ModelObjectRef::Stream(model) => model.super_types(),
         };
         for supertype in supertypes {
@@ -1040,4 +1714,93 @@ fn u64_to_f64(value: u64) -> Result<f64> {
         limit: "numeric_property",
     })?;
     Ok(f64::from(bounded))
+}
+
+fn usize_to_f64(value: usize) -> Result<f64> {
+    let bounded = u32::try_from(value).map_err(|_| ValidationError::LimitExceeded {
+        limit: "numeric_property",
+    })?;
+    Ok(f64::from(bounded))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::{
+        AnnotationModel, CatalogModel, ContentStreamModel, FontModel, OutputIntentModel, PageModel,
+    };
+    use crate::{ModelObject, ModelValue, Parser, PropertyName};
+
+    fn m1_model_pdf() -> &'static [u8] {
+        br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OutputIntents [8 0 R] >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Annots [5 0 R] /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Type /Annot /Subtype /Text >>
+endobj
+6 0 obj
+<< /Length 3 >>
+stream
+q Q
+endstream
+endobj
+7 0 obj
+<< /Length 0 >>
+stream
+endstream
+endobj
+8 0 obj
+<< /Type /OutputIntent /S /GTS_PDFA1 /DestOutputProfile 7 0 R >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+"
+    }
+
+    #[test]
+    fn test_should_materialize_m1_model_wrappers() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(m1_model_pdf()))?;
+        let catalog_key = document.catalog.ok_or(crate::ParseError::MissingObject {
+            message: crate::BoundedText::unchecked("missing catalog"),
+        })?;
+        let catalog =
+            CatalogModel::new(&document, catalog_key).ok_or(crate::ParseError::MissingObject {
+                message: crate::BoundedText::unchecked("missing catalog model"),
+            })?;
+
+        let pages =
+            PageModel::from_catalog(&document, &catalog, &crate::ResourceLimits::default())?;
+        let fonts = FontModel::from_pages(&document, &pages);
+        let annotations = AnnotationModel::from_pages(&document, &pages);
+        let output_intents = OutputIntentModel::from_catalog(&document, &catalog);
+        let content_streams = ContentStreamModel::from_pages(&document, &pages);
+
+        assert_eq!(pages.len(), 1);
+        assert_eq!(fonts.len(), 1);
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(output_intents.len(), 1);
+        assert_eq!(content_streams.len(), 1);
+        assert_eq!(
+            pages
+                .first()
+                .ok_or(crate::ParseError::MissingObject {
+                    message: crate::BoundedText::unchecked("missing page"),
+                })?
+                .property(&PropertyName::new("hasContents")?)?,
+            ModelValue::Bool(true)
+        );
+        Ok(())
+    }
 }

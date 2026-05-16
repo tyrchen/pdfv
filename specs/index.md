@@ -14,7 +14,7 @@ Read in this order when implementing:
 6. [20-reporting-design.md](./20-reporting-design.md) — JSON/text output and batch summaries.
 7. [50-cli-design.md](./50-cli-design.md) — CLI UX, config, exit codes, concurrency.
 8. Cross-cuts: [61-crates-and-features.md](./61-crates-and-features.md), [70-security.md](./70-security.md), [71-performance-budgets.md](./71-performance-budgets.md), [72-testing-strategy.md](./72-testing-strategy.md).
-9. [80-glossary.md](./80-glossary.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [99-key-decisions.md](./99-key-decisions.md).
+9. [80-glossary.md](./80-glossary.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [93-improvements-review.md](./93-improvements-review.md), [99-key-decisions.md](./99-key-decisions.md).
 
 ## Build-order graph
 
@@ -30,7 +30,7 @@ Read in this order when implementing:
 61-crates-and-features, 70-security, 71-performance-budgets, 72-testing-strategy
   constrain every implementation phase.
 
-80-glossary, 90-roadmap, 91-impl-plan, 99-key-decisions
+80-glossary, 90-roadmap, 91-impl-plan, 93-improvements-review, 99-key-decisions
   explain terms, stakeholder milestones, engineering order, and load-bearing choices.
 ```
 
@@ -52,9 +52,9 @@ Read in this order when implementing:
 | [80-glossary.md](./80-glossary.md) | Glossary | Defines overloaded PDF, validation, and product terms. |
 | [90-roadmap.md](./90-roadmap.md) | Roadmap | Stakeholder-facing milestones and exit criteria. |
 | [91-impl-plan.md](./91-impl-plan.md) | Implementation plan | Engineer-facing dependency order, phases, effort, and gates. |
+| [93-improvements-review.md](./93-improvements-review.md) | Review backlog | Deferred findings and non-blocking architecture improvements from implementation reviews. |
 | [99-key-decisions.md](./99-key-decisions.md) | Key decisions | Permanent design decisions with alternatives and rationale. |
 
 ## Research anchors
 
 - [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md) — veraPDF parser, profile, validator, reporting, and CLI architecture. The spec adopts its library-first facade, tolerant parse facts, iterative validation graph, and bounded report shape while avoiding `ThreadLocal` session state and JavaScript rule execution.
-

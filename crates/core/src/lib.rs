@@ -39,8 +39,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use typed_builder::TypedBuilder;
 pub use validation::{
-    CatalogModel, InputName, LinkName, MetadataModel, ModelGraph, ModelObject, ModelObjectRef,
-    ObjectIdentity, Validator,
+    AnnotationModel, CatalogModel, ContentStreamModel, FontModel, InputName, LinkName,
+    MetadataModel, ModelGraph, ModelLinks, ModelObject, ModelObjectRef, ObjectIdentity,
+    OutputIntentModel, PageModel, Validator,
 };
 
 /// Current library version embedded in generated reports.
@@ -107,6 +108,18 @@ pub enum ParseError {
     /// A referenced object was missing or had the wrong shape.
     #[error("missing PDF object: {message}")]
     MissingObject {
+        /// Bounded diagnostic message.
+        message: BoundedText,
+    },
+    /// A stream filter is not supported by this phase.
+    #[error("unsupported stream filter: {filter}")]
+    UnsupportedFilter {
+        /// Filter name.
+        filter: BoundedText,
+    },
+    /// Stream decoding failed.
+    #[error("stream decode failed: {message}")]
+    StreamDecode {
         /// Bounded diagnostic message.
         message: BoundedText,
     },
@@ -755,6 +768,15 @@ pub enum XrefFact {
     MalformedClassic,
     /// Xref stream was detected and is unsupported in M0.
     XrefStreamUnsupported,
+    /// Xref stream was parsed.
+    XrefStreamParsed {
+        /// Number of xref entries parsed.
+        entries: u64,
+        /// Number of compressed-object entries parsed.
+        compressed_entries: u64,
+    },
+    /// Object stream was parsed and expanded.
+    ObjectStreamParsed,
 }
 
 /// Stream parser fact.
@@ -777,6 +799,11 @@ pub enum StreamFact {
         /// `endstream` keyword spacing compliance.
         #[serde(rename = "endstreamKeywordEolCompliant")]
         endstream_keyword_eol_compliant: bool,
+    },
+    /// Stream was decoded within configured limits.
+    Decoded {
+        /// Decoded stream byte count.
+        bytes: u64,
     },
 }
 

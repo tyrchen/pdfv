@@ -6,6 +6,8 @@ const MINIMAL_VALID: &[u8] = include_bytes!("../../../tests/fixtures/minimal-val
 const LEADING_BYTES_INVALID: &[u8] =
     include_bytes!("../../../tests/fixtures/leading-bytes-invalid.pdf");
 const NOT_A_PDF: &[u8] = include_bytes!("../../../tests/fixtures/not-a-pdf.pdf");
+const XREF_STREAM_OBJECT_STREAM_VALID: &[u8] =
+    include_bytes!("../../../tests/fixtures/xref-stream-object-stream-valid.pdf");
 
 #[test]
 fn test_should_validate_shared_valid_fixture() -> Result<(), Box<dyn Error>> {
@@ -37,5 +39,16 @@ fn test_should_report_shared_parse_failure_fixture() -> Result<(), Box<dyn Error
         .validate_reader(Cursor::new(NOT_A_PDF), InputName::memory())?;
 
     assert_eq!(report.status, ValidationStatus::ParseFailed);
+    Ok(())
+}
+
+#[test]
+fn test_should_validate_shared_m1_xref_and_object_stream_fixture() -> Result<(), Box<dyn Error>> {
+    let report = Validator::new(pdfv_core::ValidationOptions::default())?.validate_reader(
+        Cursor::new(XREF_STREAM_OBJECT_STREAM_VALID),
+        InputName::memory(),
+    )?;
+
+    assert_eq!(report.status, ValidationStatus::Valid);
     Ok(())
 }
