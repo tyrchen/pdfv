@@ -37,6 +37,14 @@ Phase 0 decided that `apps/server` is removed until a network service is explici
 | Property tests | `proptest` | 1.11.0 | Parser/rule invariants. |
 | Parameterized tests | `rstest` | 0.26.1 | Rule and fixture matrices. |
 | Temp files | `tempfile` | 3.27.0 | CLI/config/report tests. |
+| Secrets | `secrecy` | 0.10.3 checked 2026-05-16 | Redacted password storage for encrypted PDFs. |
+| Constant-time comparison | `subtle` | 2.6.1 checked 2026-05-16 | Password authentication byte comparisons. |
+| PDF legacy hash | `md-5` | 0.11.0 checked 2026-05-16 | Standard security handler revisions 2-4. |
+| PDF legacy cipher | `rc4` | 0.2.0 checked 2026-05-16 | RC4 decryption required by older encrypted PDFs. |
+| AES | `aes` | 0.9.0 checked 2026-05-16 | AESV2/AESV3 block cipher. |
+| CBC mode | `cbc` | 0.2.0 checked 2026-05-16 | AES-CBC stream/string decryption. |
+| Cipher traits | `cipher` | 0.5.1 checked 2026-05-16 | Shared crypto trait imports. |
+| SHA-2 | `sha2` | 0.11.0 checked 2026-05-16 | Future Standard security handler revisions 5-6 spike. |
 
 Avoid `serde_yaml` for new code because `cargo search` reports `0.9.34+deprecated`. Prefer `config` with a maintained YAML backend selected by that crate, or reassess with a dedicated dependency spike if direct YAML serialization is needed.
 
@@ -48,6 +56,7 @@ Avoid `serde_yaml` for new code because `cargo search` reports `0.9.34+deprecate
 - `json` enables JSON report serialization.
 - `flate` enables FlateDecode support.
 - `custom-profiles` enables XML profile loading.
+- `decrypt` enables password-protected PDF decryption support and the crypto dependencies scoped by [14-password-decryption-design.md](./14-password-decryption-design.md).
 - `bench` enables benchmark-only helpers.
 - No feature may enable `unsafe` code.
 

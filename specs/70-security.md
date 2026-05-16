@@ -28,7 +28,15 @@ Custom profile XML is hostile input. The loader enforces file size, XML depth, e
 
 ## 5. Passwords and encrypted PDFs
 
-M0 detects encryption but does not decrypt. When password support lands, passwords use redacted secret wrappers, are never serialized in configs or reports, and are never logged.
+M0 detects encryption but does not decrypt. M4 password/decryption support is scoped by [14-password-decryption-design.md](./14-password-decryption-design.md).
+
+Binding rules:
+
+- Password values use redacted secret wrappers and are never serialized in configs or reports.
+- The CLI does not accept literal password arguments; supported sources are stdin, file, or environment variable indirection.
+- Password comparisons use constant-time comparison where candidate values are compared with `/U` or `/O`-derived bytes.
+- MD5 and RC4 are allowed only for PDF Standard security handler compatibility for revisions 2-4; they are not general-purpose cryptographic utilities.
+- Decrypted strings and streams remain hostile input and are subject to byte-counted limits before validation or downstream decoding.
 
 ## 6. Verification gates
 
@@ -36,9 +44,10 @@ M0 detects encryption but does not decrypt. When password support lands, passwor
 - Clippy boundary lint run with `-W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing -W clippy::panic` for parser/profile modules.
 - Corpus tests for truncated files, recursive objects, giant arrays, giant names, bad lengths, decompression bombs, and invalid UTF-8.
 - `cargo audit` and `cargo deny check` required before release.
+- Password-bearing type `Debug` redaction test.
+- Encrypted fixture matrix covering missing password, wrong password, supported user/owner password, unsupported revision, and malformed `/Encrypt`.
 
 ## 7. Cross-references
 
 - ← Depends on: [10-data-model.md](./10-data-model.md), [11-parser-core-design.md](./11-parser-core-design.md)
-- → Constrains: [91-impl-plan.md](./91-impl-plan.md)
-
+- → Constrains: [14-password-decryption-design.md](./14-password-decryption-design.md), [91-impl-plan.md](./91-impl-plan.md)

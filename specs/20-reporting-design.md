@@ -36,6 +36,8 @@ M0 JSON includes:
 - parse facts and warnings
 - duration summary
 
+Password/decryption support does not add any password value, password source, file key, `/O`, `/U`, `/OE`, `/UE`, or decrypted bytes to JSON.
+
 ## 4. Text contract
 
 Text output is concise:
@@ -65,6 +67,8 @@ The XML writer streams from `ValidationReport`/`BatchReport` and includes:
 
 The XML compatibility surface is intentionally report-only. It does not implement veraPDF raw XML, HTML, feature reports, repair reports, policy reports, or log embedding.
 
+XML may include safe encryption metadata exposed through parse facts, such as handler/revision/decrypted status, but never password material or cryptographic keys.
+
 ## 6. Batch summaries
 
 Batch summaries track total files, valid, invalid, parse failures, encrypted, incomplete, internal errors, elapsed time, and worst exit category. They are computed from item reports and do not re-run validation.
@@ -73,6 +77,7 @@ Batch summaries track total files, valid, invalid, parse failures, encrypted, in
 
 - Error Handling: report serialization failures return `ReportError`.
 - Safety & Security: never include raw PDF bytes in output; file paths are displayed as provided by CLI unless `--redact-paths` is active.
+- Cryptography & Secrets: reports must not include password values, password source names, file encryption keys, `/O`, `/U`, `/OE`, `/UE`, or decrypted stream/string bytes.
 - Serialization: serde derives use `camelCase`; snapshot tests cover JSON; XML writer escapes attributes/text and never emits raw PDF bytes.
 - Testing: JSON snapshot tests, text golden tests, batch summary unit tests.
 - Logging & Observability: report writing itself does not log report contents.
@@ -85,3 +90,4 @@ Batch summaries track total files, valid, invalid, parse failures, encrypted, in
 - → Consumed by: [50-cli-design.md](./50-cli-design.md)
 - ↔ Related research: veraPDF report handlers in `ProcessorFactory` choose text/raw/XML/HTML/JSON by format (`vendors/veraPDF-library/core/src/main/java/org/verapdf/processor/ProcessorFactory.java:128`).
 - ↔ Related research: [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md)
+- ↔ Related design: [14-password-decryption-design.md](./14-password-decryption-design.md)

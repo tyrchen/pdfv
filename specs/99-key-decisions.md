@@ -73,3 +73,12 @@ Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
 - Why: current veraPDF documentation says `xml` and `mrr` refer to the same report format and `mrr` is deprecated starting with veraPDF 1.24. The product should match current terminology while keeping migration scripts easy to adapt.
 - Pinned by: [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md), [90-roadmap.md](./90-roadmap.md), [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md)
 - Date: 2026-05-16
+
+## D9 — Scope password support to explicit Standard security handler phases
+
+- Context: M4 encrypted PDF support.
+- Alternatives considered: keep encrypted PDFs unsupported; implement all PDF encryption revisions at once; support Standard security handler revisions 2-4 first and defer revisions 5-6 behind a risk gate; accept literal CLI passwords for veraPDF-like convenience.
+- Decision: Phase 9 supports password-protected PDFs only for `/Filter /Standard` revisions 2-4, using redacted password sources and no literal `--password <text>` CLI argument. Revisions 5-6 require a separate AES-256 risk gate before implementation.
+- Why: revisions 2-4 unlock common older encrypted PDFs and align with the current parser/object model. Revisions 5-6 use a different key retrieval/hash path and `/OE`/`/UE`/`/Perms` handling (`vendors/veraPDF-parser/src/main/java/org/verapdf/tools/EncryptionToolsRevision5_6.java:40`, `vendors/veraPDF-parser/src/main/java/org/verapdf/tools/EncryptionToolsRevision5_6.java:96`), so bundling them into the first password phase would hide risk. Literal CLI passwords violate AGENTS.md secret-handling expectations.
+- Pinned by: [14-password-decryption-design.md](./14-password-decryption-design.md), [50-cli-design.md](./50-cli-design.md), [70-security.md](./70-security.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md)
+- Date: 2026-05-16

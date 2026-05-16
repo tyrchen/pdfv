@@ -8,13 +8,20 @@
 use std::{error::Error, fs::File, io::Write, path::Path};
 
 use assert_cmd::Command;
+use md5::{Digest, Md5};
 use predicates::{Predicate, str::contains};
+use rc4::{KeyInit, Rc4, StreamCipher};
 use tempfile::tempdir;
 
 const MINIMAL_VALID: &[u8] = include_bytes!("../../../tests/fixtures/minimal-valid.pdf");
 const LEADING_BYTES_INVALID: &[u8] =
     include_bytes!("../../../tests/fixtures/leading-bytes-invalid.pdf");
 const NOT_A_PDF: &[u8] = include_bytes!("../../../tests/fixtures/not-a-pdf.pdf");
+const PASSWORD_PADDING: [u8; 32] = [
+    0x28, 0xbf, 0x4e, 0x5e, 0x4e, 0x75, 0x8a, 0x41, 0x64, 0x00, 0x4e, 0x56, 0xff, 0xfa, 0x01, 0x08,
+    0x2e, 0x2e, 0x00, 0xb6, 0xd0, 0x68, 0x3e, 0x80, 0x2f, 0x0c, 0xa9, 0xfe, 0x64, 0x53, 0x69, 0x7a,
+];
+const DOCUMENT_ID: &[u8] = b"pdfv-cli-rc4-doc";
 
 fn write_fixture(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut file = File::create(path)?;
@@ -258,6 +265,219 @@ fn test_should_continue_batch_after_internal_file_error() -> Result<(), Box<dyn 
     assert!(contains(r#""valid":1"#).eval(&stdout));
     assert!(contains(r#""internalErrors":1"#).eval(&stdout));
     Ok(())
+}
+
+#[test]
+fn test_should_validate_encrypted_pdf_with_password_file() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("encrypted.pdf");
+    let password = temp.path().join("password.txt");
+    write_fixture(&path, &encrypted_rc4_fixture()?)?;
+    write_fixture(&password, b"user\n")?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "json", "--password-file"])
+        .arg(&password)
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""status":"valid""#).eval(&stdout));
+    assert!(!contains("user").eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_exit_encrypted_for_wrong_password_env() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("encrypted.pdf");
+    write_fixture(&path, &encrypted_rc4_fixture()?)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .env("PDFV_TEST_PASSWORD", "wrong")
+        .args([
+            "validate",
+            "--format",
+            "json",
+            "--password-env",
+            "PDFV_TEST_PASSWORD",
+        ])
+        .arg(&path)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(3));
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""status":"encrypted""#).eval(&stdout));
+    assert!(contains("incorrect password").eval(&stdout));
+    assert!(!contains("wrong").eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_validate_encrypted_pdf_with_password_stdin() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("encrypted.pdf");
+    write_fixture(&path, &encrypted_rc4_fixture()?)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "json", "--password-stdin"])
+        .arg(&path)
+        .write_stdin("user\n")
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""status":"valid""#).eval(&stdout));
+    assert!(!contains("user").eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_oversized_password_stdin() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("encrypted.pdf");
+    write_fixture(&path, &encrypted_rc4_fixture()?)?;
+    let oversized = "x".repeat(1025);
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--password-stdin"])
+        .arg(&path)
+        .write_stdin(oversized)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(contains("passwordStdin").eval(&stderr));
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_multiple_password_sources() -> Result<(), Box<dyn Error>> {
+    let output = Command::cargo_bin("pdfv")?
+        .args([
+            "validate",
+            "--password-stdin",
+            "--password-env",
+            "PDFV_TEST_PASSWORD",
+            "missing.pdf",
+        ])
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    Ok(())
+}
+
+fn encrypted_rc4_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
+    let owner_key = owner_key(b"owner");
+    let owner_entry = rc4_crypt(&owner_key, &padded_password(b"user"))?;
+    let file_key = file_key(b"user", &owner_entry);
+    let user_entry = rc4_crypt(&file_key, &PASSWORD_PADDING)?;
+    let title = encrypt_object(&file_key, 1, b"secret-title")?;
+    let encrypt_dictionary = format!(
+        "<< /Filter /Standard /V 1 /R 2 /Length 40 /O <{}> /U <{}> /P -4 >>",
+        hex(&owner_entry),
+        hex(&user_entry),
+    );
+    Ok(pdf_bytes(&title, &encrypt_dictionary))
+}
+
+fn pdf_bytes(title: &[u8], encrypt_dictionary: &str) -> Vec<u8> {
+    let mut bytes = b"%PDF-1.7\n".to_vec();
+    let mut offsets = vec![0_usize];
+    push_object(
+        &mut bytes,
+        &mut offsets,
+        1,
+        format!("<< /Type /Catalog /Title <{}> >>", hex(title)).as_bytes(),
+    );
+    push_object(&mut bytes, &mut offsets, 2, encrypt_dictionary.as_bytes());
+    let xref_offset = bytes.len();
+    bytes.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
+    bytes.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets.iter().skip(1) {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(
+        format!(
+            "trailer\n<< /Root 1 0 R /Encrypt 2 0 R /Size {} /ID [<{}> <{}>] \
+             >>\nstartxref\n{xref_offset}\n%%EOF\n",
+            offsets.len(),
+            hex(DOCUMENT_ID),
+            hex(DOCUMENT_ID),
+        )
+        .as_bytes(),
+    );
+    bytes
+}
+
+fn push_object(bytes: &mut Vec<u8>, offsets: &mut Vec<usize>, number: u32, body: &[u8]) {
+    offsets.push(bytes.len());
+    bytes.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+    bytes.extend_from_slice(body);
+    bytes.extend_from_slice(b"\nendobj\n");
+}
+
+fn owner_key(password: &[u8]) -> Vec<u8> {
+    let mut digest = Md5::digest(padded_password(password)).to_vec();
+    digest.truncate(5);
+    digest
+}
+
+fn file_key(password: &[u8], owner_entry: &[u8]) -> Vec<u8> {
+    let mut hasher = Md5::new();
+    hasher.update(padded_password(password));
+    hasher.update(owner_entry);
+    hasher.update((-4_i32).to_le_bytes());
+    hasher.update(DOCUMENT_ID);
+    let mut digest = hasher.finalize().to_vec();
+    digest.truncate(5);
+    digest
+}
+
+fn encrypt_object(file_key: &[u8], number: u32, bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut hasher = Md5::new();
+    let object_number = number.to_le_bytes();
+    hasher.update(file_key);
+    hasher.update(object_number.get(..3).unwrap_or(&object_number));
+    hasher.update([0_u8, 0_u8]);
+    let mut key = hasher.finalize().to_vec();
+    key.truncate(file_key.len().saturating_add(5).min(16));
+    rc4_crypt(&key, bytes)
+}
+
+fn rc4_crypt(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut output = bytes.to_vec();
+    let mut cipher =
+        Rc4::new_from_slice(key).map_err(|_| std::io::Error::other("invalid rc4 key"))?;
+    cipher.apply_keystream(&mut output);
+    Ok(output)
+}
+
+fn padded_password(password: &[u8]) -> [u8; 32] {
+    let mut padded = PASSWORD_PADDING;
+    let copy_len = password.len().min(32);
+    if let (Some(target), Some(source)) = (padded.get_mut(..copy_len), password.get(..copy_len)) {
+        target.copy_from_slice(source);
+    }
+    padded
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(char::from(
+            DIGITS.get(usize::from(byte >> 4)).copied().unwrap_or(b'0'),
+        ));
+        output.push(char::from(
+            DIGITS
+                .get(usize::from(byte & 0x0f))
+                .copied()
+                .unwrap_or(b'0'),
+        ));
+    }
+    output
 }
 
 #[test]

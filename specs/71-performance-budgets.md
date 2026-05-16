@@ -13,6 +13,7 @@ Measured on a current Apple Silicon developer laptop:
 | Scenario | Budget |
 | --- | --- |
 | 10 MB simple non-encrypted PDF, JSON report | p50 under 2 s, peak RSS under 256 MB |
+| 10 MB supported encrypted PDF, correct password, JSON report | p50 under 3 s, peak RSS under 320 MB |
 | 100 small PDFs in batch, 4 jobs | p50 per file under 250 ms after warmup |
 | malformed random 1 MB input | fail/report under 500 ms |
 | stream declared length mismatch with scan fallback | bounded by configured scan cap |
@@ -23,6 +24,7 @@ These are starting budgets, not claims of final competitiveness.
 
 - Parser tokenization works on bytes and borrows where possible.
 - Stream decoding is lazy and bounded.
+- Decryption is streaming for streams and bounded for strings; decrypted bytes count against explicit decrypted-byte resource limits before downstream decoding.
 - Rule lookup uses precomputed maps by object type.
 - Validation traversal uses `Vec` stacks with capacity hints.
 - Report writers stream to `Write` and avoid duplicate full-report strings.
@@ -38,6 +40,5 @@ Any change that worsens a tracked benchmark by more than 10 percent must either 
 
 ## 6. Cross-references
 
-- ← Depends on: [11-parser-core-design.md](./11-parser-core-design.md), [13-validation-engine-design.md](./13-validation-engine-design.md)
+- ← Depends on: [11-parser-core-design.md](./11-parser-core-design.md), [13-validation-engine-design.md](./13-validation-engine-design.md), [14-password-decryption-design.md](./14-password-decryption-design.md)
 - → Constrains: [91-impl-plan.md](./91-impl-plan.md)
-

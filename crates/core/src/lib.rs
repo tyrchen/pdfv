@@ -27,8 +27,8 @@ use std::{
 };
 
 pub use parser::{
-    CosObject, Dictionary, IndirectObject, ObjectStore, ParsedDocument, Parser, PdfName, PdfSource,
-    PdfString, StreamObject, Trailer,
+    CosObject, Dictionary, IndirectObject, ObjectStore, ParseOptions, ParsedDocument, Parser,
+    PdfName, PdfSource, PdfString, StreamObject, Trailer,
 };
 #[cfg(feature = "custom-profiles")]
 pub use profile::CustomProfileRepository;
@@ -37,6 +37,7 @@ pub use profile::{
     ProfileCatalogEntry, ProfileImportSummary, ProfileRepository, PropertyName, PropertyPath, Rule,
     RuleEvaluator, RuleExpr, RuleOutcome, UnaryOp, ValidationProfile, import_verapdf_profile_xml,
 };
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use typed_builder::TypedBuilder;
@@ -51,6 +52,11 @@ pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_IDENTIFIER_BYTES: usize = 128;
 const MAX_TEXT_BYTES: usize = 4096;
+const DEFAULT_MAX_PASSWORD_BYTES: usize = 1024;
+const HARD_MAX_PASSWORD_BYTES: usize = 4096;
+const DEFAULT_MAX_STRING_BYTES: usize = 1_048_576;
+const DEFAULT_MAX_STREAM_DECODE_BYTES: u64 = 256 * 1024 * 1024;
+const DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES: u64 = 64;
 
 /// Result alias for pdfv library operations.
 pub type Result<T> = std::result::Result<T, PdfvError>;
@@ -339,6 +345,57 @@ impl From<Identifier> for String {
     }
 }
 
+/// Redacted PDF password secret.
+#[derive(Clone)]
+pub struct PasswordSecret(SecretString);
+
+impl PasswordSecret {
+    /// Creates a password secret using the default password byte cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when the password exceeds the default cap.
+    pub fn new(value: impl Into<String>) -> std::result::Result<Self, ConfigError> {
+        Self::new_with_limit(value, DEFAULT_MAX_PASSWORD_BYTES)
+    }
+
+    /// Creates a password secret using an explicit byte cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] when the password exceeds the supplied cap or the
+    /// cap is above the hard limit.
+    pub fn new_with_limit(
+        value: impl Into<String>,
+        max_bytes: usize,
+    ) -> std::result::Result<Self, ConfigError> {
+        if max_bytes > HARD_MAX_PASSWORD_BYTES {
+            return Err(ConfigError::InvalidValue {
+                field: "maxPasswordBytes",
+                reason: BoundedText::unchecked("value exceeds hard cap"),
+            });
+        }
+        let value = value.into();
+        if value.len() > max_bytes {
+            return Err(ConfigError::InvalidValue {
+                field: "password",
+                reason: BoundedText::unchecked("password exceeds byte limit"),
+            });
+        }
+        Ok(Self(SecretString::from(value)))
+    }
+
+    pub(crate) fn expose_secret_bytes(&self) -> &[u8] {
+        self.0.expose_secret().as_bytes()
+    }
+}
+
+impl fmt::Debug for PasswordSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PasswordSecret([REDACTED])")
+    }
+}
+
 /// PDF validation options shared by parser, engine, and reports.
 #[derive(Clone, Debug, Deserialize, Serialize, TypedBuilder)]
 #[non_exhaustive]
@@ -350,6 +407,10 @@ pub struct ValidationOptions {
     /// Parser and validation resource limits.
     #[builder(default)]
     pub resource_limits: ResourceLimits,
+    /// Optional redacted password for encrypted PDFs.
+    #[builder(default)]
+    #[serde(skip, default)]
+    pub password: Option<PasswordSecret>,
     /// Maximum assertion details retained per failed rule.
     #[builder(default)]
     pub max_failed_assertions_per_rule: MaxDisplayedFailures,
@@ -446,10 +507,26 @@ pub struct ResourceLimits {
     pub max_name_bytes: usize,
     /// Maximum string bytes.
     pub max_string_bytes: usize,
+    /// Maximum password bytes accepted from public APIs and CLI sources.
+    #[builder(default = DEFAULT_MAX_PASSWORD_BYTES)]
+    #[serde(default = "default_max_password_bytes")]
+    pub max_password_bytes: usize,
+    /// Maximum decrypted string bytes.
+    #[builder(default = DEFAULT_MAX_STRING_BYTES)]
+    #[serde(default = "default_max_decrypted_string_bytes")]
+    pub max_decrypted_string_bytes: usize,
     /// Maximum declared stream bytes.
     pub max_stream_declared_bytes: u64,
     /// Maximum decoded stream bytes.
     pub max_stream_decode_bytes: u64,
+    /// Maximum decrypted stream bytes before downstream filters.
+    #[builder(default = DEFAULT_MAX_STREAM_DECODE_BYTES)]
+    #[serde(default = "default_max_decrypted_stream_bytes")]
+    pub max_decrypted_stream_bytes: u64,
+    /// Maximum encryption dictionary entries.
+    #[builder(default = DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES)]
+    #[serde(default = "default_max_encryption_dict_entries")]
+    pub max_encryption_dict_entries: u64,
     /// Maximum retained parse facts.
     pub max_parse_facts: usize,
 }
@@ -463,12 +540,32 @@ impl Default for ResourceLimits {
             max_array_len: 65_536,
             max_dict_entries: 16_384,
             max_name_bytes: 127,
-            max_string_bytes: 1_048_576,
+            max_string_bytes: DEFAULT_MAX_STRING_BYTES,
+            max_password_bytes: DEFAULT_MAX_PASSWORD_BYTES,
+            max_decrypted_string_bytes: DEFAULT_MAX_STRING_BYTES,
             max_stream_declared_bytes: 128 * 1024 * 1024,
-            max_stream_decode_bytes: 256 * 1024 * 1024,
+            max_stream_decode_bytes: DEFAULT_MAX_STREAM_DECODE_BYTES,
+            max_decrypted_stream_bytes: DEFAULT_MAX_STREAM_DECODE_BYTES,
+            max_encryption_dict_entries: DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES,
             max_parse_facts: 100_000,
         }
     }
+}
+
+fn default_max_password_bytes() -> usize {
+    DEFAULT_MAX_PASSWORD_BYTES
+}
+
+fn default_max_decrypted_string_bytes() -> usize {
+    DEFAULT_MAX_STRING_BYTES
+}
+
+fn default_max_decrypted_stream_bytes() -> u64 {
+    DEFAULT_MAX_STREAM_DECODE_BYTES
+}
+
+fn default_max_encryption_dict_entries() -> u64 {
+    DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES
 }
 
 /// Maximum displayed assertion failures per rule.
@@ -695,6 +792,14 @@ pub struct ObjectKey {
     pub generation: u16,
 }
 
+impl ObjectKey {
+    /// Creates an indirect object key.
+    #[must_use]
+    pub fn new(number: NonZeroU32, generation: u16) -> Self {
+        Self { number, generation }
+    }
+}
+
 /// Error template argument.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
@@ -763,6 +868,17 @@ pub enum ParseFact {
         /// Encryption handler when known.
         #[serde(skip_serializing_if = "Option::is_none")]
         handler: Option<Identifier>,
+        /// Encryption version when known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<u8>,
+        /// Security handler revision when known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        revision: Option<u8>,
+        /// Selected object encryption algorithm when known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        algorithm: Option<Identifier>,
+        /// Whether decryption succeeded.
+        decrypted: bool,
     },
 }
 
@@ -1444,10 +1560,20 @@ fn write_xml_parse_facts<W: Write>(facts: &[ParseFact], out: &mut W) -> Result<(
                 XmlEscapedAttr::new(&stream_fact_text(fact))?,
             )
             .map_err(write_error)?,
-            ParseFact::Encryption { encrypted, handler } => writeln!(
+            ParseFact::Encryption {
+                encrypted,
+                handler,
+                version,
+                revision,
+                algorithm,
+                decrypted,
+            } => writeln!(
                 out,
-                r#"        <encryption encrypted="{encrypted}" handler="{}"></encryption>"#,
+                r#"        <encryption encrypted="{encrypted}" handler="{}" version="{}" revision="{}" algorithm="{}" decrypted="{decrypted}"></encryption>"#,
                 XmlEscapedAttr::new(handler.as_ref().map_or("", Identifier::as_str))?,
+                version.map_or_else(String::new, |value| value.to_string()),
+                revision.map_or_else(String::new, |value| value.to_string()),
+                XmlEscapedAttr::new(algorithm.as_ref().map_or("", Identifier::as_str))?,
             )
             .map_err(write_error)?,
         }

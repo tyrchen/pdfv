@@ -133,3 +133,23 @@ Exit criteria: `spike-mrr-compatibility.md` is published; XML report output is a
 | 8.4 | Update product examples and fixture matrix for the M4 default profile. | 20, 50, 72 | 0.5 day |
 
 Exit criteria: default validation uses `pdfv-m4`; profile facts cover page contents/resources, font subtype, annotation subtype, output-intent destination profile, and content-stream length exposure; imported profile evaluation can read direct dictionary properties such as `Type`, `Subtype`, `Filter`, and `DestOutputProfile`; tests cover passing and failing linked-object facts; standard gates pass.
+
+## 13. Phase 9 — M4 password/decryption support
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 9.1 | Add redacted `PasswordSecret`, non-serializable validation option plumbing, and CLI password source resolution (`stdin`, file, env-var indirection; no literal argument). | 10, 14, 50, 70 | 1-2 days |
+| 9.2 | Parse and validate Standard security handler encryption dictionaries for revisions 2-4, including `/CF`, `/StmF`, `/StrF`, and `/EncryptMetadata`. | 11, 14, 70 | 2-4 days |
+| 9.3 | Implement password authentication and object-key-specific decryption for RC4 and AESV2 strings/streams with byte-counted limits. | 11, 14, 70 | 1-2 weeks |
+| 9.4 | Wire decrypted parsing into validation/reporting so correct passwords produce normal validation and missing/wrong/unsupported passwords produce `ValidationStatus::Encrypted` with safe warnings. | 13, 14, 20, 50 | 2-4 days |
+| 9.5 | Add encrypted fixture matrix, redaction tests, unsupported revision tests, fuzz/corpus cases, docs, and dependency audit/deny updates. | 14, 61, 70, 72 | 3-5 days |
+
+Exit criteria: correct user and owner passwords validate supported RC4/AESV2 encrypted fixtures; strings and streams decrypt under resource limits; missing/wrong passwords and unsupported revisions return encrypted status and CLI exit 3 without secret leakage; password-bearing `Debug` is redacted by test; standard gates plus strict clippy, `cargo audit`, and `cargo deny check` pass.
+
+## 14. Phase 10 — AES-256 decryption risk gate
+
+| # | Deliverable | Lands in | Effort |
+| --- | --- | --- | --- |
+| 10.1 | Spike Standard security handler revisions 5-6, including Algorithm 2.A/2.B, `/OE`, `/UE`, `/Perms`, AESV3, and fixture availability. | docs/research, 14, 70 | 3-5 days |
+
+Exit gate: either Phase 10 updates [14-password-decryption-design.md](./14-password-decryption-design.md) with implementation-ready AES-256 details and fixtures, or records revisions 5-6 as explicitly unsupported with a deferred finding.

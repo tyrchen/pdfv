@@ -70,7 +70,7 @@ Exit criteria:
 - Decision on MRR/XML compatibility from `spike-mrr-compatibility.md`.
 - XML compatibility output available through `pdfv validate --format xml`; `mrr` accepted only as a deprecated alias.
 - Larger profile coverage and richer feature facts for page, font, annotation, output-intent, and content-stream objects.
-- Optional password/decryption support if scoped by a future implementation phase.
+- Password/decryption support scoped by [14-password-decryption-design.md](./14-password-decryption-design.md): Standard security handler revisions 2-4 in the first implementation phase; revisions 5-6 behind a risk gate.
 - Public conformance fixture matrix published.
 
 ## 2. Calendar estimate
@@ -81,7 +81,7 @@ For one focused developer:
 - M1: 4-6 weeks.
 - M2: 4-8 weeks, driven by profile expression coverage.
 - M3: 2-4 weeks.
-- M4: research-dependent.
+- M4: research-dependent; password/decryption adds approximately 2-4 weeks for revisions 2-4 plus a separate AES-256 risk gate.
 
 ## 3. Cross-references
 

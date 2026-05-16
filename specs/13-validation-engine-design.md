@@ -66,7 +66,7 @@ Failed assertions include rule id, profile, deterministic object path, optional 
 
 ## 6. Behaviour
 
-Parse failures return a `ValidationReport` with `status = ParseFailed` when enough source metadata is available; fatal I/O/configuration failures return `Err(PdfvError)`. Encrypted PDFs return `status = Encrypted` unless password support is active.
+Parse failures return a `ValidationReport` with `status = ParseFailed` when enough source metadata is available; fatal I/O/configuration failures return `Err(PdfvError)`. Encrypted PDFs return `status = Encrypted` when no password is supplied, when the password is incorrect, or when the security handler/revision is unsupported. When [14-password-decryption-design.md](./14-password-decryption-design.md) password support is active and decryption succeeds, validation proceeds against the decrypted `ParsedDocument` with normal `Valid`/`Invalid`/`Incomplete` status.
 
 The engine supports bounded batch validation by running one `ValidationSession` per file. Shared profile repositories are immutable and `Arc` backed. Per-file caches are not shared.
 
@@ -86,5 +86,5 @@ The engine supports bounded batch validation by running one `ValidationSession` 
 
 - ← Depends on: [11-parser-core-design.md](./11-parser-core-design.md), [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md)
 - → Consumed by: [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md)
+- ↔ Related design: [14-password-decryption-design.md](./14-password-decryption-design.md)
 - ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md)
-

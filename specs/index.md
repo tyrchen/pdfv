@@ -11,10 +11,11 @@ Read in this order when implementing:
 3. [11-parser-core-design.md](./11-parser-core-design.md) — tolerant COS/PD parser and parse facts.
 4. [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md) — profile loading and bounded rule expression IR.
 5. [13-validation-engine-design.md](./13-validation-engine-design.md) — validation session, model graph, traversal, diagnostics.
-6. [20-reporting-design.md](./20-reporting-design.md) — JSON/text output and batch summaries.
-7. [50-cli-design.md](./50-cli-design.md) — CLI UX, config, exit codes, concurrency.
-8. Cross-cuts: [61-crates-and-features.md](./61-crates-and-features.md), [70-security.md](./70-security.md), [71-performance-budgets.md](./71-performance-budgets.md), [72-testing-strategy.md](./72-testing-strategy.md).
-9. [80-glossary.md](./80-glossary.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [93-improvements-review.md](./93-improvements-review.md), [99-key-decisions.md](./99-key-decisions.md).
+6. [14-password-decryption-design.md](./14-password-decryption-design.md) — password input, encryption dictionary parsing, and scoped decryption.
+7. [20-reporting-design.md](./20-reporting-design.md) — JSON/text output and batch summaries.
+8. [50-cli-design.md](./50-cli-design.md) — CLI UX, config, exit codes, concurrency.
+9. Cross-cuts: [61-crates-and-features.md](./61-crates-and-features.md), [70-security.md](./70-security.md), [71-performance-budgets.md](./71-performance-budgets.md), [72-testing-strategy.md](./72-testing-strategy.md).
+10. [80-glossary.md](./80-glossary.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [93-improvements-review.md](./93-improvements-review.md), [99-key-decisions.md](./99-key-decisions.md).
 
 ## Build-order graph
 
@@ -24,8 +25,9 @@ Read in this order when implementing:
       -> 11-parser-core-design
           -> 12-profile-rule-ir-design
               -> 13-validation-engine-design
-                  -> 20-reporting-design
-                      -> 50-cli-design
+                  -> 14-password-decryption-design
+                      -> 20-reporting-design
+                          -> 50-cli-design
 
 61-crates-and-features, 70-security, 71-performance-budgets, 72-testing-strategy
   constrain every implementation phase.
@@ -43,6 +45,7 @@ Read in this order when implementing:
 | [11-parser-core-design.md](./11-parser-core-design.md) | Component design | Designs the safe, tolerant PDF parser and COS/PD object model. |
 | [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md) | Component design | Designs built-in/custom profile handling and bounded expression evaluation. |
 | [13-validation-engine-design.md](./13-validation-engine-design.md) | Component design | Designs `ValidationSession`, graph traversal, diagnostics, and library entrypoints. |
+| [14-password-decryption-design.md](./14-password-decryption-design.md) | Component design | Designs scoped password input and Standard security handler decryption support. |
 | [20-reporting-design.md](./20-reporting-design.md) | Component design | Designs report formatting, summaries, and stable JSON/text output. |
 | [50-cli-design.md](./50-cli-design.md) | CLI design | Defines CLI commands, config loading, exit codes, and bounded parallelism. |
 | [61-crates-and-features.md](./61-crates-and-features.md) | Workspace design | Defines crate layout, feature flags, and dependency policy. |

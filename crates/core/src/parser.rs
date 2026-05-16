@@ -1,4 +1,7 @@
-//! Tolerant byte-level PDF parser used by the M0 validator.
+//! Tolerant byte-level PDF parser used by the validator.
+
+#[cfg(feature = "decrypt")]
+mod encryption;
 
 use std::{
     collections::BTreeMap,
@@ -9,8 +12,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(feature = "decrypt"))]
+use crate::Identifier;
 use crate::{
-    BoundedText, ConfigError, Identifier, ObjectKey, ObjectLocation, ParseError, ParseFact,
+    BoundedText, ConfigError, ObjectKey, ObjectLocation, ParseError, ParseFact, PasswordSecret,
     PdfVersion, ResourceLimits, Result, StreamFact, ValidationWarning, XrefFact,
 };
 
@@ -44,7 +49,21 @@ impl Parser {
     ///
     /// Returns [`crate::PdfvError`] when input cannot be read, exceeds a resource
     /// limit, or is too malformed for M0 recovery.
-    pub fn parse<R: PdfSource>(&self, mut source: R) -> Result<ParsedDocument> {
+    pub fn parse<R: PdfSource>(&self, source: R) -> Result<ParsedDocument> {
+        self.parse_with_options(source, ParseOptions::default())
+    }
+
+    /// Parses a seekable PDF source with optional password state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::PdfvError`] when input cannot be read, exceeds a resource
+    /// limit, or is too malformed for recovery.
+    pub fn parse_with_options<R: PdfSource>(
+        &self,
+        mut source: R,
+        options: ParseOptions<'_>,
+    ) -> Result<ParsedDocument> {
         let byte_len = source
             .seek(SeekFrom::End(0))
             .map_err(|source| crate::PdfvError::Io { path: None, source })?;
@@ -66,7 +85,7 @@ impl Parser {
             .read_to_end(&mut bytes)
             .map_err(|source| crate::PdfvError::Io { path: None, source })?;
 
-        ByteParser::new(bytes, self.limits.clone()).parse_document()
+        ByteParser::new(bytes, self.limits.clone(), options).parse_document()
     }
 }
 
@@ -74,6 +93,14 @@ impl Default for Parser {
     fn default() -> Self {
         Self::new(ResourceLimits::default())
     }
+}
+
+/// Parser options for password-capable parsing.
+#[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+pub struct ParseOptions<'a> {
+    /// Optional redacted password for Standard security handler decryption.
+    pub password: Option<&'a PasswordSecret>,
 }
 
 /// Parsed PDF document produced by [`Parser`].
@@ -104,7 +131,9 @@ impl ParsedDocument {
                 fact,
                 ParseFact::Encryption {
                     encrypted: true,
-                    handler: _
+                    decrypted: false,
+                    handler: _,
+                    ..
                 }
             )
         })
@@ -131,6 +160,10 @@ impl ObjectStore {
     /// Iterates over indirect objects in key order.
     pub fn values(&self) -> impl Iterator<Item = &IndirectObject> {
         self.0.values()
+    }
+
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut IndirectObject> {
+        self.0.values_mut()
     }
 
     /// Returns the number of stored objects.
@@ -229,6 +262,10 @@ impl Dictionary {
     /// Iterates over dictionary entries in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&PdfName, &CosObject)> {
         self.0.iter()
+    }
+
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut CosObject> {
+        self.0.values_mut()
     }
 
     /// Returns the number of entries.
@@ -361,6 +398,22 @@ pub struct StreamObject {
 }
 
 impl StreamObject {
+    pub(crate) fn raw_bytes(&self) -> std::result::Result<&[u8], ParseError> {
+        let raw_start =
+            usize::try_from(self.raw_range.start).map_err(|_| ParseError::ArithmeticOverflow {
+                context: "stream raw range",
+            })?;
+        let raw_end =
+            usize::try_from(self.raw_range.end).map_err(|_| ParseError::ArithmeticOverflow {
+                context: "stream raw range",
+            })?;
+        self.raw_source
+            .get(raw_start..raw_end)
+            .ok_or(ParseError::Malformed {
+                message: bounded("stream raw range out of bounds"),
+            })
+    }
+
     /// Returns decoded stream bytes, enforcing `max_stream_decode_bytes`.
     ///
     /// # Errors
@@ -371,21 +424,7 @@ impl StreamObject {
         &self,
         limits: &ResourceLimits,
     ) -> std::result::Result<Vec<u8>, ParseError> {
-        let raw_start =
-            usize::try_from(self.raw_range.start).map_err(|_| ParseError::ArithmeticOverflow {
-                context: "stream raw range",
-            })?;
-        let raw_end =
-            usize::try_from(self.raw_range.end).map_err(|_| ParseError::ArithmeticOverflow {
-                context: "stream raw range",
-            })?;
-        let mut current = self
-            .raw_source
-            .get(raw_start..raw_end)
-            .ok_or(ParseError::Malformed {
-                message: bounded("stream raw range out of bounds"),
-            })?
-            .to_vec();
+        let mut current = self.raw_bytes()?.to_vec();
         for filter in &self.filters {
             if filter.matches("FlateDecode") || filter.matches("Fl") {
                 current = decode_flate_limited(&current, limits.max_stream_decode_bytes)?;
@@ -423,9 +462,10 @@ pub struct StreamRange {
     pub end: u64,
 }
 
-struct ByteParser {
+struct ByteParser<'a> {
     bytes: Arc<[u8]>,
     limits: ResourceLimits,
+    options: ParseOptions<'a>,
     pos: usize,
     parse_facts: Vec<ParseFact>,
     warnings: Vec<ValidationWarning>,
@@ -444,11 +484,12 @@ struct XrefStreamSummary {
     compressed_entries: u64,
 }
 
-impl ByteParser {
-    fn new(bytes: Vec<u8>, limits: ResourceLimits) -> Self {
+impl<'a> ByteParser<'a> {
+    fn new(bytes: Vec<u8>, limits: ResourceLimits, options: ParseOptions<'a>) -> Self {
         Self {
             bytes: Arc::from(bytes),
             limits,
+            options,
             pos: 0,
             parse_facts: Vec::new(),
             warnings: Vec::new(),
@@ -465,18 +506,107 @@ impl ByteParser {
 
         let mut objects = ObjectStore::default();
         let mut trailers = Vec::new();
+        self.parse_top_level_objects(&mut objects, &mut trailers)?;
+
+        let encrypted_catalog = trailers
+            .iter()
+            .rev()
+            .find_map(|trailer| object_ref_from_dictionary(&trailer.dictionary, "Root"));
+
+        if encryption_reference(&trailers).is_some() {
+            let fact = encryption_fact(&objects, &trailers);
+            #[cfg(feature = "decrypt")]
+            if let Err(error) = encryption::classify_encryption(&objects, &trailers, &self.limits)
+                && !error.is_encrypted_status()
+            {
+                return Err(error.into_parse_error().into());
+            }
+            #[cfg(feature = "decrypt")]
+            if let Some(password) = self.options.password {
+                match encryption::decrypt_document(
+                    &mut objects,
+                    &mut trailers,
+                    &self.limits,
+                    password,
+                ) {
+                    Ok(summary) => {
+                        self.push_fact(summary.into_fact(true));
+                    }
+                    Err(error) if error.is_encrypted_status() => {
+                        self.warnings.push(ValidationWarning::General {
+                            message: BoundedText::unchecked(error.safe_message()),
+                        });
+                        self.push_fact(error.into_fact(fact));
+                        return Ok(ParsedDocument {
+                            version,
+                            catalog: encrypted_catalog,
+                            objects,
+                            trailers,
+                            parse_facts: self.parse_facts,
+                            warnings: self.warnings,
+                        });
+                    }
+                    Err(error) => return Err(error.into_parse_error().into()),
+                }
+            } else if self.options.password.is_none() {
+                self.push_fact(fact);
+                return Ok(ParsedDocument {
+                    version,
+                    catalog: encrypted_catalog,
+                    objects,
+                    trailers,
+                    parse_facts: self.parse_facts,
+                    warnings: self.warnings,
+                });
+            }
+
+            #[cfg(not(feature = "decrypt"))]
+            {
+                self.push_fact(fact);
+                return Ok(ParsedDocument {
+                    version,
+                    catalog: encrypted_catalog,
+                    objects,
+                    trailers,
+                    parse_facts: self.parse_facts,
+                    warnings: self.warnings,
+                });
+            }
+        }
+
+        self.materialize_stream_backed_structures(&mut objects, &mut trailers)?;
+        let catalog = trailers
+            .iter()
+            .rev()
+            .find_map(|trailer| object_ref_from_dictionary(&trailer.dictionary, "Root"));
+
+        Ok(ParsedDocument {
+            version,
+            catalog,
+            objects,
+            trailers,
+            parse_facts: self.parse_facts,
+            warnings: self.warnings,
+        })
+    }
+
+    fn parse_top_level_objects(
+        &mut self,
+        objects: &mut ObjectStore,
+        trailers: &mut Vec<Trailer>,
+    ) -> Result<()> {
         while self.pos < self.bytes.len() {
             self.skip_ws_and_comments();
             if self.starts_with(EOF_MARKER) {
                 self.parse_post_eof_fact()?;
-                break;
+                return Ok(());
             }
             if self.starts_with(b"startxref") {
                 self.skip_line();
                 continue;
             }
             if self.starts_with(b"xref") {
-                self.parse_xref_and_trailer(&mut trailers)?;
+                self.parse_xref_and_trailer(trailers)?;
                 continue;
             }
             if self.starts_with(b"trailer") {
@@ -512,31 +642,7 @@ impl ByteParser {
                 }
             }
         }
-
-        self.materialize_stream_backed_structures(&mut objects, &mut trailers)?;
-
-        let catalog = trailers
-            .iter()
-            .rev()
-            .find_map(|trailer| object_ref_from_dictionary(&trailer.dictionary, "Root"));
-        for trailer in &trailers {
-            if trailer.dictionary.get("Encrypt").is_some() {
-                let handler = encryption_handler(&trailer.dictionary);
-                self.push_fact(ParseFact::Encryption {
-                    encrypted: true,
-                    handler,
-                });
-            }
-        }
-
-        Ok(ParsedDocument {
-            version,
-            catalog,
-            objects,
-            trailers,
-            parse_facts: self.parse_facts,
-            warnings: self.warnings,
-        })
+        Ok(())
     }
 
     fn materialize_stream_backed_structures(
@@ -722,7 +828,11 @@ impl ByteParser {
                 message: bounded("object stream header too short for object count"),
             });
         }
-        let mut parser = ByteParser::new(decoded.to_vec(), self.limits.clone());
+        let mut parser = ByteParser::new(
+            decoded.to_vec(),
+            self.limits.clone(),
+            ParseOptions::default(),
+        );
         let mut headers = Vec::with_capacity(count);
         for _ in 0..count {
             let Some(number) = parser.parse_unsigned_u32()? else {
@@ -1747,10 +1857,13 @@ fn object_ref_from_dictionary(dictionary: &Dictionary, key: &str) -> Option<Obje
 
 fn stream_filters(dictionary: &Dictionary) -> Vec<PdfName> {
     match dictionary.get("Filter") {
+        Some(CosObject::Name(_)) if is_identity_crypt_filter(dictionary, 0) => Vec::new(),
         Some(CosObject::Name(name)) => vec![name.clone()],
         Some(CosObject::Array(values)) => values
             .iter()
-            .filter_map(|value| match value {
+            .enumerate()
+            .filter_map(|(index, value)| match value {
+                CosObject::Name(name) if is_identity_crypt_filter(dictionary, index) => None,
                 CosObject::Name(name) => Some(name.clone()),
                 _ => None,
             })
@@ -1759,15 +1872,79 @@ fn stream_filters(dictionary: &Dictionary) -> Vec<PdfName> {
     }
 }
 
+fn is_identity_crypt_filter(dictionary: &Dictionary, filter_index: usize) -> bool {
+    let Some(filter) = dictionary.get("Filter") else {
+        return false;
+    };
+    let filter_is_crypt = match filter {
+        CosObject::Name(name) => name.matches("Crypt"),
+        CosObject::Array(filters) => matches!(
+            filters.get(filter_index),
+            Some(CosObject::Name(name)) if name.matches("Crypt")
+        ),
+        _ => false,
+    };
+    if !filter_is_crypt {
+        return false;
+    }
+    match dictionary.get("DecodeParms") {
+        Some(CosObject::Dictionary(params)) => matches!(
+            params.get("Name"),
+            Some(CosObject::Name(name)) if name.matches("Identity")
+        ),
+        Some(CosObject::Array(params)) => matches!(
+            params.get(filter_index),
+            Some(CosObject::Dictionary(params)) if matches!(
+                params.get("Name"),
+                Some(CosObject::Name(name)) if name.matches("Identity")
+            )
+        ),
+        _ => false,
+    }
+}
+
+fn encryption_reference(trailers: &[Trailer]) -> Option<&CosObject> {
+    trailers
+        .iter()
+        .rev()
+        .find_map(|trailer| trailer.dictionary.get("Encrypt"))
+}
+
+fn encryption_fact(objects: &ObjectStore, trailers: &[Trailer]) -> ParseFact {
+    #[cfg(feature = "decrypt")]
+    {
+        encryption::encryption_summary(objects, trailers).into_fact(false)
+    }
+    #[cfg(not(feature = "decrypt"))]
+    {
+        let handler = trailers.iter().rev().find_map(|trailer| {
+            let encrypt = trailer.dictionary.get("Encrypt")?;
+            match encrypt {
+                CosObject::Dictionary(dictionary) => encryption_handler(dictionary),
+                CosObject::Reference(key) => objects
+                    .get(key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(encryption_handler),
+                _ => None,
+            }
+        });
+        ParseFact::Encryption {
+            encrypted: true,
+            handler,
+            version: None,
+            revision: None,
+            algorithm: None,
+            decrypted: false,
+        }
+    }
+}
+
+#[cfg(not(feature = "decrypt"))]
 fn encryption_handler(dictionary: &Dictionary) -> Option<Identifier> {
-    let Some(CosObject::Dictionary(encrypt)) = dictionary.get("Encrypt") else {
+    let Some(CosObject::Name(filter)) = dictionary.get("Filter") else {
         return None;
     };
-    let Some(CosObject::Name(filter)) = encrypt.get("Filter") else {
-        return None;
-    };
-    let text = String::from_utf8_lossy(filter.as_bytes()).into_owned();
-    Identifier::new(text).ok()
+    Identifier::new(String::from_utf8_lossy(filter.as_bytes()).into_owned()).ok()
 }
 
 #[cfg(feature = "flate")]
@@ -1839,7 +2016,7 @@ fn read_limited(
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error, io::Cursor};
+    use std::{error::Error, io::Cursor, num::NonZeroU32};
 
     use proptest::prelude::*;
     use rstest::rstest;
@@ -1986,6 +2163,44 @@ trailer
                 }
             )
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_treat_identity_crypt_stream_filter_as_passthrough() -> crate::Result<()> {
+        let bytes = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog >>
+endobj
+2 0 obj
+<< /Length 3 /Filter /Crypt /DecodeParms << /Name /Identity >> >>
+stream
+abc
+endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+";
+
+        let document = Parser::default().parse(Cursor::new(bytes))?;
+        let object = document
+            .objects
+            .get(&crate::ObjectKey::new(
+                NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+                0,
+            ))
+            .ok_or_else(|| crate::ParseError::MissingObject {
+                message: crate::BoundedText::unchecked("missing stream object"),
+            })?;
+        let CosObject::Stream(stream) = &object.object else {
+            return Err(crate::ParseError::Malformed {
+                message: crate::BoundedText::unchecked("missing stream"),
+            }
+            .into());
+        };
+
+        assert_eq!(stream.decoded_bytes(&ResourceLimits::default())?, b"abc");
         Ok(())
     }
 

@@ -25,6 +25,11 @@ pub struct Parser {
 
 impl Parser {
     pub fn parse<R: PdfSource>(&self, source: R) -> Result<ParsedDocument, PdfvError>;
+    pub fn parse_with_options<R: PdfSource>(
+        &self,
+        source: R,
+        options: ParseOptions<'_>,
+    ) -> Result<ParsedDocument, PdfvError>;
 }
 ```
 
@@ -59,7 +64,7 @@ Stream parsing validates declared `/Length` against `endstream`; when invalid, i
 
 Xref parsing supports classic xref tables in M0 and records unsupported xref stream facts rather than crashing. Xref streams land in M1 because many modern PDFs require them for broad coverage.
 
-Encrypted PDFs are detected and reported as `ValidationStatus::Encrypted` unless a password-capable decryption phase is implemented. Password storage uses redacted debug types per AGENTS.md Cryptography & Secrets.
+Encrypted PDFs are detected and reported as `ValidationStatus::Encrypted` unless password-capable parsing is active. Password-capable parsing is scoped by [14-password-decryption-design.md](./14-password-decryption-design.md): Phase 9 supports only the Standard security handler revisions 2-4 and keeps password storage in redacted secret wrappers per AGENTS.md Cryptography & Secrets.
 
 ## 5. Resource limits
 
@@ -92,6 +97,5 @@ All limits are enforced at parse boundary. Over-limit inputs return structured e
 ## 7. Cross-references
 
 - ← Depends on: [10-data-model.md](./10-data-model.md)
-- → Consumed by: [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md), [13-validation-engine-design.md](./13-validation-engine-design.md)
+- → Consumed by: [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md), [13-validation-engine-design.md](./13-validation-engine-design.md), [14-password-decryption-design.md](./14-password-decryption-design.md)
 - ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md)
-

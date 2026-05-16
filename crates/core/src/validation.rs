@@ -173,7 +173,12 @@ impl Validator {
             .map_err(|source| PdfvError::Io { path: None, source })?;
         let source_summary = name.summary(kind, bytes);
         let parser = Parser::new(self.options.resource_limits.clone());
-        let parsed = match parser.parse(source) {
+        let parsed = match parser.parse_with_options(
+            source,
+            crate::ParseOptions {
+                password: self.options.password.as_ref(),
+            },
+        ) {
             Ok(parsed) => parsed,
             Err(PdfvError::Parse(error)) => {
                 return parse_failed_report(source_summary, &error, started.elapsed());

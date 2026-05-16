@@ -10,7 +10,7 @@
 
 use std::{
     fs::File,
-    io::{self, Write},
+    io::{self, Read, Write},
     num::NonZeroU32,
     path::{Path, PathBuf},
     process::ExitCode,
@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pdfv_core::{
     BatchReport, BoundedText, BuiltinProfileRepository, FlavourSelection, MaxDisplayedFailures,
-    PdfvError, ReportFormat, ResourceLimits, ValidationFlavour, ValidationOptions,
+    PasswordSecret, PdfvError, ReportFormat, ResourceLimits, ValidationFlavour, ValidationOptions,
     ValidationStatus, ValidationWarning, Validator,
 };
 use rayon::prelude::*;
@@ -42,8 +42,10 @@ const HARD_MAX_ARRAY_LEN: u64 = 1_000_000;
 const HARD_MAX_DICT_ENTRIES: u64 = 100_000;
 const HARD_MAX_NAME_BYTES: usize = 4096;
 const HARD_MAX_STRING_BYTES: usize = 16 * 1024 * 1024;
+const HARD_MAX_PASSWORD_BYTES: usize = 4096;
 const HARD_MAX_STREAM_BYTES: u64 = 1024 * 1024 * 1024;
 const HARD_MAX_PARSE_FACTS: usize = 1_000_000;
+const HARD_MAX_ENCRYPTION_DICT_ENTRIES: u64 = 1024;
 
 /// Command-line arguments for the pdfv binary.
 #[derive(Debug, Parser)]
@@ -57,7 +59,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Validate one or more PDF files.
-    Validate(ValidateArgs),
+    Validate(Box<ValidateArgs>),
     /// Inspect built-in validation profiles.
     Profiles {
         /// Profile catalog command.
@@ -75,6 +77,11 @@ enum ProfilesCommand {
 
 /// Arguments for `pdfv validate`.
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "CLI flags are independent clap switches; grouping them would make the command \
+              surface less direct"
+)]
 struct ValidateArgs {
     /// PDF files to validate.
     #[arg(value_name = "PATH", required = true)]
@@ -109,6 +116,15 @@ struct ValidateArgs {
     /// Record passed assertions.
     #[arg(long)]
     record_passes: bool,
+    /// Read the PDF password from stdin.
+    #[arg(long, conflicts_with_all = ["password_file", "password_env"])]
+    password_stdin: bool,
+    /// Read the PDF password from a file.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["password_stdin", "password_env"])]
+    password_file: Option<PathBuf>,
+    /// Read the PDF password from an environment variable name.
+    #[arg(long, value_name = "ENV_VAR", conflicts_with_all = ["password_stdin", "password_file"])]
+    password_env: Option<String>,
 }
 
 /// CLI output format values.
@@ -285,11 +301,12 @@ fn validation_options(args: &ValidateArgs, config: &CliConfig) -> Result<Validat
             })
         },
     )?;
+    let resource_limits = validated_resource_limits(config.resources.clone().unwrap_or_default())?;
+    let password = resolve_password(args, config, resource_limits.max_password_bytes)?;
     Ok(ValidationOptions::builder()
         .flavour(flavour)
-        .resource_limits(validated_resource_limits(
-            config.resources.clone().unwrap_or_default(),
-        )?)
+        .resource_limits(resource_limits)
+        .password(password)
         .max_failed_assertions_per_rule(
             args.max_failures
                 .or(config.validation.max_failed_assertions_per_rule)
@@ -297,6 +314,74 @@ fn validation_options(args: &ValidateArgs, config: &CliConfig) -> Result<Validat
         )
         .record_passed_assertions(args.record_passes || config.validation.record_passed_assertions)
         .build())
+}
+
+fn resolve_password(
+    args: &ValidateArgs,
+    config: &CliConfig,
+    max_password_bytes: usize,
+) -> Result<Option<PasswordSecret>> {
+    let cli_source = PasswordSource::from_args(args)?;
+    let config_source = config.validation.password_source()?;
+    let Some(source) = cli_source.or(config_source) else {
+        return Ok(None);
+    };
+    let value = match source {
+        PasswordSource::Stdin => {
+            let mut bytes = Vec::new();
+            let read_limit = u64::try_from(max_password_bytes)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1);
+            io::stdin()
+                .take(read_limit)
+                .read_to_end(&mut bytes)
+                .context("failed to read password from stdin")?;
+            if bytes.len() > max_password_bytes {
+                return Err(password_config_error(
+                    "passwordStdin",
+                    "password stdin exceeds byte limit",
+                )
+                .into());
+            }
+            let value = String::from_utf8(bytes)
+                .map_err(|_| password_config_error("passwordStdin", "password is not UTF-8"))?;
+            trim_one_line_ending(value)
+        }
+        PasswordSource::File(path) => {
+            let metadata = std::fs::metadata(&path)
+                .with_context(|| format!("failed to inspect password file {}", path.display()))?;
+            if metadata.is_dir() {
+                return Err(
+                    password_config_error("passwordFile", "password file is a directory").into(),
+                );
+            }
+            let max = u64::try_from(max_password_bytes).unwrap_or(u64::MAX);
+            if metadata.len() > max {
+                return Err(password_config_error(
+                    "passwordFile",
+                    "password file exceeds byte limit",
+                )
+                .into());
+            }
+            let value = std::fs::read_to_string(&path)
+                .with_context(|| format!("failed to read password file {}", path.display()))?;
+            trim_one_line_ending(value)
+        }
+        PasswordSource::Env(name) => std::env::var(&name)
+            .with_context(|| format!("failed to read password environment variable {name}"))?,
+    };
+    PasswordSecret::new_with_limit(value, max_password_bytes)
+        .map(Some)
+        .map_err(anyhow::Error::from)
+}
+
+fn trim_one_line_ending(mut value: String) -> String {
+    if value.ends_with("\r\n") {
+        value.truncate(value.len().saturating_sub(2));
+    } else if value.ends_with('\n') || value.ends_with('\r') {
+        value.truncate(value.len().saturating_sub(1));
+    }
+    value
 }
 
 fn parse_max_failures(value: &str) -> std::result::Result<MaxDisplayedFailures, String> {
@@ -496,6 +581,16 @@ fn validated_resource_limits(limits: ResourceLimits) -> Result<ResourceLimits> {
         limits.max_string_bytes,
         HARD_MAX_STRING_BYTES,
     )?;
+    ensure_limit_usize(
+        "maxPasswordBytes",
+        limits.max_password_bytes,
+        HARD_MAX_PASSWORD_BYTES,
+    )?;
+    ensure_limit_usize(
+        "maxDecryptedStringBytes",
+        limits.max_decrypted_string_bytes,
+        HARD_MAX_STRING_BYTES,
+    )?;
     ensure_limit(
         "maxStreamDeclaredBytes",
         limits.max_stream_declared_bytes,
@@ -506,12 +601,29 @@ fn validated_resource_limits(limits: ResourceLimits) -> Result<ResourceLimits> {
         limits.max_stream_decode_bytes,
         HARD_MAX_STREAM_BYTES,
     )?;
+    ensure_limit(
+        "maxDecryptedStreamBytes",
+        limits.max_decrypted_stream_bytes,
+        HARD_MAX_STREAM_BYTES,
+    )?;
+    ensure_limit(
+        "maxEncryptionDictEntries",
+        limits.max_encryption_dict_entries,
+        HARD_MAX_ENCRYPTION_DICT_ENTRIES,
+    )?;
     ensure_limit_usize(
         "maxParseFacts",
         limits.max_parse_facts,
         HARD_MAX_PARSE_FACTS,
     )?;
     Ok(limits)
+}
+
+fn password_config_error(field: &'static str, reason: &'static str) -> PdfvError {
+    PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
+        field,
+        reason: BoundedText::new(reason, 128).unwrap_or_else(|_| unreachable_bounded_text()),
+    })
 }
 
 fn ensure_limit(field: &'static str, value: u64, max: u64) -> Result<()> {
@@ -572,6 +684,8 @@ struct ValidationConfig {
     max_failed_assertions_per_rule: Option<MaxDisplayedFailures>,
     #[serde(default)]
     record_passed_assertions: bool,
+    #[serde(default)]
+    password: Option<PasswordConfig>,
 }
 
 impl ValidationConfig {
@@ -585,6 +699,88 @@ impl ValidationConfig {
             .transpose()
             .map_err(|message| anyhow::anyhow!("invalid config validation.flavour: {message}"))?
             .map_or_else(|| Ok(FlavourSelection::default()), Ok)
+    }
+
+    fn password_source(&self) -> Result<Option<PasswordSource>> {
+        self.password
+            .as_ref()
+            .map(PasswordSource::try_from_config)
+            .transpose()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PasswordConfig {
+    #[serde(default)]
+    stdin: bool,
+    #[serde(default)]
+    file: Option<PathBuf>,
+    #[serde(default)]
+    env: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+enum PasswordSource {
+    Stdin,
+    File(PathBuf),
+    Env(String),
+}
+
+impl PasswordSource {
+    fn from_args(args: &ValidateArgs) -> Result<Option<Self>> {
+        let mut sources = Vec::new();
+        if args.password_stdin {
+            sources.push(Self::Stdin);
+        }
+        if let Some(path) = &args.password_file {
+            sources.push(Self::File(path.clone()));
+        }
+        if let Some(name) = &args.password_env {
+            sources.push(Self::Env(validate_env_name(name)?));
+        }
+        one_password_source(sources)
+    }
+
+    fn try_from_config(config: &PasswordConfig) -> Result<Self> {
+        let mut sources = Vec::new();
+        if config.stdin {
+            sources.push(Self::Stdin);
+        }
+        if let Some(path) = &config.file {
+            sources.push(Self::File(path.clone()));
+        }
+        if let Some(name) = &config.env {
+            sources.push(Self::Env(validate_env_name(name)?));
+        }
+        one_password_source(sources)?.ok_or_else(|| {
+            password_config_error("validation.password", "password source is empty").into()
+        })
+    }
+}
+
+fn one_password_source(mut sources: Vec<PasswordSource>) -> Result<Option<PasswordSource>> {
+    match sources.len() {
+        0 => Ok(None),
+        1 => Ok(sources.pop()),
+        _ => Err(password_config_error(
+            "password",
+            "exactly zero or one password source is allowed",
+        )
+        .into()),
+    }
+}
+
+fn validate_env_name(name: &str) -> Result<String> {
+    let is_valid = !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if is_valid {
+        Ok(name.to_owned())
+    } else {
+        Err(password_config_error("passwordEnv", "environment variable name is invalid").into())
     }
 }
 

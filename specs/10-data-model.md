@@ -18,6 +18,8 @@ pub struct ValidationOptions {
     pub max_failed_assertions_per_rule: MaxDisplayedFailures,
     pub record_passed_assertions: bool,
     pub report_parse_warnings: bool,
+    #[serde(skip, default)]
+    pub password: Option<PasswordSecret>,
 }
 
 #[non_exhaustive]
@@ -31,6 +33,8 @@ pub enum FlavourSelection {
 ```
 
 All public structs with more than five fields use `typed-builder` per AGENTS.md Type Design & API. All fallible constructors return `Result<T, PdfvError>` with `thiserror` library errors. CLI layers may wrap with `anyhow::Context`.
+
+Password-bearing options follow [14-password-decryption-design.md](./14-password-decryption-design.md): password values use redacted secret wrappers, are never serialized/deserialized, and are exposed only inside the decryption module.
 
 ## 3. Core records
 
@@ -144,6 +148,5 @@ No public library error uses `anyhow`. No external-input path panics. Absence is
 ## 8. Cross-references
 
 - ← Depends on: [00-prd.md](./00-prd.md)
-- → Consumed by: [11-parser-core-design.md](./11-parser-core-design.md), [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md), [13-validation-engine-design.md](./13-validation-engine-design.md), [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md)
+- → Consumed by: [11-parser-core-design.md](./11-parser-core-design.md), [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md), [13-validation-engine-design.md](./13-validation-engine-design.md), [14-password-decryption-design.md](./14-password-decryption-design.md), [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md)
 - ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md)
-
