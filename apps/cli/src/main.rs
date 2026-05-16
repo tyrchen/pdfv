@@ -14,17 +14,16 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
     process::ExitCode,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pdfv_core::{
     BatchReport, BoundedText, BuiltinProfileRepository, FeatureSelection, FlavourSelection,
-    InputKind, InputSummary, MaxDisplayedFailures, ObjectTypeName, PasswordSecret, PdfvError,
-    PolicySet, RepairAction, RepairBatchReport, RepairRefusal, RepairReport, RepairStatus,
-    ReportFormat, ResourceLimits, ValidationFlavour, ValidationOptions, ValidationStatus,
-    ValidationWarning, Validator,
+    MaxDisplayedFailures, MetadataRepairOptions, MetadataRepairer, ObjectTypeName, PasswordSecret,
+    PdfvError, PolicySet, RepairBatchReport, RepairReport, ReportFormat, ResourceLimits,
+    ValidationFlavour, ValidationOptions, ValidationStatus, ValidationWarning, Validator,
 };
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -251,9 +250,10 @@ fn run_validate(args: &ValidateArgs) -> Result<CliExit> {
         .map(|path| load_cli_config(path))
         .transpose()?
         .unwrap_or_default();
-    let format = args
-        .format
-        .map_or(config.output.format, FormatArg::into_report_format);
+    let format = args.format.map_or_else(
+        || config.output.format.into(),
+        FormatArg::into_report_format,
+    );
     let options = validation_options(args, &config)?;
     let validator = Validator::new(options).context("failed to initialize validator")?;
     let paths = discover_inputs(&args.paths, args.recursive)?;
@@ -292,22 +292,23 @@ fn run_validate(args: &ValidateArgs) -> Result<CliExit> {
 
 fn run_repair_metadata(args: &RepairMetadataArgs) -> Result<CliExit> {
     let started = Instant::now();
-    let output_dir = validate_output_dir(&args.output_dir)?;
-    let prefix = validate_repair_prefix(&args.prefix)?;
     let format = args
         .format
         .map_or(ReportFormat::Json, FormatArg::into_report_format);
-    let options = ValidationOptions::builder()
+    let validation_options = ValidationOptions::builder()
         .flavour(args.flavour.clone().unwrap_or_default())
         .resource_limits(validated_resource_limits(ResourceLimits::default())?)
         .build();
-    let validator = Validator::new(options).context("failed to initialize repair validator")?;
+    let repair_options =
+        MetadataRepairOptions::new(validation_options, &args.output_dir, args.prefix.clone())?;
+    let repairer =
+        MetadataRepairer::new(repair_options).context("failed to initialize repair engine")?;
     let paths = discover_inputs(&args.paths, false)?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(usize::try_from(args.jobs.get()).unwrap_or(usize::MAX))
         .build()
         .context("failed to build repair worker pool")?;
-    let mut reports = pool.install(|| repair_paths(&validator, &paths, &output_dir, &prefix));
+    let mut reports = pool.install(|| repair_paths(&repairer, &paths));
     if args.redact_paths {
         redact_repair_paths(&mut reports);
     }
@@ -784,191 +785,32 @@ fn validate_paths(validator: &Validator, paths: &[PathBuf]) -> ValidationBatch {
     batch
 }
 
-fn repair_paths(
-    validator: &Validator,
-    paths: &[PathBuf],
-    output_dir: &Path,
-    prefix: &str,
-) -> Vec<RepairReport> {
+fn repair_paths(repairer: &MetadataRepairer, paths: &[PathBuf]) -> Vec<RepairReport> {
     paths
         .par_iter()
         .map(|path| {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                repair_one_path(validator, path, output_dir, prefix)
-            }))
-            .unwrap_or_else(|_| {
-                Ok(failed_repair_report(
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                repairer.repair_path(path)
+            })) {
+                Ok(Ok(report)) => report,
+                Ok(Err(error)) => failed_repair_report(path, &error.to_string()),
+                Err(_) => failed_repair_report(
                     path,
-                    None,
-                    "repair worker panicked while processing input",
-                    Duration::ZERO,
-                ))
-            })
-            .unwrap_or_else(|error| {
-                failed_repair_report(path, None, &error.to_string(), Duration::ZERO)
-            })
+                    &format!("repair worker panicked while processing {}", path.display()),
+                ),
+            }
         })
         .collect()
 }
 
-fn repair_one_path(
-    validator: &Validator,
-    path: &Path,
-    output_dir: &Path,
-    prefix: &str,
-) -> Result<RepairReport> {
-    let started = Instant::now();
-    let source = input_summary_for_path(path)?;
-    let output_path = repair_output_path(path, output_dir, prefix)?;
-    let input_canonical = std::fs::canonicalize(path)
-        .with_context(|| format!("failed to canonicalize input {}", path.display()))?;
-    if input_canonical == output_path {
-        return Ok(refused_repair_report(
-            source,
-            RepairRefusal::OutputWouldModifyInput,
-            started.elapsed(),
-        ));
-    }
-    let validation = validator
-        .validate_path(path)
-        .with_context(|| format!("failed to validate {}", path.display()))?;
-    if matches!(validation.status, ValidationStatus::ParseFailed) {
-        return Ok(refused_repair_report(
-            source,
-            RepairRefusal::ParseFailed {
-                reason: validation.warnings.first().map_or_else(
-                    || {
-                        BoundedText::new("parse failed", 128)
-                            .unwrap_or_else(|_| unreachable_bounded_text())
-                    },
-                    warning_message,
-                ),
-            },
-            started.elapsed(),
-        ));
-    }
-    if matches!(validation.status, ValidationStatus::Encrypted) {
-        return Ok(refused_repair_report(
-            source,
-            RepairRefusal::Encrypted,
-            started.elapsed(),
-        ));
-    }
-    let selected_profiles = if validation.flavours.is_empty() {
-        validation.profile_reports.len()
-    } else {
-        validation.flavours.len()
-    };
-    if selected_profiles != 1 {
-        return Ok(refused_repair_report(
-            source,
-            RepairRefusal::AmbiguousFlavour {
-                selected: u64::try_from(selected_profiles).unwrap_or(u64::MAX),
-            },
-            started.elapsed(),
-        ));
-    }
-    if !matches!(validation.status, ValidationStatus::Valid) {
-        return Ok(refused_repair_report(
-            source,
-            RepairRefusal::UnsupportedValidationStatus {
-                status: validation.status,
-            },
-            started.elapsed(),
-        ));
-    }
-    atomic_copy(path, &output_path)?;
-    Ok(RepairReport::builder()
-        .engine_version(pdfv_core::ENGINE_VERSION.to_owned())
-        .source(source)
-        .output_path(Some(output_path))
-        .status(RepairStatus::NoAction)
-        .actions(vec![RepairAction::CopiedUnchanged])
-        .refusal(None)
-        .warnings(Vec::new())
-        .task_durations(vec![pdfv_core::TaskDuration::from_duration(
-            pdfv_core::Identifier::new("repairMetadata")?,
-            started.elapsed(),
-        )])
-        .build())
-}
-
-fn input_summary_for_path(path: &Path) -> Result<InputSummary> {
-    let metadata =
-        std::fs::metadata(path).with_context(|| format!("failed to inspect {}", path.display()))?;
-    Ok(InputSummary::new(
-        InputKind::File,
-        Some(path.to_path_buf()),
-        Some(metadata.len()),
-    ))
-}
-
-fn repair_output_path(path: &Path, output_dir: &Path, prefix: &str) -> Result<PathBuf> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| repair_config_error("paths", "input path must have a UTF-8 file name"))?;
-    validate_output_filename(file_name)?;
-    let output_name = format!("{prefix}{file_name}");
-    validate_output_filename(&output_name)?;
-    Ok(output_dir.join(output_name))
-}
-
-fn atomic_copy(input: &Path, output_path: &Path) -> Result<()> {
-    let Some(parent) = output_path.parent() else {
-        return Err(repair_config_error("outputDir", "output path has no parent").into());
-    };
-    let mut source =
-        File::open(input).with_context(|| format!("failed to open {}", input.display()))?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("failed to create temporary output in {}", parent.display()))?;
-    io::copy(&mut source, &mut temp)
-        .with_context(|| format!("failed to copy {} to temporary output", input.display()))?;
-    temp.flush().with_context(|| {
-        format!(
-            "failed to flush temporary output for {}",
-            output_path.display()
-        )
-    })?;
-    temp.persist(output_path).map_err(|error| {
-        anyhow::anyhow!(
-            "failed to finalize atomic output {}: {}",
-            output_path.display(),
-            error.error
-        )
-    })?;
-    Ok(())
-}
-
-fn refused_repair_report(
-    source: InputSummary,
-    refusal: RepairRefusal,
-    _elapsed: Duration,
-) -> RepairReport {
+fn failed_repair_report(path: &Path, reason: &str) -> RepairReport {
+    let source =
+        pdfv_core::InputSummary::new(pdfv_core::InputKind::File, Some(path.to_path_buf()), None);
     RepairReport::builder()
         .engine_version(pdfv_core::ENGINE_VERSION.to_owned())
         .source(source)
         .output_path(None)
-        .status(RepairStatus::Refused)
-        .actions(Vec::new())
-        .refusal(Some(refusal))
-        .warnings(Vec::new())
-        .task_durations(Vec::new())
-        .build()
-}
-
-fn failed_repair_report(
-    path: &Path,
-    output_path: Option<PathBuf>,
-    reason: &str,
-    _elapsed: Duration,
-) -> RepairReport {
-    let source = InputSummary::new(InputKind::File, Some(path.to_path_buf()), None);
-    RepairReport::builder()
-        .engine_version(pdfv_core::ENGINE_VERSION.to_owned())
-        .source(source)
-        .output_path(output_path)
-        .status(RepairStatus::Failed)
+        .status(pdfv_core::RepairStatus::Failed)
         .actions(Vec::new())
         .refusal(None)
         .warnings(vec![ValidationWarning::General {
@@ -989,69 +831,6 @@ fn redact_repair_paths(reports: &mut [RepairReport]) {
         report.source.path = None;
         report.output_path = None;
     }
-}
-
-fn validate_output_dir(path: &Path) -> Result<PathBuf> {
-    let metadata = std::fs::metadata(path)
-        .with_context(|| format!("failed to inspect output directory {}", path.display()))?;
-    if !metadata.is_dir() {
-        return Err(repair_config_error("outputDir", "output directory is not a directory").into());
-    }
-    std::fs::canonicalize(path)
-        .with_context(|| format!("failed to canonicalize output directory {}", path.display()))
-}
-
-fn validate_repair_prefix(prefix: &str) -> Result<String> {
-    const MAX_REPAIR_PREFIX_BYTES: usize = 64;
-    let valid = prefix.len() <= MAX_REPAIR_PREFIX_BYTES
-        && prefix
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
-    if valid {
-        Ok(prefix.to_owned())
-    } else {
-        Err(repair_config_error(
-            "prefix",
-            "prefix must be ASCII letters, digits, dot, dash, or underscore and at most 64 bytes",
-        )
-        .into())
-    }
-}
-
-fn validate_output_filename(name: &str) -> Result<()> {
-    const MAX_OUTPUT_FILENAME_BYTES: usize = 255;
-    let valid = !name.is_empty()
-        && name.len() <= MAX_OUTPUT_FILENAME_BYTES
-        && !name.contains("..")
-        && name
-            .bytes()
-            .all(|byte| byte != b'\0' && byte != b'/' && byte != b'\\');
-    if valid {
-        Ok(())
-    } else {
-        Err(repair_config_error("output", "output filename is invalid").into())
-    }
-}
-
-fn warning_message(warning: &ValidationWarning) -> BoundedText {
-    let message = match warning {
-        ValidationWarning::ParseFactCapReached { cap } => {
-            format!("parse fact cap reached: {cap}")
-        }
-        ValidationWarning::IncompatibleProfile { profile_id, reason } => {
-            format!(
-                "incompatible profile {}: {}",
-                profile_id.as_str(),
-                reason.as_str()
-            )
-        }
-        ValidationWarning::AutoDetection { message } => {
-            format!("auto detection: {}", message.as_str())
-        }
-        ValidationWarning::General { message } => message.as_str().to_owned(),
-        _ => String::from("validation warning"),
-    };
-    BoundedText::new(message, 512).unwrap_or_else(|_| unreachable_bounded_text())
 }
 
 fn repair_exit(batch: &RepairBatchReport) -> CliExit {
@@ -1138,13 +917,6 @@ fn feature_config_error(field: &'static str, reason: &'static str) -> PdfvError 
     PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
         field,
         reason: BoundedText::new(reason, 128).unwrap_or_else(|_| unreachable_bounded_text()),
-    })
-}
-
-fn repair_config_error(field: &'static str, reason: &'static str) -> PdfvError {
-    PdfvError::Repair(pdfv_core::RepairError::InvalidField {
-        field,
-        reason: BoundedText::new(reason, 256).unwrap_or_else(|_| unreachable_bounded_text()),
     })
 }
 
@@ -1310,7 +1082,7 @@ fn validate_env_name(name: &str) -> Result<String> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OutputConfig {
     #[serde(default = "default_report_format")]
-    format: ReportFormat,
+    format: ConfigReportFormat,
     #[serde(default)]
     path: Option<PathBuf>,
     #[serde(default)]
@@ -1327,8 +1099,43 @@ impl Default for OutputConfig {
     }
 }
 
-fn default_report_format() -> ReportFormat {
-    ReportFormat::Json
+/// Config file report format values.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ConfigReportFormat {
+    /// Compact JSON output.
+    Json,
+    /// Pretty JSON output.
+    #[serde(alias = "jsonPretty")]
+    JsonPretty,
+    /// Human-readable text output.
+    Text,
+    /// Machine-readable XML compatibility output.
+    Xml,
+    /// Deprecated compatibility alias for XML output.
+    Mrr,
+    /// Raw processor-style XML output.
+    #[serde(alias = "rawXml")]
+    Raw,
+    /// Static HTML output.
+    Html,
+}
+
+impl From<ConfigReportFormat> for ReportFormat {
+    fn from(value: ConfigReportFormat) -> Self {
+        match value {
+            ConfigReportFormat::Json => Self::Json,
+            ConfigReportFormat::JsonPretty => Self::JsonPretty,
+            ConfigReportFormat::Text => Self::Text,
+            ConfigReportFormat::Xml | ConfigReportFormat::Mrr => Self::Xml,
+            ConfigReportFormat::Raw => Self::RawXml,
+            ConfigReportFormat::Html => Self::Html,
+        }
+    }
+}
+
+fn default_report_format() -> ConfigReportFormat {
+    ConfigReportFormat::Json
 }
 
 fn exit_for_error(error: Option<&PdfvError>) -> u8 {

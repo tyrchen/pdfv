@@ -173,6 +173,27 @@ fn test_should_validate_pdf_and_emit_raw_xml_report() -> Result<(), Box<dyn Erro
 }
 
 #[test]
+fn test_should_accept_raw_format_from_config() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    let config = temp.path().join("pdfv.yaml");
+    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&config, b"output:\n  format: raw\n")?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--config"])
+        .arg(&config)
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains("<rawReport").eval(&stdout));
+    assert!(contains(r#"<processorConfig tasks="validation"></processorConfig>"#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
 fn test_should_validate_pdf_and_emit_html_report() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
@@ -289,6 +310,35 @@ fn test_should_reject_repair_output_directory_same_as_input_parent() -> Result<(
     assert_eq!(output.status.code(), Some(2));
     let stdout = String::from_utf8(output.stdout)?;
     assert!(contains(r#""kind":"outputWouldModifyInput""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_refuse_repair_when_output_exists_and_preserve_existing_file()
+-> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let input = temp.path().join("valid.pdf");
+    let output_dir = temp.path().join("out");
+    let output_path = output_dir.join("valid.pdf");
+    std::fs::create_dir(&output_dir)?;
+    write_fixture(&input, MINIMAL_VALID)?;
+    write_fixture(&output_path, b"existing output")?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args([
+            "repair-metadata",
+            "--output-dir",
+            output_dir.to_str().ok_or("output dir path must be UTF-8")?,
+            "--format",
+            "json",
+        ])
+        .arg(&input)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(std::fs::read(&output_path)?, b"existing output");
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""kind":"invalidOutputPath""#).eval(&stdout));
     Ok(())
 }
 

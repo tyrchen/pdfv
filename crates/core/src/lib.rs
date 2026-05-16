@@ -23,9 +23,9 @@ mod xmp;
 use std::{
     collections::BTreeMap,
     fmt,
-    io::Write,
+    io::{self, Write},
     num::{NonZeroU32, NonZeroU64},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -992,6 +992,74 @@ impl RepairReport {
     }
 }
 
+/// Options for safe metadata repair.
+#[derive(Clone, Debug)]
+pub struct MetadataRepairOptions {
+    /// Validation options used to parse and classify repair inputs.
+    pub validation_options: ValidationOptions,
+    /// Canonical output directory where repaired files are written.
+    pub output_dir: PathBuf,
+    /// Prefix added to each output filename.
+    pub prefix: String,
+}
+
+impl MetadataRepairOptions {
+    /// Creates repair options after validating output directory and prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] when the output directory or prefix violates the
+    /// repair safety policy.
+    pub fn new(
+        validation_options: ValidationOptions,
+        output_dir: impl AsRef<Path>,
+        prefix: impl Into<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            validation_options,
+            output_dir: validate_repair_output_dir(output_dir.as_ref())?,
+            prefix: validate_repair_prefix(&prefix.into())?,
+        })
+    }
+}
+
+/// Safe metadata repair facade.
+#[derive(Debug)]
+pub struct MetadataRepairer {
+    validator: Validator,
+    output_dir: PathBuf,
+    prefix: String,
+}
+
+impl MetadataRepairer {
+    /// Creates a metadata repair facade.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] if validation setup or repair options are invalid.
+    pub fn new(options: MetadataRepairOptions) -> Result<Self> {
+        Ok(Self {
+            validator: Validator::new(options.validation_options)?,
+            output_dir: options.output_dir,
+            prefix: options.prefix,
+        })
+    }
+
+    /// Repairs one PDF file by writing a non-in-place output or a refusal report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] for I/O failures before a report can be produced.
+    pub fn repair_path(&self, path: impl AsRef<Path>) -> Result<RepairReport> {
+        repair_metadata_path(
+            &self.validator,
+            path.as_ref(),
+            &self.output_dir,
+            &self.prefix,
+        )
+    }
+}
+
 /// Batch metadata repair report.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -1129,6 +1197,280 @@ pub enum RepairRefusal {
         /// Bounded reason.
         reason: BoundedText,
     },
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "metadata repair is an explicit synchronous file rewrite API, not an async service \
+              path"
+)]
+fn repair_metadata_path(
+    validator: &Validator,
+    path: &Path,
+    output_dir: &Path,
+    prefix: &str,
+) -> Result<RepairReport> {
+    let source = input_summary_for_path(path)?;
+    let output_path = repair_output_path(path, output_dir, prefix)?;
+    let input_canonical = std::fs::canonicalize(path).map_err(|source| PdfvError::Io {
+        path: Some(path.to_path_buf()),
+        source,
+    })?;
+    if input_canonical == output_path {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::OutputWouldModifyInput,
+        ));
+    }
+    if output_path.exists() {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::InvalidOutputPath {
+                reason: BoundedText::unchecked("output path already exists"),
+            },
+        ));
+    }
+
+    let started = std::time::Instant::now();
+    let validation = validator.validate_path(path)?;
+    if matches!(validation.status, ValidationStatus::ParseFailed) {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::ParseFailed {
+                reason: validation
+                    .warnings
+                    .first()
+                    .map_or_else(default_parse_failed_text, ValidationWarning::message_text),
+            },
+        ));
+    }
+    if matches!(validation.status, ValidationStatus::Encrypted) {
+        return Ok(refused_repair_report(source, RepairRefusal::Encrypted));
+    }
+    let selected_profiles = if validation.flavours.is_empty() {
+        validation.profile_reports.len()
+    } else {
+        validation.flavours.len()
+    };
+    if selected_profiles != 1 {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::AmbiguousFlavour {
+                selected: u64::try_from(selected_profiles).unwrap_or(u64::MAX),
+            },
+        ));
+    }
+    if !matches!(validation.status, ValidationStatus::Valid) {
+        return Ok(refused_repair_report(
+            source,
+            RepairRefusal::UnsupportedValidationStatus {
+                status: validation.status,
+            },
+        ));
+    }
+
+    match atomic_copy(path, &output_path) {
+        Ok(()) => Ok(RepairReport::builder()
+            .engine_version(ENGINE_VERSION.to_owned())
+            .source(source)
+            .output_path(Some(output_path))
+            .status(RepairStatus::NoAction)
+            .actions(vec![RepairAction::CopiedUnchanged])
+            .refusal(None)
+            .warnings(Vec::new())
+            .task_durations(vec![TaskDuration::from_duration(
+                Identifier::new("repairMetadata")?,
+                started.elapsed(),
+            )])
+            .build()),
+        Err(error) => {
+            remove_failed_output(&output_path)?;
+            Ok(failed_repair_report(
+                source,
+                Some(output_path),
+                &error.to_string(),
+            ))
+        }
+    }
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "metadata repair reports filesystem input size synchronously"
+)]
+fn input_summary_for_path(path: &Path) -> Result<InputSummary> {
+    let metadata = std::fs::metadata(path).map_err(|source| PdfvError::Io {
+        path: Some(path.to_path_buf()),
+        source,
+    })?;
+    Ok(InputSummary::new(
+        InputKind::File,
+        Some(path.to_path_buf()),
+        Some(metadata.len()),
+    ))
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "metadata repair validates a caller-selected filesystem output directory"
+)]
+fn validate_repair_output_dir(path: &Path) -> Result<PathBuf> {
+    let metadata = std::fs::metadata(path).map_err(|source| PdfvError::Io {
+        path: Some(path.to_path_buf()),
+        source,
+    })?;
+    if !metadata.is_dir() {
+        return Err(RepairError::InvalidField {
+            field: "outputDir",
+            reason: BoundedText::unchecked("output directory is not a directory"),
+        }
+        .into());
+    }
+    std::fs::canonicalize(path).map_err(|source| PdfvError::Io {
+        path: Some(path.to_path_buf()),
+        source,
+    })
+}
+
+fn validate_repair_prefix(prefix: &str) -> Result<String> {
+    const MAX_REPAIR_PREFIX_BYTES: usize = 64;
+    let valid = prefix.len() <= MAX_REPAIR_PREFIX_BYTES
+        && prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if valid {
+        Ok(prefix.to_owned())
+    } else {
+        Err(RepairError::InvalidField {
+            field: "prefix",
+            reason: BoundedText::unchecked(
+                "prefix must be ASCII letters, digits, dot, dash, or underscore and at most 64 \
+                 bytes",
+            ),
+        }
+        .into())
+    }
+}
+
+fn repair_output_path(path: &Path, output_dir: &Path, prefix: &str) -> Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| RepairError::InvalidField {
+            field: "paths",
+            reason: BoundedText::unchecked("input path must have a UTF-8 file name"),
+        })?;
+    validate_output_filename(file_name)?;
+    let output_name = format!("{prefix}{file_name}");
+    validate_output_filename(&output_name)?;
+    Ok(output_dir.join(output_name))
+}
+
+fn validate_output_filename(name: &str) -> Result<()> {
+    const MAX_OUTPUT_FILENAME_BYTES: usize = 255;
+    let valid = !name.is_empty()
+        && name.len() <= MAX_OUTPUT_FILENAME_BYTES
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|byte| byte != b'\0' && byte != b'/' && byte != b'\\');
+    if valid {
+        Ok(())
+    } else {
+        Err(RepairError::InvalidField {
+            field: "output",
+            reason: BoundedText::unchecked("output filename is invalid"),
+        }
+        .into())
+    }
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "metadata repair performs synchronous atomic file output by design"
+)]
+fn atomic_copy(input: &Path, output_path: &Path) -> Result<()> {
+    let Some(parent) = output_path.parent() else {
+        return Err(RepairError::InvalidField {
+            field: "outputDir",
+            reason: BoundedText::unchecked("output path has no parent"),
+        }
+        .into());
+    };
+    let mut source = std::fs::File::open(input).map_err(|source| PdfvError::Io {
+        path: Some(input.to_path_buf()),
+        source,
+    })?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|source| PdfvError::Io {
+        path: Some(parent.to_path_buf()),
+        source,
+    })?;
+    io::copy(&mut source, &mut temp).map_err(|source| PdfvError::Io {
+        path: Some(input.to_path_buf()),
+        source,
+    })?;
+    temp.flush().map_err(|source| PdfvError::Io {
+        path: Some(output_path.to_path_buf()),
+        source,
+    })?;
+    temp.persist(output_path).map_err(|error| PdfvError::Io {
+        path: Some(output_path.to_path_buf()),
+        source: error.error,
+    })?;
+    Ok(())
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "metadata repair removes failed synchronous output artifacts"
+)]
+fn remove_failed_output(output_path: &Path) -> Result<()> {
+    match std::fs::remove_file(output_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PdfvError::Io {
+            path: Some(output_path.to_path_buf()),
+            source,
+        }),
+    }
+}
+
+fn refused_repair_report(source: InputSummary, refusal: RepairRefusal) -> RepairReport {
+    RepairReport::builder()
+        .engine_version(ENGINE_VERSION.to_owned())
+        .source(source)
+        .output_path(None)
+        .status(RepairStatus::Refused)
+        .actions(Vec::new())
+        .refusal(Some(refusal))
+        .warnings(Vec::new())
+        .task_durations(Vec::new())
+        .build()
+}
+
+fn failed_repair_report(
+    source: InputSummary,
+    output_path: Option<PathBuf>,
+    reason: &str,
+) -> RepairReport {
+    RepairReport::builder()
+        .engine_version(ENGINE_VERSION.to_owned())
+        .source(source)
+        .output_path(output_path)
+        .status(RepairStatus::Failed)
+        .actions(Vec::new())
+        .refusal(None)
+        .warnings(vec![ValidationWarning::General {
+            message: BoundedText::new(reason, 512)
+                .unwrap_or_else(|_| BoundedText::unchecked("metadata repair failed")),
+        }])
+        .task_durations(Vec::new())
+        .build()
+}
+
+fn default_parse_failed_text() -> BoundedText {
+    BoundedText::unchecked("parse failed")
 }
 
 /// Input summary included in reports.
@@ -1548,6 +1890,27 @@ pub enum ValidationWarning {
         /// Warning message.
         message: BoundedText,
     },
+}
+
+impl ValidationWarning {
+    /// Returns a bounded human-readable warning message.
+    #[must_use]
+    pub fn message_text(&self) -> BoundedText {
+        match self {
+            Self::ParseFactCapReached { cap } => {
+                BoundedText::unchecked(format!("parse fact cap reached: {cap}"))
+            }
+            Self::IncompatibleProfile { profile_id, reason } => BoundedText::unchecked(format!(
+                "incompatible profile {}: {}",
+                profile_id.as_str(),
+                reason.as_str()
+            )),
+            Self::AutoDetection { message } => {
+                BoundedText::unchecked(format!("auto detection: {}", message.as_str()))
+            }
+            Self::General { message } => message.clone(),
+        }
+    }
 }
 
 /// Task duration entry.
@@ -2178,7 +2541,8 @@ fn write_raw_xml_batch<W: Write>(report: &BatchReport, out: &mut W) -> Result<()
     .map_err(write_error)?;
     writeln!(
         out,
-        r#"  <processorConfig tasks="validation"></processorConfig>"#
+        r#"  <processorConfig tasks="{}"></processorConfig>"#,
+        XmlEscapedAttr::new(&raw_validation_tasks(report))?,
     )
     .map_err(write_error)?;
     writeln!(out, "  <processorResults>").map_err(write_error)?;
@@ -2221,6 +2585,13 @@ fn write_xml_repair_batch<W: Write>(
         XmlEscapedAttr::new(ENGINE_VERSION)?,
     )
     .map_err(write_error)?;
+    if root == "rawRepairReport" {
+        writeln!(
+            out,
+            r#"  <processorConfig tasks="metadata"></processorConfig>"#,
+        )
+        .map_err(write_error)?;
+    }
     writeln!(out, "  <items>").map_err(write_error)?;
     for item in &report.items {
         write_xml_repair_item(item, out)?;
@@ -2288,6 +2659,22 @@ fn write_xml_repair_summary<W: Write>(summary: &RepairBatchSummary, out: &mut W)
     )
     .map_err(write_error)?;
     Ok(())
+}
+
+fn raw_validation_tasks(report: &BatchReport) -> String {
+    let has_features = report
+        .items
+        .iter()
+        .any(|item| item.feature_report.is_some());
+    let has_policy = report.items.iter().any(|item| item.policy_report.is_some());
+    let mut tasks = vec!["validation"];
+    if has_features {
+        tasks.push("features");
+    }
+    if has_policy {
+        tasks.push("policy");
+    }
+    tasks.join(",")
 }
 
 fn write_html_batch<W: Write>(report: &BatchReport, out: &mut W) -> Result<()> {
@@ -3037,22 +3424,7 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
 }
 
 fn warning_text(warning: &ValidationWarning) -> String {
-    match warning {
-        ValidationWarning::ParseFactCapReached { cap } => {
-            format!("parse fact cap reached: {cap}")
-        }
-        ValidationWarning::IncompatibleProfile { profile_id, reason } => {
-            format!(
-                "incompatible profile {}: {}",
-                profile_id.as_str(),
-                reason.as_str()
-            )
-        }
-        ValidationWarning::AutoDetection { message } => {
-            format!("auto detection: {}", message.as_str())
-        }
-        ValidationWarning::General { message } => message.as_str().to_owned(),
-    }
+    warning.message_text().to_string()
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -3146,6 +3518,7 @@ fn is_xml_char(character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         error::Error as StdError,
         num::{NonZeroU32, NonZeroU64},
         path::PathBuf,
@@ -3154,11 +3527,13 @@ mod tests {
 
     use super::{
         Assertion, AssertionStatus, BatchReport, BoundedText, ErrorArgument, ExitCategory,
-        HtmlReportWriter, Identifier, InputKind, InputSummary, JsonReportWriter,
-        MaxDisplayedFailures, ObjectLocation, PdfVersion, ProfileIdentity, ProfileReport,
-        RawXmlReportWriter, RepairAction, RepairBatchReport, RepairRefusal, RepairReport,
-        RepairStatus, ReportFormat, ReportWriter, RuleId, TextReportWriter, ValidationOptions,
-        ValidationReport, ValidationStatus, XmlReportWriter,
+        FeatureObject, FeatureReport, FeatureValue, HtmlReportWriter, Identifier, InputKind,
+        InputSummary, JsonReportWriter, MaxDisplayedFailures, MetadataRepairOptions,
+        MetadataRepairer, ObjectLocation, ObjectTypeName, PdfVersion, PolicyReport,
+        PolicyRuleResult, ProfileIdentity, ProfileReport, PropertyName, RawXmlReportWriter,
+        RepairAction, RepairBatchReport, RepairRefusal, RepairReport, RepairStatus, ReportFormat,
+        ReportWriter, RuleId, TextReportWriter, ValidationOptions, ValidationReport,
+        ValidationStatus, XmlReportWriter,
     };
 
     fn sample_report() -> std::result::Result<ValidationReport, Box<dyn StdError>> {
@@ -3213,6 +3588,51 @@ mod tests {
             .warnings(Vec::new())
             .task_durations(Vec::new())
             .build())
+    }
+
+    fn sample_feature_policy_report() -> std::result::Result<ValidationReport, Box<dyn StdError>> {
+        let mut report = sample_report()?;
+        let mut properties = BTreeMap::new();
+        properties.insert(PropertyName::new("hasMetadata")?, FeatureValue::Bool(false));
+        report.feature_report = Some(
+            FeatureReport::builder()
+                .objects(vec![
+                    FeatureObject::builder()
+                        .family(ObjectTypeName::new("catalog".to_owned())?)
+                        .location(ObjectLocation {
+                            object: None,
+                            offset: None,
+                            path: Some(BoundedText::new("root/catalog[0]", 64)?),
+                        })
+                        .context(BoundedText::new("root/catalog[0]", 64)?)
+                        .properties(properties)
+                        .build(),
+                ])
+                .visited_objects(1)
+                .selected_families(vec![ObjectTypeName::new("catalog".to_owned())?])
+                .truncated(false)
+                .build(),
+        );
+        report.policy_report = Some(
+            PolicyReport::builder()
+                .name(Some(BoundedText::new("catalog-policy", 64)?))
+                .is_compliant(true)
+                .results(vec![
+                    PolicyRuleResult::builder()
+                        .id(Identifier::new("catalog-has-no-metadata")?)
+                        .description(BoundedText::new("Catalog metadata is absent", 128)?)
+                        .passed(true)
+                        .matches(1)
+                        .message(BoundedText::new(
+                            "policy rule catalog-has-no-metadata passed with 1 matching feature \
+                             objects",
+                            128,
+                        )?)
+                        .build(),
+                ])
+                .build(),
+        );
+        Ok(report)
     }
 
     fn sample_repair_report() -> RepairReport {
@@ -3382,7 +3802,7 @@ first failures:
     #[test]
     fn test_should_write_raw_xml_report_with_feature_and_policy_sections()
     -> std::result::Result<(), Box<dyn StdError>> {
-        let report = sample_report()?;
+        let report = sample_feature_policy_report()?;
         let mut output = Vec::new();
 
         RawXmlReportWriter
@@ -3390,10 +3810,54 @@ first failures:
             .map_err(Box::<dyn StdError>::from)?;
 
         let xml = String::from_utf8(output)?;
-        assert!(xml.contains("<rawReport"));
-        assert!(xml.contains(r#"<processorConfig tasks="validation"></processorConfig>"#));
-        assert!(xml.contains("<processorResult"));
-        assert!(xml.contains("<validationReport"));
+        let expected = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<rawReport engine="pdfv-core" version="{version}">
+  <processorConfig tasks="validation,features,policy"></processorConfig>
+  <processorResults>
+    <processorResult status="invalid">
+      <item size="42">
+        <name>&lt;memory&gt;</name>
+      </item>
+      <validationReport profileName="PDF/A-1B" statement="PDF file is not compliant with Validation Profile requirements." isCompliant="false">
+        <details passedRules="0" failedRules="1" passedChecks="0" failedChecks="1" unsupportedRules="0"></details>
+        <failedChecks>
+          <check ruleId="6.1.2-1" status="failed" location="offset 0">
+            <description>Header must start at byte zero</description>
+            <message>Header offset is non-zero</message>
+            <errorArguments>
+              <argument name="offset">12</argument>
+            </errorArguments>
+          </check>
+        </failedChecks>
+      </validationReport>
+      <featureReport visitedObjects="1" extractedObjects="1" truncated="false">
+        <featureObject family="catalog" location="root/catalog[0]">
+          <property name="hasMetadata">
+            <value type="bool">false</value>
+          </property>
+        </featureObject>
+      </featureReport>
+      <policyReport name="catalog-policy" isCompliant="true">
+        <rule id="catalog-has-no-metadata" passed="true" matches="1">
+          <description>Catalog metadata is absent</description>
+          <message>policy rule catalog-has-no-metadata passed with 1 matching feature objects</message>
+        </rule>
+      </policyReport>
+      <parseFacts>
+        <header offset="12" version="1.7" hadLeadingBytes="true"></header>
+      </parseFacts>
+    </processorResult>
+  </processorResults>
+  <batchSummary totalJobs="1" failedToParse="0" encrypted="0" incomplete="0" internalErrors="0">
+    <validationReports compliant="0" nonCompliant="1" failedJobs="0">1</validationReports>
+    <duration elapsedMillis="0"></duration>
+  </batchSummary>
+</rawReport>
+"#,
+            version = super::ENGINE_VERSION,
+        );
+        assert_eq!(xml, expected);
         Ok(())
     }
 
@@ -3407,10 +3871,22 @@ first failures:
             .map_err(Box::<dyn StdError>::from)?;
 
         let html = String::from_utf8(output)?;
-        assert!(html.contains("<!doctype html>"));
-        assert!(html.contains("<h1>Validation Report</h1>"));
-        assert!(html.contains("<table>"));
-        assert!(html.contains("pdfa-1b"));
+        let expected = "\
+<!doctype html>
+<html lang=\"en\"><head><meta charset=\"utf-8\"><title>pdfv validation \
+                        report</title><style>body{font-family:system-ui,sans-serif;margin:2rem;\
+                        color:#1f2937}table{border-collapse:collapse;width:100%}th,td{border:1px \
+                        solid #d1d5db;padding:.4rem;text-align:left}th{background:#f3f4f6}</\
+                        style></head><body>
+<h1>Validation Report</h1>
+<p>0 valid, 1 invalid, 0 parse failed, 0 encrypted, 0 incomplete.</p>
+<table><thead><tr><th>Input</th><th>Status</th><th>Profiles</th><th>Features</th><th>Policy</th></\
+                        tr></thead><tbody>
+<tr><td>&lt;memory&gt;</td><td>invalid</td><td>pdfa-1b</td><td>-</td><td>-</td></tr>
+</tbody></table>
+</body></html>
+";
+        assert_eq!(html, expected);
         Ok(())
     }
 
@@ -3463,10 +3939,73 @@ first failures:
 
         let raw = String::from_utf8(raw)?;
         let html = String::from_utf8(html)?;
-        assert!(raw.contains("<rawRepairReport"));
-        assert!(raw.contains(r#"<action kind="copiedUnchanged">copied unchanged</action>"#));
-        assert!(html.contains("<h1>Metadata Repair Report</h1>"));
-        assert!(html.contains("out/repaired-input.pdf"));
+        let expected_raw = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<rawRepairReport engine="pdfv-core" version="{version}">
+  <processorConfig tasks="metadata"></processorConfig>
+  <items>
+    <repairItem status="no action">
+      <item size="42">
+        <name>input.pdf</name>
+      </item>
+      <output>out/repaired-input.pdf</output>
+      <actions>
+        <action kind="copiedUnchanged">copied unchanged</action>
+      </actions>
+    </repairItem>
+  </items>
+  <repairSummary totalJobs="1" succeeded="0" noAction="1" refused="0" failed="0" elapsedMillis="0"></repairSummary>
+</rawRepairReport>
+"#,
+            version = super::ENGINE_VERSION,
+        );
+        let expected_html =
+            "\
+<!doctype html>
+<html lang=\"en\"><head><meta charset=\"utf-8\"><title>pdfv metadata repair \
+             report</title><style>body{font-family:system-ui,sans-serif;margin:2rem;color:#\
+             1f2937}table{border-collapse:collapse;width:100%}th,td{border:1px solid \
+             #d1d5db;padding:.4rem;text-align:left}th{background:#f3f4f6}</style></head><body>
+<h1>Metadata Repair Report</h1>
+<p>0 repaired, 1 unchanged, 0 refused, 0 failed.</p>
+<table><thead><tr><th>Input</th><th>Status</th><th>Output</th><th>Reason</th></tr></thead><tbody>
+<tr><td>input.pdf</td><td>no action</td><td>out/repaired-input.pdf</td><td></td></tr>
+</tbody></table>
+</body></html>
+";
+        assert_eq!(raw, expected_raw);
+        assert_eq!(html, expected_html);
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unit test creates local repair files synchronously"
+    )]
+    fn test_should_refuse_repair_when_output_already_exists_without_removing_it()
+    -> std::result::Result<(), Box<dyn StdError>> {
+        let temp = tempfile::tempdir()?;
+        let input = temp.path().join("input.pdf");
+        let output_dir = temp.path().join("out");
+        let output = output_dir.join("input.pdf");
+        std::fs::create_dir(&output_dir)?;
+        std::fs::write(&input, b"not a valid pdf")?;
+        std::fs::write(&output, b"existing output")?;
+        let repairer = MetadataRepairer::new(MetadataRepairOptions::new(
+            ValidationOptions::default(),
+            &output_dir,
+            "",
+        )?)?;
+
+        let report = repairer.repair_path(&input)?;
+
+        assert_eq!(report.status, RepairStatus::Refused);
+        assert!(matches!(
+            report.refusal,
+            Some(RepairRefusal::InvalidOutputPath { .. })
+        ));
+        assert_eq!(std::fs::read(&output)?, b"existing output");
         Ok(())
     }
 
