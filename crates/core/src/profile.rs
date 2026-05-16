@@ -330,6 +330,10 @@ impl PropertyName {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+
+    pub(crate) fn unchecked(value: impl Into<String>) -> Self {
+        Self(Identifier::unchecked(value))
+    }
 }
 
 impl TryFrom<String> for PropertyName {
@@ -948,7 +952,102 @@ fn import_generated_profile(source: &GeneratedProfileSource) -> Result<ProfileIm
     import.profile.identity.id = Identifier::new(source.id)?;
     import.profile.identity.version = Some(Identifier::new("verapdf-generated")?);
     import.profile.flavour = parse_display_flavour(source.display_flavour)?;
+    apply_model_schema_checks(&mut import)?;
     Ok(import)
+}
+
+fn apply_model_schema_checks(import: &mut ProfileImportSummary) -> Result<()> {
+    let registry = crate::ModelRegistry::default_registry();
+    let mut supported_rules = 0_u64;
+    let mut unsupported_rules = 0_u64;
+    for rule in &mut import.profile.rules {
+        if matches!(rule.test, RuleExpr::Unsupported { .. }) {
+            unsupported_rules = unsupported_rules.saturating_add(1);
+            continue;
+        }
+        let unsupported_reason = if registry.has_family(&rule.object_type) {
+            unsupported_property_reason(&registry, &rule.object_type, &rule.test)?
+        } else {
+            Some(BoundedText::new(
+                format!(
+                    "unknown validation model family {}",
+                    rule.object_type.as_str()
+                ),
+                512,
+            )?)
+        };
+        if let Some(reason) = unsupported_reason {
+            let fragment = BoundedText::new(format!("{:?}", rule.test), MAX_PROFILE_STRING_BYTES)
+                .unwrap_or_else(|_| BoundedText::unchecked("rule expression exceeds limit"));
+            rule.test = RuleExpr::Unsupported { fragment, reason };
+            unsupported_rules = unsupported_rules.saturating_add(1);
+        } else {
+            supported_rules = supported_rules.saturating_add(1);
+        }
+    }
+    import.supported_rules = supported_rules;
+    import.unsupported_rules = unsupported_rules;
+    Ok(())
+}
+
+fn unsupported_property_reason(
+    registry: &crate::ModelRegistry,
+    object_type: &ObjectTypeName,
+    expr: &RuleExpr,
+) -> Result<Option<BoundedText>> {
+    let mut properties = Vec::new();
+    collect_property_paths(expr, &mut properties);
+    for property in properties {
+        let Some(first) = property.parts().first() else {
+            return Ok(Some(BoundedText::unchecked("empty model property path")));
+        };
+        if property.parts().len() > 1 {
+            return Ok(Some(BoundedText::unchecked(
+                "nested property path has no bound model link",
+            )));
+        }
+        if !registry.has_family_property(object_type, first) {
+            return Ok(Some(BoundedText::new(
+                format!(
+                    "unknown validation model property {} on {}",
+                    first.as_str(),
+                    object_type.as_str()
+                ),
+                512,
+            )?));
+        }
+    }
+    Ok(None)
+}
+
+fn collect_property_paths<'a>(expr: &'a RuleExpr, properties: &mut Vec<&'a PropertyPath>) {
+    match expr {
+        RuleExpr::Property { path } => properties.push(path),
+        RuleExpr::Unary { expr, .. } => collect_property_paths(expr, properties),
+        RuleExpr::Binary { left, right, .. } => {
+            collect_property_paths(left, properties);
+            collect_property_paths(right, properties);
+        }
+        RuleExpr::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            collect_property_paths(condition, properties);
+            collect_property_paths(when_true, properties);
+            collect_property_paths(when_false, properties);
+        }
+        RuleExpr::Call { args, .. } => {
+            for arg in args {
+                collect_property_paths(arg, properties);
+            }
+        }
+        RuleExpr::Bool { .. }
+        | RuleExpr::Number { .. }
+        | RuleExpr::String { .. }
+        | RuleExpr::Null
+        | RuleExpr::Unsupported { .. } => {}
+    }
 }
 
 fn builtin_source_for_flavour(
@@ -1725,16 +1824,163 @@ fn profile_id_for_flavour(flavour: &ValidationFlavour) -> Result<Identifier> {
     Identifier::new(format!("verapdf-{}", display.as_str())).map_err(Into::into)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "veraPDF object taxonomy mapping is intentionally centralized for schema checks"
+)]
 fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<BoundedText>)> {
     let mapped = match value {
-        "CosDocument" | "PDDocument" => Some("document"),
+        "CosDocument" | "PDDocument" | "CosXRef" | "CosTrailer" | "CosIndirect" | "CosInfo" => {
+            Some("document")
+        }
         "CosStream" => Some("stream"),
-        "GFCosMetadata" | "PDMetadata" | "Metadata" => Some("metadata"),
+        "CosArray"
+        | "CosDict"
+        | "CosInteger"
+        | "CosName"
+        | "CosReal"
+        | "CosString"
+        | "CosTextString"
+        | "CosUnicodeName"
+        | "CosLang"
+        | "CosBBox"
+        | "CosActualText"
+        | "CosAlt"
+        | "CosBM"
+        | "CosRenderingIntent"
+        | "CosFileSpecification"
+        | "CosFilter"
+        | "CosIIFilter" => Some("object"),
+        "GFCosMetadata"
+        | "PDMetadata"
+        | "Metadata"
+        | "PDFAIdentification"
+        | "PDFUAIdentification"
+        | "XMPPackage"
+        | "MainXMPPackage"
+        | "XMPProperty"
+        | "XMPLangAlt"
+        | "ExtensionSchemaValueType"
+        | "ExtensionSchemaDefinition"
+        | "ExtensionSchemaProperty"
+        | "ExtensionSchemaField"
+        | "ExtensionSchemasContainer"
+        | "ExtensionSchemaObject" => Some("metadata"),
         "PDCatalog" | "Catalog" => Some("catalog"),
         "PDPage" | "Page" => Some("page"),
-        "PDFont" | "Font" => Some("font"),
-        "PDAnnotation" | "Annotation" => Some("annotation"),
-        "OutputIntents" | "OutputIntent" => Some("outputIntent"),
+        "PDFont"
+        | "Font"
+        | "PDSimpleFont"
+        | "PDTrueTypeFont"
+        | "PDType0Font"
+        | "PDType1Font"
+        | "PDCIDFont"
+        | "TrueTypeFontProgram"
+        | "Glyph" => Some("font"),
+        "PDCMap" | "PDReferencedCMap" | "CMapFile" => Some("cMap"),
+        "EmbeddedFile" => Some("embeddedFontFile"),
+        "PDAnnotation"
+        | "Annotation"
+        | "PDAnnot"
+        | "PDWidgetAnnot"
+        | "PDLinkAnnot"
+        | "PDMarkupAnnot"
+        | "PDTrapNetAnnot"
+        | "PDPrinterMarkAnnot"
+        | "PDWatermarkAnnot"
+        | "PDSoundAnnot"
+        | "PDScreenAnnot"
+        | "PDPopupAnnot"
+        | "PDMovieAnnot"
+        | "PDFileAttachmentAnnot"
+        | "PDRubberStampAnnot"
+        | "PDRichMediaAnnot"
+        | "PD3DAnnot"
+        | "PDInkAnnot" => Some("annotation"),
+        "PDAction" | "PDNamedAction" | "PDGoToAction" | "PDAdditionalActions" => Some("action"),
+        "PDAcroForm" => Some("acroForm"),
+        "PDFormField" | "PDTextField" => Some("formField"),
+        "OutputIntents" | "OutputIntent" | "PDOutputIntent" => Some("outputIntent"),
+        "PDXObject" | "PDXForm" | "PD3DStream" | "PDMediaClip" | "PDRichMedia" => Some("xObject"),
+        "PDXImage" | "JPEG2000" | "PDMaskImage" => Some("image"),
+        "PDContentStream" | "Op_Undefined" | "Op_q_gsave" => Some("contentStream"),
+        "PDOCConfig" => Some("optionalContentProperties"),
+        "PDPerms" => Some("permissions"),
+        "PDOutline" => Some("outline"),
+        "PDDestination" => Some("destination"),
+        "PDExtGState" => Some("extGState"),
+        "PDDeviceN" | "PDICCBasedCMYK" | "PDDeviceRGB" | "PDDeviceGray" | "PDDeviceCMYK"
+        | "PDSeparation" | "PDHalftone" | "PDGroup" | "ICCProfile" | "ICCOutputProfile"
+        | "ICCInputProfile" => Some("colorSpace"),
+        "PDStructTreeRoot" => Some("structureTreeRoot"),
+        "PDStructElem"
+        | "SEDocument"
+        | "SEDocumentFragment"
+        | "SEPart"
+        | "SEArt"
+        | "SESect"
+        | "SEDiv"
+        | "SEBlockQuote"
+        | "SECaption"
+        | "SETOC"
+        | "SETOCI"
+        | "SEIndex"
+        | "SENonStruct"
+        | "SEPrivate"
+        | "SEP"
+        | "SEH"
+        | "SEHn"
+        | "SEH1"
+        | "SEH2"
+        | "SEH3"
+        | "SEH4"
+        | "SEH5"
+        | "SEH6"
+        | "SEL"
+        | "SELI"
+        | "SELbl"
+        | "SELBody"
+        | "SETable"
+        | "SETR"
+        | "SETH"
+        | "SETD"
+        | "SETHead"
+        | "SETBody"
+        | "SETFoot"
+        | "SESpan"
+        | "SEQuote"
+        | "SENote"
+        | "SEReference"
+        | "SEBibEntry"
+        | "SECode"
+        | "SELink"
+        | "SEAnnot"
+        | "SERuby"
+        | "SEWarichu"
+        | "SEFigure"
+        | "SEFormula"
+        | "SEForm"
+        | "SEArtifact"
+        | "SEStrong"
+        | "SEEm"
+        | "SETitle"
+        | "SEFENote"
+        | "SEAside"
+        | "SESub"
+        | "SEMathMLStructElem"
+        | "SEMarkedContent"
+        | "SESimpleContentItem"
+        | "SEGraphicContentItem"
+        | "SETableCell"
+        | "SENonStandard"
+        | "SETextItem"
+        | "SEWT"
+        | "SEWP"
+        | "SERT"
+        | "SERP"
+        | "SERB" => Some("structureElement"),
+        "PDSignature" | "PDSigRef" | "PKCSDataObject" => Some("signature"),
+        "PDEncryption" => Some("security"),
         _ => None,
     };
     if let Some(mapped) = mapped {
@@ -2246,6 +2492,30 @@ trailer
             profile.identity.id.as_str() == "verapdf-wtpdf-1-0-reuse"
                 && profile.source_pin.as_str() == crate::generated_profiles::VERA_PDF_LIBRARY_PIN
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_improve_m6_official_profile_coverage_for_accessibility_profiles()
+    -> crate::Result<()> {
+        let profiles = BuiltinProfileRepository::new().list_profiles()?;
+
+        for display_flavour in [
+            "pdfua-2-iso32005",
+            "wtpdf-1-0-accessibility",
+            "wtpdf-1-0-reuse",
+        ] {
+            let profile = profiles
+                .iter()
+                .find(|profile| profile.display_flavour.as_str() == display_flavour)
+                .ok_or(crate::ProfileError::UnsupportedSelection)?;
+            assert!(
+                profile.coverage.executable_rules.saturating_mul(100)
+                    >= profile.coverage.total_rules.saturating_mul(90),
+                "{display_flavour} coverage is {:?}",
+                profile.coverage
+            );
+        }
         Ok(())
     }
 

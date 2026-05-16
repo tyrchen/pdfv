@@ -1,7 +1,7 @@
 //! End-to-end validation session and validation model graph.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::{Read, Seek, SeekFrom},
     num::NonZeroU64,
     path::{Path, PathBuf},
@@ -52,6 +52,422 @@ const STREAM_DIRECT_PROPERTIES: &[&str] = &[
     "FFilter",
     "FDecodeParms",
 ];
+
+const RESOURCE_DIRECT_PROPERTIES: &[&str] = &[
+    "Font",
+    "XObject",
+    "ColorSpace",
+    "ExtGState",
+    "Pattern",
+    "Shading",
+    "Properties",
+    "ProcSet",
+];
+const ACRO_FORM_DIRECT_PROPERTIES: &[&str] = &[
+    "Fields",
+    "NeedAppearances",
+    "SigFlags",
+    "DR",
+    "DA",
+    "Q",
+    "XFA",
+];
+const STRUCTURE_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "K",
+    "ParentTree",
+    "ParentTreeNextKey",
+    "RoleMap",
+    "ClassMap",
+    "IDTree",
+];
+const OPTIONAL_CONTENT_DIRECT_PROPERTIES: &[&str] = &["OCGs", "D", "Configs"];
+const NAMES_DIRECT_PROPERTIES: &[&str] = &[
+    "Dests",
+    "AP",
+    "JavaScript",
+    "Pages",
+    "Templates",
+    "IDS",
+    "URLS",
+    "EmbeddedFiles",
+    "AlternatePresentations",
+    "Renditions",
+];
+const OUTLINES_DIRECT_PROPERTIES: &[&str] = &["Type", "First", "Last", "Count"];
+const DESTINATION_DIRECT_PROPERTIES: &[&str] = &["D", "Dest", "A"];
+const ACTION_DIRECT_PROPERTIES: &[&str] = &["Type", "S", "D", "URI", "Next", "NewWindow"];
+const FORM_FIELD_DIRECT_PROPERTIES: &[&str] = &[
+    "FT", "T", "TU", "TM", "Ff", "V", "DV", "Kids", "Parent", "AA",
+];
+const IMAGE_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "Width",
+    "Height",
+    "ColorSpace",
+    "BitsPerComponent",
+    "Filter",
+    "DecodeParms",
+    "SMask",
+    "Mask",
+    "Intent",
+];
+const XOBJECT_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "BBox",
+    "Matrix",
+    "Resources",
+    "Group",
+    "Filter",
+    "DecodeParms",
+];
+const CMAP_DIRECT_PROPERTIES: &[&str] = &["Type", "Subtype", "CMapName", "CIDSystemInfo"];
+const COLOR_SPACE_DIRECT_PROPERTIES: &[&str] =
+    &["Type", "N", "Alternate", "Range", "Metadata", "Filter"];
+const EXT_GSTATE_DIRECT_PROPERTIES: &[&str] =
+    &["Type", "BM", "CA", "ca", "SMask", "AIS", "OP", "op", "OPM"];
+const SIGNATURE_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Filter",
+    "SubFilter",
+    "ByteRange",
+    "Contents",
+    "Reference",
+    "M",
+];
+const SECURITY_DIRECT_PROPERTIES: &[&str] = &["Filter", "SubFilter", "V", "R", "Length", "P"];
+
+const DIRECT_PROPERTY_NAMES: &[&str] = &[
+    "A",
+    "AA",
+    "AIS",
+    "AP",
+    "Alternate",
+    "AlternatePresentations",
+    "Annot",
+    "Annots",
+    "BBox",
+    "BM",
+    "BaseFont",
+    "BitsPerComponent",
+    "ByteRange",
+    "C",
+    "CA",
+    "CIDSystemInfo",
+    "CIDToGIDMap",
+    "ClassMap",
+    "ColorSpace",
+    "Configs",
+    "Contents",
+    "Count",
+    "D",
+    "DA",
+    "DR",
+    "DV",
+    "DecodeParms",
+    "Dest",
+    "DestOutputProfile",
+    "Dests",
+    "EmbeddedFiles",
+    "Encoding",
+    "F",
+    "FDecodeParms",
+    "FFilter",
+    "FT",
+    "Ff",
+    "Fields",
+    "Filter",
+    "First",
+    "FirstChar",
+    "Font",
+    "FontDescriptor",
+    "Group",
+    "Height",
+    "IC",
+    "IDS",
+    "IDTree",
+    "Info",
+    "Intent",
+    "JavaScript",
+    "K",
+    "Kids",
+    "Last",
+    "LastChar",
+    "Length",
+    "M",
+    "Mask",
+    "Matrix",
+    "Metadata",
+    "N",
+    "NeedAppearances",
+    "Next",
+    "OCGs",
+    "OP",
+    "OPM",
+    "OutputConditionIdentifier",
+    "P",
+    "Pages",
+    "Parent",
+    "ParentTree",
+    "ParentTreeNextKey",
+    "Pattern",
+    "ProcSet",
+    "Properties",
+    "Q",
+    "Range",
+    "Reference",
+    "Renditions",
+    "Resources",
+    "RoleMap",
+    "S",
+    "SMask",
+    "Shading",
+    "SigFlags",
+    "SubFilter",
+    "Subtype",
+    "T",
+    "TM",
+    "TU",
+    "Templates",
+    "ToUnicode",
+    "Type",
+    "URI",
+    "URLS",
+    "V",
+    "Width",
+    "Widths",
+    "XFA",
+    "XObject",
+    "ca",
+    "op",
+];
+
+const OBJECT_PROPERTIES: &[&str] = &["Type", "Subtype"];
+const DOCUMENT_PROPERTIES: &[&str] = &[
+    "headerOffset",
+    "postEOFDataSize",
+    "header",
+    "encrypted",
+    "isEncrypted",
+    "hasCatalog",
+    "containsXRefStream",
+    "nrIndirects",
+    "containsPDFUAIdentification",
+    "containsPDFAIdentification",
+    "part",
+    "partPrefix",
+    "rev",
+    "revPrefix",
+];
+const CATALOG_PROPERTIES: &[&str] = &[
+    "hasMetadata",
+    "hasAcroForm",
+    "hasStructTreeRoot",
+    "hasOCProperties",
+    "hasLang",
+    "hasOutlines",
+    "hasNames",
+    "hasDests",
+    "language",
+    "permissions",
+    "containsStructTreeRoot",
+    "containsOCProperties",
+    "containsAcroForm",
+    "Marked",
+    "Type",
+    "Metadata",
+    "Pages",
+    "OutputIntents",
+    "AcroForm",
+    "StructTreeRoot",
+    "OCProperties",
+    "Lang",
+    "Perms",
+    "Outlines",
+    "Names",
+    "Dests",
+];
+const METADATA_PROPERTIES: &[&str] = &[
+    "present",
+    "catalogMetadata",
+    "Type",
+    "Subtype",
+    "Filter",
+    "Length",
+];
+const PAGE_PROPERTIES: &[&str] = &[
+    "hasContents",
+    "hasResources",
+    "annotationCount",
+    "Type",
+    "Parent",
+    "Contents",
+    "Resources",
+    "Annots",
+];
+const PAGE_TREE_PROPERTIES: &[&str] = &["Type", "Kids", "Count", "Parent", "Resources"];
+const RESOURCE_PROPERTIES: &[&str] = RESOURCE_DIRECT_PROPERTIES;
+const NAMES_PROPERTIES: &[&str] = NAMES_DIRECT_PROPERTIES;
+const OUTLINE_PROPERTIES: &[&str] = OUTLINES_DIRECT_PROPERTIES;
+const DESTINATION_PROPERTIES: &[&str] = DESTINATION_DIRECT_PROPERTIES;
+const ACRO_FORM_PROPERTIES: &[&str] = ACRO_FORM_DIRECT_PROPERTIES;
+const OPTIONAL_CONTENT_PROPERTIES: &[&str] = OPTIONAL_CONTENT_DIRECT_PROPERTIES;
+const PERMISSIONS_PROPERTIES: &[&str] = &["DocMDP", "UR", "UR3"];
+const FONT_PROPERTIES: &[&str] = &[
+    "embedded",
+    "hasSubtype",
+    "Type",
+    "Subtype",
+    "BaseFont",
+    "FontDescriptor",
+    "FirstChar",
+    "LastChar",
+    "Widths",
+    "Encoding",
+    "ToUnicode",
+    "CIDToGIDMap",
+];
+const CMAP_PROPERTIES: &[&str] = CMAP_DIRECT_PROPERTIES;
+const IMAGE_PROPERTIES: &[&str] = IMAGE_DIRECT_PROPERTIES;
+const XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
+const CONTENT_STREAM_PROPERTIES: &[&str] = &[
+    "lengthMatches",
+    "declaredLength",
+    "discoveredLength",
+    "operatorCount",
+    "markedContentCount",
+    "Type",
+    "Subtype",
+    "Filter",
+    "DecodeParms",
+    "F",
+    "FFilter",
+    "FDecodeParms",
+];
+const ANNOTATION_PROPERTIES: &[&str] = &[
+    "hasSubtype",
+    "Type",
+    "Subtype",
+    "F",
+    "C",
+    "IC",
+    "AP",
+    "FT",
+    "CA",
+    "A",
+    "AA",
+];
+const ACTION_PROPERTIES: &[&str] = ACTION_DIRECT_PROPERTIES;
+const FORM_FIELD_PROPERTIES: &[&str] = FORM_FIELD_DIRECT_PROPERTIES;
+const COLOR_SPACE_PROPERTIES: &[&str] = COLOR_SPACE_DIRECT_PROPERTIES;
+const EXT_GSTATE_PROPERTIES: &[&str] = EXT_GSTATE_DIRECT_PROPERTIES;
+const STRUCTURE_PROPERTIES: &[&str] = STRUCTURE_DIRECT_PROPERTIES;
+const STRUCTURE_ELEMENT_PROPERTIES: &[&str] = &[
+    "Type",
+    "S",
+    "P",
+    "K",
+    "Pg",
+    "Alt",
+    "ActualText",
+    "Lang",
+    "A",
+    "C",
+    "ID",
+    "containsParent",
+    "containsRef",
+    "parentStandardType",
+    "parentStandardTypeNamespaceURL",
+    "parentType",
+    "parentNamespaceURL",
+    "structParentStandardType",
+    "structParentType",
+    "firstChildStandardTypeNamespaceURL",
+    "kidsStandardTypes",
+    "hasContentItems",
+    "containsLabels",
+    "ListNumbering",
+    "NoteType",
+    "orphanRefs",
+    "ghostRefs",
+    "isArtifact",
+    "isTaggedContent",
+    "parentsTags",
+    "isNotMappedToStandardType",
+    "circularMappingExist",
+    "roleMapToSameNamespaceTag",
+    "remappedStandardType",
+    "hasIntersection",
+    "numberOfColumnWithWrongRowSpan",
+    "numberOfRowWithWrongColumnSpan",
+    "wrongColumnSpan",
+    "differentTargetAnnotObjectKey",
+];
+const SIGNATURE_PROPERTIES: &[&str] = SIGNATURE_DIRECT_PROPERTIES;
+const SECURITY_PROPERTIES: &[&str] = SECURITY_DIRECT_PROPERTIES;
+const OUTPUT_INTENT_PROPERTIES: &[&str] = &[
+    "hasDestOutputProfile",
+    "Type",
+    "S",
+    "DestOutputProfile",
+    "OutputConditionIdentifier",
+    "Info",
+];
+const STREAM_PROPERTIES: &[&str] = &[
+    "lengthMatches",
+    "declaredLength",
+    "discoveredLength",
+    "streamKeywordCRLFCompliant",
+    "endstreamKeywordEOLCompliant",
+    "Type",
+    "Subtype",
+    "Filter",
+    "DecodeParms",
+    "F",
+    "FFilter",
+    "FDecodeParms",
+];
+
+const EMPTY_LINK_NAMES: &[(&str, &str)] = &[];
+const DOCUMENT_LINKS: &[(&str, &str)] = &[
+    ("catalog", "catalog"),
+    ("streams", "stream"),
+    ("security", "security"),
+];
+const CATALOG_LINKS: &[(&str, &str)] = &[
+    ("metadata", "metadata"),
+    ("pages", "page"),
+    ("outputIntents", "outputIntent"),
+    ("acroForm", "acroForm"),
+    ("structureTreeRoot", "structureTreeRoot"),
+    ("optionalContentProperties", "optionalContentProperties"),
+    ("names", "names"),
+    ("outlines", "outline"),
+    ("destinations", "destination"),
+    ("permissions", "permissions"),
+];
+const PAGE_LINKS: &[(&str, &str)] = &[
+    ("resources", "resource"),
+    ("fonts", "font"),
+    ("annotations", "annotation"),
+    ("contentStreams", "contentStream"),
+];
+const RESOURCE_LINKS: &[(&str, &str)] = &[
+    ("fonts", "font"),
+    ("xObjects", "xObject"),
+    ("images", "image"),
+    ("colorSpaces", "colorSpace"),
+    ("extGStates", "extGState"),
+];
+const ACRO_FORM_LINKS: &[(&str, &str)] = &[("fields", "formField")];
+const FONT_LINKS: &[(&str, &str)] = &[("toUnicode", "cMap"), ("fontFile", "embeddedFontFile")];
+const XOBJECT_LINKS: &[(&str, &str)] = &[("resources", "resource")];
+const ANNOTATION_LINKS: &[(&str, &str)] = &[("actions", "action"), ("formField", "formField")];
+const FORM_FIELD_LINKS: &[(&str, &str)] = &[("actions", "action")];
+const STRUCTURE_LINKS: &[(&str, &str)] = &[("children", "structureElement")];
+const OUTPUT_INTENT_LINKS: &[(&str, &str)] = &[("destOutputProfile", "stream")];
 
 /// Bounded input name used by reader validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -315,6 +731,216 @@ impl ValidationSession {
     }
 }
 
+/// Property exposed by a validation model family.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PropertySpec {
+    /// Property name.
+    pub name: PropertyName,
+}
+
+impl PropertySpec {
+    fn new(name: &str) -> Self {
+        Self {
+            name: PropertyName::unchecked(name),
+        }
+    }
+}
+
+/// Link exposed by a validation model family.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkSpec {
+    /// Link name.
+    pub name: LinkName,
+    /// Target model family.
+    pub target: ObjectTypeName,
+}
+
+impl LinkSpec {
+    fn new(name: &'static str, target: &'static str) -> Self {
+        Self {
+            name: LinkName(Identifier::unchecked(name)),
+            target: ObjectTypeName::unchecked(target),
+        }
+    }
+}
+
+/// Validation model family schema entry.
+pub trait ModelFamily {
+    /// Family name.
+    fn family_name(&self) -> ObjectTypeName;
+    /// Root objects for this family.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdfvError`] when root materialization exceeds configured limits.
+    fn build_roots<'a>(&self, session: &'a ValidationSession) -> Result<Vec<ModelObjectRef<'a>>>;
+    /// Properties allowed on this family.
+    fn property_schema(&self) -> &[PropertySpec];
+    /// Links allowed on this family.
+    fn link_schema(&self) -> &[LinkSpec];
+}
+
+/// Internal registry of validation model family schemas.
+#[derive(Clone)]
+pub struct ModelRegistry {
+    families: BTreeMap<ObjectTypeName, Arc<dyn ModelFamily + Send + Sync>>,
+    all_properties: BTreeSet<PropertyName>,
+}
+
+impl std::fmt::Debug for ModelRegistry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelRegistry")
+            .field("families", &self.families.keys().collect::<Vec<_>>())
+            .field("all_properties_len", &self.all_properties.len())
+            .finish()
+    }
+}
+
+impl ModelRegistry {
+    /// Builds the default internal registry.
+    #[must_use]
+    pub fn default_registry() -> Self {
+        let families = [
+            family("document", DOCUMENT_PROPERTIES, DOCUMENT_LINKS),
+            family("catalog", CATALOG_PROPERTIES, CATALOG_LINKS),
+            family("metadata", METADATA_PROPERTIES, EMPTY_LINK_NAMES),
+            family("page", PAGE_PROPERTIES, PAGE_LINKS),
+            family("pageTree", PAGE_TREE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("resource", RESOURCE_PROPERTIES, RESOURCE_LINKS),
+            family("names", NAMES_PROPERTIES, EMPTY_LINK_NAMES),
+            family("outline", OUTLINE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("destination", DESTINATION_PROPERTIES, EMPTY_LINK_NAMES),
+            family("acroForm", ACRO_FORM_PROPERTIES, ACRO_FORM_LINKS),
+            family(
+                "optionalContentProperties",
+                OPTIONAL_CONTENT_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family("permissions", PERMISSIONS_PROPERTIES, EMPTY_LINK_NAMES),
+            family("font", FONT_PROPERTIES, FONT_LINKS),
+            family("cMap", CMAP_PROPERTIES, EMPTY_LINK_NAMES),
+            family("embeddedFontFile", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
+            family("image", IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("xObject", XOBJECT_PROPERTIES, XOBJECT_LINKS),
+            family("contentStream", CONTENT_STREAM_PROPERTIES, EMPTY_LINK_NAMES),
+            family("annotation", ANNOTATION_PROPERTIES, ANNOTATION_LINKS),
+            family("action", ACTION_PROPERTIES, EMPTY_LINK_NAMES),
+            family("formField", FORM_FIELD_PROPERTIES, FORM_FIELD_LINKS),
+            family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("extGState", EXT_GSTATE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("structureTreeRoot", STRUCTURE_PROPERTIES, STRUCTURE_LINKS),
+            family(
+                "structureElement",
+                STRUCTURE_ELEMENT_PROPERTIES,
+                STRUCTURE_LINKS,
+            ),
+            family("signature", SIGNATURE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("security", SECURITY_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "outputIntent",
+                OUTPUT_INTENT_PROPERTIES,
+                OUTPUT_INTENT_LINKS,
+            ),
+            family("stream", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
+            family("object", OBJECT_PROPERTIES, EMPTY_LINK_NAMES),
+        ];
+        let mut by_name = BTreeMap::new();
+        let mut all_properties = BTreeSet::new();
+        for family in families {
+            for property in family.property_schema() {
+                all_properties.insert(property.name.clone());
+            }
+            by_name.insert(family.family_name(), Arc::new(family) as Arc<_>);
+        }
+        for property in DIRECT_PROPERTY_NAMES {
+            all_properties.insert(PropertyName::unchecked(*property));
+        }
+        Self {
+            families: by_name,
+            all_properties,
+        }
+    }
+
+    /// Returns true when a family is registered.
+    #[must_use]
+    pub fn has_family(&self, family: &ObjectTypeName) -> bool {
+        self.families.contains_key(family)
+    }
+
+    /// Returns true when a property is present in any registered family schema.
+    #[must_use]
+    pub fn has_property(&self, property: &PropertyName) -> bool {
+        self.all_properties.contains(property)
+    }
+
+    /// Returns true when a property is present on a specific registered family schema.
+    #[must_use]
+    pub fn has_family_property(&self, family: &ObjectTypeName, property: &PropertyName) -> bool {
+        self.families.get(family).is_some_and(|family| {
+            family
+                .property_schema()
+                .iter()
+                .any(|spec| spec.name == *property)
+        })
+    }
+
+    /// Looks up a family.
+    #[must_use]
+    pub fn family(&self, family: &ObjectTypeName) -> Option<&(dyn ModelFamily + Send + Sync)> {
+        self.families.get(family).map(Arc::as_ref)
+    }
+
+    /// Iterates registered family names.
+    pub fn family_names(&self) -> impl Iterator<Item = &ObjectTypeName> {
+        self.families.keys()
+    }
+}
+
+#[derive(Debug)]
+struct StaticModelFamily {
+    name: ObjectTypeName,
+    properties: Vec<PropertySpec>,
+    links: Vec<LinkSpec>,
+}
+
+impl ModelFamily for StaticModelFamily {
+    fn family_name(&self) -> ObjectTypeName {
+        self.name.clone()
+    }
+
+    fn build_roots<'a>(&self, session: &'a ValidationSession) -> Result<Vec<ModelObjectRef<'a>>> {
+        let graph = ModelGraph::new(&session.document, &session.limits);
+        graph.family_roots(self.name.as_str())
+    }
+
+    fn property_schema(&self) -> &[PropertySpec] {
+        &self.properties
+    }
+
+    fn link_schema(&self) -> &[LinkSpec] {
+        &self.links
+    }
+}
+
+fn family(
+    name: &'static str,
+    properties: &'static [&'static str],
+    links: &'static [(&'static str, &'static str)],
+) -> StaticModelFamily {
+    StaticModelFamily {
+        name: ObjectTypeName::unchecked(name),
+        properties: properties
+            .iter()
+            .map(|name| PropertySpec::new(name))
+            .collect(),
+        links: links
+            .iter()
+            .map(|(name, target)| LinkSpec::new(name, target))
+            .collect(),
+    }
+}
+
 /// Stable object identity used by traversal.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ObjectIdentity {
@@ -387,6 +1013,8 @@ pub enum ModelObjectRef<'a> {
     ContentStream(ContentStreamModel<'a>),
     /// Basic stream object.
     Stream(StreamModel<'a>),
+    /// Generic dictionary-backed model family object.
+    Generic(GenericModel<'a>),
 }
 
 impl<'a> ModelObjectRef<'a> {
@@ -403,6 +1031,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::OutputIntent(model) => model.document,
             Self::ContentStream(model) => model.document,
             Self::Stream(model) => model.document,
+            Self::Generic(model) => model.document,
         }
     }
 
@@ -419,6 +1048,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::OutputIntent(model) => model.object_type(),
             Self::ContentStream(model) => model.object_type(),
             Self::Stream(model) => model.object_type(),
+            Self::Generic(model) => model.object_type(),
         }
     }
 
@@ -438,6 +1068,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::OutputIntent(model) => model.property(name),
             Self::ContentStream(model) => model.property(name),
             Self::Stream(model) => model.property(name),
+            Self::Generic(model) => model.property(name),
         }
     }
 
@@ -507,6 +1138,11 @@ impl<'a> ModelObjectRef<'a> {
                     model.key.number
                 ))),
             },
+            Self::Generic(model) => ObjectLocation {
+                object: model.key,
+                offset: model.offset,
+                path: Some(BoundedText::unchecked(model.context.clone())),
+            },
         }
     }
 
@@ -535,6 +1171,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::Stream(model) => {
                 BoundedText::unchecked(format!("root/stream[{}]", model.key.number))
             }
+            Self::Generic(model) => BoundedText::unchecked(model.context.clone()),
         }
     }
 
@@ -570,6 +1207,12 @@ impl<'a> ModelObjectRef<'a> {
                 model.page_ordinal, model.key.number, model.key.generation
             ),
             Self::Stream(model) => format!("stream:{}:{}", model.key.number, model.key.generation),
+            Self::Generic(model) => format!(
+                "{}:{}:{}",
+                model.object_type.as_str(),
+                model.ordinal,
+                model.key.map_or(0, |key| key.number.get())
+            ),
         }
     }
 
@@ -588,6 +1231,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::OutputIntent(model) => model.linked_objects(graph, max_objects),
             Self::ContentStream(model) => model.linked_objects(graph, max_objects),
             Self::Stream(model) => model.linked_objects(graph, max_objects),
+            Self::Generic(model) => model.linked_objects(graph, max_objects),
         }
     }
 }
@@ -597,6 +1241,16 @@ impl<'a> ModelObjectRef<'a> {
 pub struct ModelGraph<'a> {
     document: &'a ParsedDocument,
     limits: &'a ResourceLimits,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResourceCollection<'a> {
+    resources: &'a crate::Dictionary,
+    resource_name: &'static str,
+    family: &'static str,
+    context_prefix: &'static str,
+    page_ordinal: usize,
+    max_objects: usize,
 }
 
 impl<'a> ModelGraph<'a> {
@@ -659,6 +1313,255 @@ impl<'a> ModelGraph<'a> {
             if Some(stream.key) != self.document.catalog {
                 push_linked(objects, ModelObjectRef::Stream(stream), max_objects)?;
             }
+        }
+        Ok(())
+    }
+
+    fn push_generic_roots(
+        &self,
+        objects: &mut Vec<ModelObjectRef<'a>>,
+        max_objects: usize,
+    ) -> Result<()> {
+        for model in self.generic_models(max_objects)? {
+            push_linked(objects, ModelObjectRef::Generic(model), max_objects)?;
+        }
+        Ok(())
+    }
+
+    fn family_roots(&self, family: &str) -> Result<Vec<ModelObjectRef<'a>>> {
+        let mut roots = Vec::new();
+        if family == "document" {
+            roots.push(ModelObjectRef::Document(DocumentModel::new(self.document)));
+            return Ok(roots);
+        }
+        if family == "catalog" {
+            roots.extend(self.catalog().map(ModelObjectRef::Catalog));
+            return Ok(roots);
+        }
+        if family == "stream" {
+            self.push_streams(&mut roots, usize::MAX)?;
+            return Ok(roots);
+        }
+        roots.extend(
+            self.generic_models(usize::MAX)?
+                .into_iter()
+                .filter(|model| model.object_type.as_str() == family)
+                .map(ModelObjectRef::Generic),
+        );
+        Ok(roots)
+    }
+
+    fn generic_models(&self, max_objects: usize) -> Result<Vec<GenericModel<'a>>> {
+        let mut models = Vec::new();
+        if let Some(catalog) = self.catalog() {
+            self.push_catalog_generic_models(&catalog, max_objects, &mut models)?;
+            for page in self.pages(&catalog, max_objects)? {
+                self.push_page_generic_models(&page, max_objects, &mut models)?;
+            }
+        }
+        self.push_indirect_generic_models(max_objects, &mut models)?;
+        Ok(models)
+    }
+
+    fn push_catalog_generic_models(
+        &self,
+        catalog: &CatalogModel<'_>,
+        max_objects: usize,
+        models: &mut Vec<GenericModel<'a>>,
+    ) -> Result<()> {
+        let Some(catalog_object) = self.document.objects.get(&catalog.key) else {
+            return Ok(());
+        };
+        let Some(dictionary) = catalog_object.object.as_dictionary() else {
+            return Ok(());
+        };
+        for (family, key_name, context) in [
+            ("acroForm", "AcroForm", "root/catalog[0]/acroForm[0]"),
+            (
+                "structureTreeRoot",
+                "StructTreeRoot",
+                "root/catalog[0]/structureTreeRoot[0]",
+            ),
+            (
+                "optionalContentProperties",
+                "OCProperties",
+                "root/catalog[0]/optionalContentProperties[0]",
+            ),
+            ("names", "Names", "root/catalog[0]/names[0]"),
+            ("outline", "Outlines", "root/catalog[0]/outline[0]"),
+            ("permissions", "Perms", "root/catalog[0]/permissions[0]"),
+        ] {
+            if let Some((key, offset, dictionary)) =
+                resolve_named_dictionary_from_option(self.document, dictionary.get(key_name))
+            {
+                push_generic_model(
+                    models,
+                    GenericModel::new(
+                        self.document,
+                        family,
+                        key,
+                        offset,
+                        dictionary,
+                        models.len(),
+                        context,
+                    ),
+                    max_objects,
+                )?;
+            }
+        }
+        for (ordinal, value) in array_values(dictionary.get("Dests")).enumerate() {
+            if let Some((key, offset, dictionary)) = resolve_named_dictionary(self.document, value)
+            {
+                push_generic_model(
+                    models,
+                    GenericModel::new(
+                        self.document,
+                        "destination",
+                        key,
+                        offset,
+                        dictionary,
+                        ordinal,
+                        format!("root/catalog[0]/destination[{ordinal}]"),
+                    ),
+                    max_objects,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn push_page_generic_models(
+        &self,
+        page: &PageModel<'a>,
+        max_objects: usize,
+        models: &mut Vec<GenericModel<'a>>,
+    ) -> Result<()> {
+        if let Some(resources) =
+            resolve_dictionary_value(self.document, page.dictionary.get("Resources"))
+        {
+            push_generic_model(
+                models,
+                GenericModel::new(
+                    self.document,
+                    "resource",
+                    None,
+                    None,
+                    resources,
+                    page.ordinal,
+                    format!("root/page[{}]/resources[0]", page.ordinal),
+                ),
+                max_objects,
+            )?;
+            self.push_resource_collection(
+                ResourceCollection {
+                    resources,
+                    resource_name: "XObject",
+                    family: "xObject",
+                    context_prefix: "root/page",
+                    page_ordinal: page.ordinal,
+                    max_objects,
+                },
+                models,
+            )?;
+            self.push_resource_collection(
+                ResourceCollection {
+                    resources,
+                    resource_name: "ColorSpace",
+                    family: "colorSpace",
+                    context_prefix: "root/page",
+                    page_ordinal: page.ordinal,
+                    max_objects,
+                },
+                models,
+            )?;
+            self.push_resource_collection(
+                ResourceCollection {
+                    resources,
+                    resource_name: "ExtGState",
+                    family: "extGState",
+                    context_prefix: "root/page",
+                    page_ordinal: page.ordinal,
+                    max_objects,
+                },
+                models,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn push_resource_collection(
+        &self,
+        collection: ResourceCollection<'a>,
+        models: &mut Vec<GenericModel<'a>>,
+    ) -> Result<()> {
+        let Some(crate::CosObject::Dictionary(resources)) =
+            collection.resources.get(collection.resource_name)
+        else {
+            return Ok(());
+        };
+        for (ordinal, (name, value)) in resources.iter().enumerate() {
+            if let Some((key, offset, dictionary)) = resolve_named_dictionary(self.document, value)
+            {
+                let object_family = if collection.family == "xObject" {
+                    classify_xobject(dictionary).unwrap_or(collection.family)
+                } else {
+                    collection.family
+                };
+                push_generic_model(
+                    models,
+                    GenericModel::new(
+                        self.document,
+                        object_family,
+                        key,
+                        offset,
+                        dictionary,
+                        ordinal,
+                        format!(
+                            "{}[{}]/{}[{}]",
+                            collection.context_prefix,
+                            collection.page_ordinal,
+                            collection.family,
+                            String::from_utf8_lossy(name.as_bytes())
+                        ),
+                    ),
+                    collection.max_objects,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn push_indirect_generic_models(
+        &self,
+        max_objects: usize,
+        models: &mut Vec<GenericModel<'a>>,
+    ) -> Result<()> {
+        for object in self.document.objects.values() {
+            let Some(dictionary) = object.object.as_dictionary() else {
+                continue;
+            };
+            let Some(family) = classify_dictionary(dictionary) else {
+                continue;
+            };
+            if matches!(
+                family,
+                "catalog" | "page" | "font" | "annotation" | "outputIntent" | "metadata"
+            ) {
+                continue;
+            }
+            push_generic_model(
+                models,
+                GenericModel::new(
+                    self.document,
+                    family,
+                    Some(object.key),
+                    Some(object.offset),
+                    dictionary,
+                    models.len(),
+                    format!("root/{family}[{}]", object.key.number),
+                ),
+                max_objects,
+            )?;
         }
         Ok(())
     }
@@ -726,6 +1629,11 @@ impl ModelObject for DocumentModel<'_> {
             "nrIndirects" => Ok(ModelValue::Number(usize_to_f64(
                 self.document.objects.len(),
             )?)),
+            "containsPDFUAIdentification" | "containsPDFAIdentification" => {
+                Ok(ModelValue::Bool(false))
+            }
+            "part" => Ok(ModelValue::Number(0.0)),
+            "partPrefix" | "rev" | "revPrefix" => Ok(ModelValue::Null),
             _ => Err(crate::ProfileError::UnknownProperty {
                 property: BoundedText::unchecked(name.as_str()),
             }
@@ -747,6 +1655,7 @@ impl ModelObject for DocumentModel<'_> {
             push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
         }
         graph.push_streams(&mut objects, max_objects)?;
+        graph.push_generic_roots(&mut objects, max_objects)?;
         Ok(objects)
     }
 }
@@ -811,6 +1720,63 @@ impl ModelObject for CatalogModel<'_> {
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
             "hasMetadata" => Ok(ModelValue::Bool(self.metadata.is_some())),
+            "hasAcroForm" | "containsAcroForm" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| dictionary.get("AcroForm"))
+                    .is_some(),
+            )),
+            "hasStructTreeRoot" | "containsStructTreeRoot" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| dictionary.get("StructTreeRoot"))
+                    .is_some(),
+            )),
+            "hasOCProperties" | "containsOCProperties" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| dictionary.get("OCProperties"))
+                    .is_some(),
+            )),
+            "hasLang" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| dictionary.get("Lang"))
+                    .is_some(),
+            )),
+            "hasOutlines" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| dictionary.get("Outlines"))
+                    .is_some(),
+            )),
+            "hasNames" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| dictionary.get("Names"))
+                    .is_some(),
+            )),
+            "hasDests" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| dictionary.get("Dests"))
+                    .is_some(),
+            )),
+            "Marked" => Ok(ModelValue::Bool(false)),
             _ => self
                 .document
                 .objects
@@ -1609,6 +2575,220 @@ fn unknown_property(name: &PropertyName) -> Result<ModelValue> {
     .into())
 }
 
+/// Generic dictionary-backed model wrapper.
+#[derive(Clone, Debug)]
+pub struct GenericModel<'a> {
+    document: &'a ParsedDocument,
+    key: Option<ObjectKey>,
+    offset: Option<u64>,
+    dictionary: &'a crate::Dictionary,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+    allowed_properties: &'static [&'static str],
+    context: String,
+    ordinal: usize,
+}
+
+impl<'a> GenericModel<'a> {
+    fn new(
+        document: &'a ParsedDocument,
+        family: &'static str,
+        key: Option<ObjectKey>,
+        offset: Option<u64>,
+        dictionary: &'a crate::Dictionary,
+        ordinal: usize,
+        context: impl Into<String>,
+    ) -> Self {
+        Self {
+            document,
+            key,
+            offset,
+            dictionary,
+            object_type: ObjectTypeName::unchecked(family),
+            supertypes: vec![ObjectTypeName::unchecked("object")],
+            links: Vec::new(),
+            allowed_properties: family_direct_properties(family),
+            context: context.into(),
+            ordinal,
+        }
+    }
+}
+
+impl ModelObject for GenericModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!("{}:{}", self.object_type.as_str(), self.ordinal),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some(&self.context)
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match (self.object_type.as_str(), name.as_str()) {
+            ("image", "width") => dictionary_property(
+                self.dictionary,
+                &PropertyName::unchecked("Width"),
+                IMAGE_DIRECT_PROPERTIES,
+            ),
+            ("image", "height") => dictionary_property(
+                self.dictionary,
+                &PropertyName::unchecked("Height"),
+                IMAGE_DIRECT_PROPERTIES,
+            ),
+            ("contentStream", "operatorCount" | "markedContentCount") => {
+                Ok(ModelValue::Number(0.0))
+            }
+            _ => dictionary_property(self.dictionary, name, self.allowed_properties),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
+        Ok(Vec::new())
+    }
+}
+
+fn push_generic_model<'a>(
+    models: &mut Vec<GenericModel<'a>>,
+    model: GenericModel<'a>,
+    max_objects: usize,
+) -> Result<()> {
+    if models.len() >= max_objects {
+        return Err(ValidationError::LimitExceeded {
+            limit: "max_objects",
+        }
+        .into());
+    }
+    models.push(model);
+    Ok(())
+}
+
+fn family_direct_properties(family: &str) -> &'static [&'static str] {
+    match family {
+        "resource" => RESOURCE_DIRECT_PROPERTIES,
+        "names" => NAMES_DIRECT_PROPERTIES,
+        "outline" => OUTLINES_DIRECT_PROPERTIES,
+        "destination" => DESTINATION_DIRECT_PROPERTIES,
+        "acroForm" => ACRO_FORM_DIRECT_PROPERTIES,
+        "optionalContentProperties" => OPTIONAL_CONTENT_DIRECT_PROPERTIES,
+        "permissions" => PERMISSIONS_PROPERTIES,
+        "cMap" => CMAP_DIRECT_PROPERTIES,
+        "image" => IMAGE_DIRECT_PROPERTIES,
+        "xObject" => XOBJECT_DIRECT_PROPERTIES,
+        "action" => ACTION_DIRECT_PROPERTIES,
+        "formField" => FORM_FIELD_DIRECT_PROPERTIES,
+        "colorSpace" => COLOR_SPACE_DIRECT_PROPERTIES,
+        "extGState" => EXT_GSTATE_DIRECT_PROPERTIES,
+        "structureTreeRoot" => STRUCTURE_DIRECT_PROPERTIES,
+        "structureElement" => STRUCTURE_ELEMENT_PROPERTIES,
+        "signature" => SIGNATURE_DIRECT_PROPERTIES,
+        "security" => SECURITY_DIRECT_PROPERTIES,
+        "pageTree" => PAGE_TREE_PROPERTIES,
+        _ => DIRECT_PROPERTY_NAMES,
+    }
+}
+
+fn resolve_named_dictionary_from_option<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&'a crate::CosObject>,
+) -> Option<(Option<ObjectKey>, Option<u64>, &'a crate::Dictionary)> {
+    match value {
+        Some(value) => resolve_named_dictionary(document, value),
+        None => None,
+    }
+}
+
+fn classify_xobject(dictionary: &crate::Dictionary) -> Option<&'static str> {
+    match dictionary.get("Subtype") {
+        Some(crate::CosObject::Name(name)) if name.matches("Image") => Some("image"),
+        Some(crate::CosObject::Name(name)) if name.matches("Form") => Some("xObject"),
+        _ => None,
+    }
+}
+
+fn classify_dictionary(dictionary: &crate::Dictionary) -> Option<&'static str> {
+    if let Some(crate::CosObject::Name(name)) = dictionary.get("Subtype") {
+        if name.matches("Image") {
+            return Some("image");
+        }
+        if name.matches("Form") {
+            return Some("xObject");
+        }
+        if name.matches("Widget") {
+            return Some("formField");
+        }
+    }
+    if let Some(crate::CosObject::Name(name)) = dictionary.get("Type") {
+        if name.matches("Pages") {
+            return Some("pageTree");
+        }
+        if name.matches("Action") {
+            return Some("action");
+        }
+        if name.matches("StructTreeRoot") {
+            return Some("structureTreeRoot");
+        }
+        if name.matches("StructElem") {
+            return Some("structureElement");
+        }
+        if name.matches("Sig") {
+            return Some("signature");
+        }
+        if name.matches("OCProperties") {
+            return Some("optionalContentProperties");
+        }
+        if name.matches("XObject") {
+            return classify_xobject(dictionary).or(Some("xObject"));
+        }
+        if name.matches("Font") {
+            return Some("font");
+        }
+        if name.matches("Annot") {
+            return Some("annotation");
+        }
+        if name.matches("Metadata") {
+            return Some("metadata");
+        }
+        if name.matches("OutputIntent") {
+            return Some("outputIntent");
+        }
+        if name.matches("Filespec") {
+            return Some("destination");
+        }
+    }
+    if dictionary.get("Fields").is_some() {
+        return Some("acroForm");
+    }
+    if dictionary.get("Filter").is_some() && dictionary.get("V").is_some() {
+        return Some("security");
+    }
+    if dictionary.get("CMapName").is_some() {
+        return Some("cMap");
+    }
+    if dictionary.get("ByteRange").is_some() {
+        return Some("signature");
+    }
+    None
+}
+
 /// Stream model wrapper.
 #[derive(Clone, Debug)]
 pub struct StreamModel<'a> {
@@ -1739,6 +2919,7 @@ impl<'a> RuleIndex<'a> {
             ModelObjectRef::OutputIntent(model) => model.super_types(),
             ModelObjectRef::ContentStream(model) => model.super_types(),
             ModelObjectRef::Stream(model) => model.super_types(),
+            ModelObjectRef::Generic(model) => model.super_types(),
         };
         for supertype in supertypes {
             if let Some(super_rules) = self.by_type.get(supertype.as_str()) {
@@ -2115,6 +3296,76 @@ trailer
 "
     }
 
+    fn m6_model_pdf() -> &'static [u8] {
+        br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm 7 0 R /StructTreeRoot 8 0 R /OCProperties 9 0 R /Names 10 0 R /Outlines 11 0 R /Perms 12 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 5 0 R >> /ColorSpace << /CS1 13 0 R >> /ExtGState << /GS1 14 0 R >> >> /Annots [6 0 R] /Contents 15 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /Faux /ToUnicode 16 0 R >>
+endobj
+5 0 obj
+<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 0 >>
+stream
+endstream
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Widget /FT /Sig /A 17 0 R >>
+endobj
+7 0 obj
+<< /Fields [6 0 R] /SigFlags 3 >>
+endobj
+8 0 obj
+<< /Type /StructTreeRoot /K 18 0 R /RoleMap << /H1 /H >> >>
+endobj
+9 0 obj
+<< /OCGs [] /D << >> >>
+endobj
+10 0 obj
+<< /Dests << /Names [] >> >>
+endobj
+11 0 obj
+<< /Type /Outlines /Count 0 >>
+endobj
+12 0 obj
+<< /DocMDP 19 0 R >>
+endobj
+13 0 obj
+<< /N 3 /Alternate /DeviceRGB >>
+endobj
+14 0 obj
+<< /Type /ExtGState /BM /Normal /CA 1 >>
+endobj
+15 0 obj
+<< /Length 3 >>
+stream
+q Q
+endstream
+endobj
+16 0 obj
+<< /Type /CMap /CMapName /Identity-H >>
+endobj
+17 0 obj
+<< /Type /Action /S /URI /URI (https://example.invalid) >>
+endobj
+18 0 obj
+<< /Type /StructElem /S /Document /K [] >>
+endobj
+19 0 obj
+<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 0 0 0] >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+"
+    }
+
     #[test]
     fn test_should_materialize_m1_model_wrappers() -> crate::Result<()> {
         let document = Parser::default().parse(Cursor::new(m1_model_pdf()))?;
@@ -2185,6 +3436,82 @@ trailer
                 .iter()
                 .any(|value| value == "root/page[0]/contentStream[0]")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_register_model_family_schema_for_generated_profiles() -> crate::Result<()> {
+        let registry = crate::ModelRegistry::default_registry();
+
+        for family in [
+            "document",
+            "catalog",
+            "page",
+            "resource",
+            "font",
+            "cMap",
+            "image",
+            "contentStream",
+            "annotation",
+            "action",
+            "formField",
+            "colorSpace",
+            "extGState",
+            "structureTreeRoot",
+            "structureElement",
+            "signature",
+            "security",
+        ] {
+            assert!(registry.has_family(&crate::ObjectTypeName::new(family)?));
+        }
+        assert!(registry.has_family_property(
+            &crate::ObjectTypeName::new("structureElement")?,
+            &PropertyName::new("parentStandardType")?
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_materialize_m6_broad_model_families_bounded_iteratively() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(m6_model_pdf()))?;
+        let limits = crate::ResourceLimits {
+            max_objects: 128,
+            ..crate::ResourceLimits::default()
+        };
+        let graph = super::ModelGraph::new(&document, &limits);
+        let mut stack = vec![ModelObjectRef::Document(super::DocumentModel::new(
+            &document,
+        ))];
+        let mut visited = std::collections::HashSet::new();
+        let mut families = std::collections::BTreeSet::new();
+
+        while let Some(object) = stack.pop() {
+            if !visited.insert(object.identity_key()) {
+                continue;
+            }
+            families.insert(object.object_type().as_str().to_owned());
+            for linked in object.linked_objects(&graph, 128)? {
+                stack.push(linked);
+            }
+        }
+
+        for family in [
+            "acroForm",
+            "structureTreeRoot",
+            "optionalContentProperties",
+            "names",
+            "outline",
+            "permissions",
+            "resource",
+            "image",
+            "colorSpace",
+            "extGState",
+            "cMap",
+            "action",
+            "signature",
+        ] {
+            assert!(families.contains(family), "missing {family}: {families:?}");
+        }
         Ok(())
     }
 
