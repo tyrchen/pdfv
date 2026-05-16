@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [pdfv-v0.1.1](https://github.com/compare/pdfv-v0.1.0..pdfv-v0.1.1) - 2026-05-16
+
+### Miscellaneous Chores
+
+- bump version - ([b2eb3b0](https://github.com/commit/b2eb3b041c848fbfdef353775cfa3b4d58d9ff1a)) - Tyr Chen
+
+### Other
+
+- Update CHANGELOG.md - ([08a1e2a](https://github.com/commit/08a1e2a130d891ed9b80b7531361d9a856c0a849)) - Tyr Chen
+- Prepare crates for publish - ([03e194b](https://github.com/commit/03e194ba88203204cb42910fa802f3f08bd3c6e1)) - Tyr Chen
+
+---
 ## [pdfv-v0.1.0] - 2026-05-16
 
 ### Features
