@@ -1,6 +1,6 @@
 # Implementation Plan — Dependency-Ordered Build
 
-Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
+Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
 
 ## 0. Readiness assessment
 
@@ -165,3 +165,73 @@ Exit gate: either Phase 10 updates [14-password-decryption-design.md](./14-passw
 | 11.5 | Add `sha2` as a scoped decryption dependency and update audit/deny verification evidence. | 61, 70 | 0.5 day |
 
 Exit criteria: generated R5 and R6 AESV3 fixtures validate with correct user and owner passwords; wrong passwords return `ValidationStatus::Encrypted` and CLI exit 3; tampered `/Perms` returns encrypted/unsupported before object decryption; AESV3 strings and streams decrypt under existing decrypted-byte caps; malformed short `/O`, `/U`, `/OE`, `/UE`, and `/Perms` fields parse-fail; standard gates plus strict clippy, `cargo audit`, and `cargo deny check` pass.
+
+## 16. Phase 12 — M5 parser filter and source parity
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 12.1 | Introduce `DecoderRegistry`, decoder trait, structured decode params, and per-filter error/fact reporting. | 15, 70 | 1-2 days |
+| 12.2 | Implement bounded ASCIIHex, ASCII85, RunLength, Flate predictor, and LZW decoders with chained filter arrays. | 15, 70, 72 | 1-2 weeks |
+| 12.3 | Extend `Crypt` handling so identity and named crypt filters compose correctly with Standard security handler decryption. | 14, 15, 70 | 2-4 days |
+| 12.4 | Add configurable source storage for large files: memory threshold plus spill-file or optional mmap path. | 11, 15, 61, 70, 71 | 1-2 weeks |
+| 12.5 | Implement `/Prev` xref-chain and hybrid-reference handling with structured facts for anomalies. | 11, 15, 70, 72 | 1-2 weeks |
+| 12.6 | Add decoder, xref-chain, hostile-input, and performance regression fixtures. | 15, 71, 72 | 3-5 days |
+
+Exit criteria: all required M5 text/image-neutral filters decode under byte caps; chained filters preserve order; xref `/Prev` chains and hybrid xrefs parse with deterministic facts; large-file parsing avoids eager full-file memory above threshold; unsupported image-pixel filters produce structured metadata-mode facts; standard gates plus strict clippy, `cargo audit`, `cargo deny check`, and parser benches pass.
+
+## 17. Phase 13 — M5 profile catalog and expression parity
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 13.1 | Add a Makefile-discoverable profile generator that reads vendored veraPDF XML profiles and emits deterministic Rust data. | 16, 61 | 3-5 days |
+| 13.2 | Expand flavour model and CLI parsing for PDF/A-1/2/3/4, PDF/UA, and WTPDF built-ins. | 10, 16, 50 | 2-4 days |
+| 13.3 | Extend the bounded expression parser/evaluator for nested paths, arithmetic, ternary, modulo, collection built-ins, and bounded regex checks needed by official profiles. | 12, 16, 70 | 1-2 weeks |
+| 13.4 | Emit profile coverage metadata and make unsupported official rules first-class report data. | 16, 20, 72 | 2-4 days |
+| 13.5 | Add per-profile load/list tests and coverage regression snapshots. | 16, 50, 72 | 3-5 days |
+
+Exit criteria: `pdfv profiles list` shows every vendored built-in profile with source pin and executable coverage; generated data is deterministic; explicit profile selection loads the matching profile rather than always PDFA-1B; unsupported rules are reported with citations and force incomplete status; standard gates pass.
+
+## 18. Phase 14 — M6 validation model breadth
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 14.1 | Add internal model registry and schema checks connecting generated profile property/link references to model families. | 16, 17 | 3-5 days |
+| 14.2 | Implement document/catalog/page/resource families, including AcroForm, structure-tree root, OC properties, language, permissions, outlines, names, and destinations. | 17, 70 | 1-2 weeks |
+| 14.3 | Implement font/CMap and image/content model families with bounded content-stream summaries. | 15, 17, 70, 71 | 2-4 weeks |
+| 14.4 | Implement annotation/action/form, color/transparency, structure/accessibility, and signature/security fact families. | 17, 70, 72 | 3-6 weeks |
+| 14.5 | Add property-schema tests, cycle/cap tests, official-rule coverage tests, and performance benchmarks for broad traversal. | 17, 71, 72 | 1-2 weeks |
+
+Exit criteria: generated built-in rules either bind to a known model property/link or have a tracked unsupported reason; broad model graph traversal remains iterative and bounded; official profile coverage improves measurably over Phase 13; fixtures cover every model family; standard gates and traversal benches pass.
+
+## 19. Phase 15 — M6 XMP metadata and flavour detection
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 15.1 | Implement bounded XMP packet extraction and namespace-aware RDF/XML parsing for identification schemas. | 18, 70 | 1-2 weeks |
+| 15.2 | Map PDF/A, PDF/UA, and WTPDF claims to generated profiles with structured fallback and incompatibility warnings. | 16, 18, 20 | 3-5 days |
+| 15.3 | Expose XMP facts through the validation model and report formats without dumping full metadata packets. | 17, 18, 20 | 3-5 days |
+| 15.4 | Add auto-selection fixtures for absent, malformed, single-claim, multi-claim, incompatible, and encrypted-metadata cases. | 14, 18, 72 | 3-5 days |
+
+Exit criteria: auto mode selects profiles from XMP claims when present; missing or malformed XMP yields structured warnings and default/fallback behaviour; reports show evidence for detected flavours; no XML entity/external resource path exists; standard gates plus strict XML hostile-input tests pass.
+
+## 20. Phase 16 — M7 feature extraction and policy reports
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 16.1 | Add `FeatureReport` data contracts and read-only feature extraction over the Phase 14 model families. | 10, 17, 19, 20 | 1-2 weeks |
+| 16.2 | Add `pdfv validate --extract` and feature sections in JSON/XML reports. | 19, 50, 72 | 3-5 days |
+| 16.3 | Complete a policy-language spike and implement a bounded first policy report format. | docs/research, 19, 70 | 1-2 weeks |
+| 16.4 | Add policy report merging into JSON/XML and CLI `--policy-file`. | 19, 20, 50 | 3-5 days |
+
+Exit criteria: feature extraction is read-only, bounded, and deterministic; policy reports consume feature reports rather than raw PDFs; CLI and library APIs expose feature/policy reports; standard gates pass.
+
+## 21. Phase 17 — M7 metadata repair and report parity
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 17.1 | Add `RepairReport` data contracts and explicit repair refusal model. | 10, 19, 20 | 2-4 days |
+| 17.2 | Implement `pdfv repair-metadata` with non-in-place atomic writes, output directory validation, and prefix handling. | 19, 50, 70 | 1-2 weeks |
+| 17.3 | Implement raw XML and static HTML report writers for validation/feature/policy/repair outputs. | 19, 20, 72 | 1-2 weeks |
+| 17.4 | Publish CLI compatibility documentation for supported, intentionally different, and out-of-scope veraPDF flags. | 19, 50, 72 | 2-4 days |
+
+Exit criteria: metadata repair never modifies inputs in place and removes failed outputs; raw and HTML reports pass golden tests; CLI docs explain deviations from veraPDF, including no literal password argument; standard gates pass.

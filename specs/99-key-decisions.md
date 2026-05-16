@@ -1,6 +1,6 @@
 # Key Decisions
 
-Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
+Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
 
 ## D1 — Build library-first, CLI second
 
@@ -90,4 +90,31 @@ Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
 - Decision: Standard security handler revisions 5-6 are implementation-ready but remain a dedicated future implementation phase. The public password API, CLI secret-source policy, encrypted status, and redacted reporting contracts stay unchanged.
 - Why: revision 5-6 support requires Algorithm 2.A/2.B key retrieval, UTF-8 password truncation to 127 bytes, `/OE`/`/UE`, AESV3 content decryption, direct file-key object decryption, and `/Perms` validation. These fit the current parser/decryption architecture, but they are a separate risk surface from the already-landed revisions 2-4 compatibility layer.
 - Pinned by: [14-password-decryption-design.md](./14-password-decryption-design.md), [70-security.md](./70-security.md), [91-impl-plan.md](./91-impl-plan.md), [../docs/research/spike-aes-256-decryption.md](../docs/research/spike-aes-256-decryption.md)
+- Date: 2026-05-16
+
+## D11 — Treat veraPDF parity as layered compatibility, not a single rewrite
+
+- Context: post-M4 gap analysis against vendored veraPDF code.
+- Alternatives considered: declare M4 complete as the final scope; attempt one broad "full parity" phase; split parity into parser/profile/model/metadata/product layers.
+- Decision: add explicit parity specs and phases for parser/filter/source parity, profile catalog/rule parity, validation model breadth, XMP/flavour detection, and optional product surfaces.
+- Why: veraPDF spans parser filters, all official profile XMLs, hundreds of validation-model wrappers, XMP flavour detection, feature extraction, metadata repair, policy reporting, and multiple report formats. A single phase would hide dependency risk and make review impossible. Layered parity keeps the Rust safety model intact while making each gap measurable.
+- Pinned by: [15-parser-filter-source-parity-design.md](./15-parser-filter-source-parity-design.md), [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md), [17-validation-model-parity-design.md](./17-validation-model-parity-design.md), [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md), [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md)
+- Date: 2026-05-16
+
+## D12 — Full profile parity uses generated bounded Rust data, not runtime JavaScript
+
+- Context: official veraPDF profile compatibility.
+- Alternatives considered: keep only `pdfv-m4`; embed a JavaScript engine; hand-code profile rules; generate bounded Rust profile data from vendored XML.
+- Decision: built-in profile parity is generated from vendored XML into deterministic Rust data, with unsupported expressions retained as structured report data until the bounded IR supports them.
+- Why: veraPDF evaluates JavaScript-style profile expressions, but runtime JavaScript conflicts with the hostile-input Rust security model. Generation gives repeatable coverage metrics, reviewable diffs, and profile/rule citations while preserving [D4](./99-key-decisions.md#d4--use-bounded-rust-rule-ir-not-javascript).
+- Pinned by: [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md), [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md), [70-security.md](./70-security.md)
+- Date: 2026-05-16
+
+## D13 — Product-surface parity remains opt-in and read/write separated
+
+- Context: feature extraction, policy reports, and metadata repair.
+- Alternatives considered: make validation always extract all features; mix metadata repair into `validate`; keep product surfaces out of scope forever.
+- Decision: feature extraction and policy reports are opt-in read-only validation-adjacent surfaces; metadata repair is a separate non-in-place command with atomic writes and refusal reports.
+- Why: veraPDF supports validation, feature extraction, and metadata repair, but repair changes files and carries a different safety/security contract. Keeping read-only validation separate from write-capable repair preserves default safety while still providing migration paths.
+- Pinned by: [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md), [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md), [70-security.md](./70-security.md)
 - Date: 2026-05-16

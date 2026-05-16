@@ -1,6 +1,6 @@
 # pdfv Spec Index
 
-Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
+Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
 
 ## Reading order
 
@@ -12,10 +12,15 @@ Read in this order when implementing:
 4. [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md) — profile loading and bounded rule expression IR.
 5. [13-validation-engine-design.md](./13-validation-engine-design.md) — validation session, model graph, traversal, diagnostics.
 6. [14-password-decryption-design.md](./14-password-decryption-design.md) — password input, encryption dictionary parsing, and scoped decryption.
-7. [20-reporting-design.md](./20-reporting-design.md) — JSON/text output and batch summaries.
-8. [50-cli-design.md](./50-cli-design.md) — CLI UX, config, exit codes, concurrency.
-9. Cross-cuts: [61-crates-and-features.md](./61-crates-and-features.md), [70-security.md](./70-security.md), [71-performance-budgets.md](./71-performance-budgets.md), [72-testing-strategy.md](./72-testing-strategy.md).
-10. [80-glossary.md](./80-glossary.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [93-improvements-review.md](./93-improvements-review.md), [99-key-decisions.md](./99-key-decisions.md).
+7. [15-parser-filter-source-parity-design.md](./15-parser-filter-source-parity-design.md) — stream filters, source storage, and xref-chain parity.
+8. [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md) — full built-in profile catalog and rule-expression parity.
+9. [17-validation-model-parity-design.md](./17-validation-model-parity-design.md) — broad validation model families and property/link schema.
+10. [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md) — XMP parsing and PDF/A/PDF/UA/WTPDF auto flavour detection.
+11. [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md) — feature extraction, policy, repair, raw/HTML reports, and CLI parity surfaces.
+12. [20-reporting-design.md](./20-reporting-design.md) — JSON/text/XML output and batch summaries.
+13. [50-cli-design.md](./50-cli-design.md) — CLI UX, config, exit codes, concurrency.
+14. Cross-cuts: [61-crates-and-features.md](./61-crates-and-features.md), [70-security.md](./70-security.md), [71-performance-budgets.md](./71-performance-budgets.md), [72-testing-strategy.md](./72-testing-strategy.md).
+15. [80-glossary.md](./80-glossary.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [93-improvements-review.md](./93-improvements-review.md), [99-key-decisions.md](./99-key-decisions.md).
 
 ## Build-order graph
 
@@ -26,8 +31,13 @@ Read in this order when implementing:
           -> 12-profile-rule-ir-design
               -> 13-validation-engine-design
                   -> 14-password-decryption-design
-                      -> 20-reporting-design
-                          -> 50-cli-design
+                      -> 15-parser-filter-source-parity-design
+                          -> 16-profile-catalog-rule-parity-design
+                              -> 17-validation-model-parity-design
+                                  -> 18-xmp-metadata-flavour-design
+                                      -> 19-verapdf-product-surface-parity-design
+                                          -> 20-reporting-design
+                                              -> 50-cli-design
 
 61-crates-and-features, 70-security, 71-performance-budgets, 72-testing-strategy
   constrain every implementation phase.
@@ -46,6 +56,11 @@ Read in this order when implementing:
 | [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md) | Component design | Designs built-in/custom profile handling and bounded expression evaluation. |
 | [13-validation-engine-design.md](./13-validation-engine-design.md) | Component design | Designs `ValidationSession`, graph traversal, diagnostics, and library entrypoints. |
 | [14-password-decryption-design.md](./14-password-decryption-design.md) | Component design | Designs scoped password input and Standard security handler decryption support. |
+| [15-parser-filter-source-parity-design.md](./15-parser-filter-source-parity-design.md) | Component design | Designs stream filter coverage, source storage, and xref-chain parity with veraPDF. |
+| [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md) | Component design | Designs full built-in profile catalog generation and bounded rule-expression parity. |
+| [17-validation-model-parity-design.md](./17-validation-model-parity-design.md) | Component design | Designs broad validation model families, property/link schemas, and lazy model caches. |
+| [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md) | Component design | Designs XMP packet parsing, metadata facts, and PDF/A/PDF/UA/WTPDF auto flavour detection. |
+| [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md) | Component design | Designs feature extraction, policy reports, metadata repair, raw/HTML reports, and CLI parity surfaces. |
 | [20-reporting-design.md](./20-reporting-design.md) | Component design | Designs report formatting, summaries, and stable JSON/text output. |
 | [50-cli-design.md](./50-cli-design.md) | CLI design | Defines CLI commands, config loading, exit codes, and bounded parallelism. |
 | [61-crates-and-features.md](./61-crates-and-features.md) | Workspace design | Defines crate layout, feature flags, and dependency policy. |
@@ -61,3 +76,6 @@ Read in this order when implementing:
 ## Research anchors
 
 - [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md) — veraPDF parser, profile, validator, reporting, and CLI architecture. The spec adopts its library-first facade, tolerant parse facts, iterative validation graph, and bounded report shape while avoiding `ThreadLocal` session state and JavaScript rule execution.
+- [../docs/research/spike-profile-expression-ir.md](../docs/research/spike-profile-expression-ir.md) — rule-expression risk retirement for generated built-in profile coverage.
+- [../docs/research/spike-pdf-stream-resource-limits.md](../docs/research/spike-pdf-stream-resource-limits.md) — stream decode caps and scan caps for hostile PDFs.
+- [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md) — XML/MRR compatibility naming and report-surface decisions.

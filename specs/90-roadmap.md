@@ -1,6 +1,6 @@
 # Roadmap — Incremental Delivery
 
-Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
+Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
 
 ## 0. Principles
 
@@ -73,6 +73,41 @@ Exit criteria:
 - Password/decryption support scoped by [14-password-decryption-design.md](./14-password-decryption-design.md): Standard security handler revisions 2-4 in the first implementation phase; revisions 5-6 after the AES-256 risk gate.
 - Public conformance fixture matrix published.
 
+### M5 — Parser and profile parity foundation
+
+User-visible result: more real-world PDFs reach deterministic validation because stream filters, xref chains, and built-in profile selection match the major veraPDF surfaces.
+
+Exit criteria:
+
+- Stream decoders cover Flate predictors, ASCIIHex, ASCII85, LZW, RunLength, and Crypt identity/named filters as scoped by [15-parser-filter-source-parity-design.md](./15-parser-filter-source-parity-design.md).
+- Large-file source storage avoids eager whole-file memory residency above a configurable threshold.
+- Built-in profile catalog lists PDF/A-1/2/3/4, PDF/UA, and WTPDF profiles from the vendored XML set.
+- Generated profile coverage reports executable and unsupported rule counts per profile.
+- Auto profile selection no longer silently treats absent metadata as detected PDF/A-1B.
+
+### M6 — Validation model and metadata parity
+
+User-visible result: official profile rules evaluate against a broad validation model rather than the current small fact subset.
+
+Exit criteria:
+
+- Validation model families cover document/catalog, page/resources, fonts/CMaps, images/content, annotations/actions/forms, color/transparency, structure/accessibility, and signature/security facts.
+- Generated built-in profile rules are schema-checked against model properties and links.
+- XMP metadata parsing detects PDF/A, PDF/UA, and WTPDF flavour claims with structured report evidence.
+- Unsupported official rules are visible in reports with profile/rule citations and do not produce compliant status.
+
+### M7 — veraPDF product-surface parity
+
+User-visible result: migration workflows can use pdfv for validation reports, feature inventory, policy checks, and safe metadata repair where explicitly supported.
+
+Exit criteria:
+
+- Feature extraction emits bounded JSON/XML feature reports for the model families used by policies.
+- Policy reports consume feature reports and merge into validation output.
+- Metadata repair is available as an explicit non-in-place command with atomic output writes and refusal reports.
+- Raw XML and static HTML report formats are available.
+- CLI compatibility documentation lists supported, intentionally different, and out-of-scope veraPDF flags.
+
 ## 2. Calendar estimate
 
 For one focused developer:
@@ -82,6 +117,9 @@ For one focused developer:
 - M2: 4-8 weeks, driven by profile expression coverage.
 - M3: 2-4 weeks.
 - M4: research-dependent; password/decryption adds approximately 2-4 weeks for revisions 2-4, a separate AES-256 risk gate, and approximately 1 week for the dedicated revisions 5-6 implementation phase.
+- M5: 4-8 weeks, driven by decoder coverage and profile-generator coverage.
+- M6: 8-16 weeks, driven by validation-model breadth and XMP semantics.
+- M7: 6-12 weeks, depending on policy language and metadata repair scope.
 
 ## 3. Cross-references
 
