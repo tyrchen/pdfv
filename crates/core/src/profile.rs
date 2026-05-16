@@ -42,7 +42,7 @@ pub trait RuleEvaluator {
     fn evaluate(&mut self, object: crate::ModelObjectRef<'_>, rule: &Rule) -> Result<RuleOutcome>;
 }
 
-/// Built-in M0 profile repository.
+/// Built-in profile repository.
 #[derive(Clone, Debug, Default)]
 pub struct BuiltinProfileRepository;
 
@@ -62,7 +62,7 @@ impl BuiltinProfileRepository {
         let generated = import_verapdf_profile_xml(VERA_PDF_A_1B_XML)?;
         Ok(vec![
             ProfileCatalogEntry {
-                identity: m0_profile(pdfa_1b_flavour()?)?.identity,
+                identity: m4_profile(pdfa_1b_flavour()?)?.identity,
                 flavour: pdfa_1b_flavour()?,
             },
             ProfileCatalogEntry {
@@ -81,11 +81,11 @@ impl ProfileRepository for BuiltinProfileRepository {
                     Some(flavour) => flavour.clone(),
                     None => pdfa_1b_flavour()?,
                 };
-                ensure_m0_flavour(&flavour)?;
-                Ok(vec![m0_profile(flavour)?])
+                ensure_builtin_flavour(&flavour)?;
+                Ok(vec![m4_profile(flavour)?])
             }
             FlavourSelection::Explicit { flavour } => {
-                ensure_m0_flavour(flavour)?;
+                ensure_builtin_flavour(flavour)?;
                 Ok(vec![import_verapdf_profile_xml(VERA_PDF_A_1B_XML)?.profile])
             }
             FlavourSelection::CustomProfile { .. } => {
@@ -654,7 +654,7 @@ fn pdfa_1b_flavour() -> Result<ValidationFlavour> {
     Ok(ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)
 }
 
-fn ensure_m0_flavour(flavour: &ValidationFlavour) -> Result<()> {
+fn ensure_builtin_flavour(flavour: &ValidationFlavour) -> Result<()> {
     if flavour == &pdfa_1b_flavour()? {
         Ok(())
     } else {
@@ -662,11 +662,11 @@ fn ensure_m0_flavour(flavour: &ValidationFlavour) -> Result<()> {
     }
 }
 
-fn m0_profile(flavour: ValidationFlavour) -> Result<ValidationProfile> {
+fn m4_profile(flavour: ValidationFlavour) -> Result<ValidationProfile> {
     Ok(ValidationProfile {
         identity: ProfileIdentity {
-            id: Identifier::new("pdfv-m0")?,
-            name: BoundedText::new("pdfv M0 built-in profile", 128)?,
+            id: Identifier::new("pdfv-m4")?,
+            name: BoundedText::new("pdfv M4 built-in profile", 128)?,
             version: Some(Identifier::new("0.1.0")?),
         },
         flavour,
@@ -694,6 +694,54 @@ fn m0_profile(flavour: ValidationFlavour) -> Result<ValidationProfile> {
                 property_expr("hasCatalog")?,
                 BinaryOp::Eq,
                 RuleExpr::Bool { value: true },
+            )?,
+            rule(
+                "m4-page-contents-present",
+                "page",
+                "Page dictionaries must contain contents",
+                property_expr("hasContents")?,
+                BinaryOp::Eq,
+                RuleExpr::Bool { value: true },
+            )?,
+            rule(
+                "m4-page-resources-present",
+                "page",
+                "Page dictionaries must contain resources",
+                property_expr("hasResources")?,
+                BinaryOp::Eq,
+                RuleExpr::Bool { value: true },
+            )?,
+            rule(
+                "m4-font-subtype-present",
+                "font",
+                "Font dictionaries must contain a Subtype entry",
+                property_expr("hasSubtype")?,
+                BinaryOp::Eq,
+                RuleExpr::Bool { value: true },
+            )?,
+            rule(
+                "m4-annotation-subtype-present",
+                "annotation",
+                "Annotation dictionaries must contain a Subtype entry",
+                property_expr("hasSubtype")?,
+                BinaryOp::Eq,
+                RuleExpr::Bool { value: true },
+            )?,
+            rule(
+                "m4-output-intent-profile-present",
+                "outputIntent",
+                "Output intent dictionaries must contain a destination output profile",
+                property_expr("hasDestOutputProfile")?,
+                BinaryOp::Eq,
+                RuleExpr::Bool { value: true },
+            )?,
+            rule(
+                "m4-content-stream-length-non-negative",
+                "contentStream",
+                "Page content streams must expose a non-negative declared or discovered length",
+                property_expr("declaredLength")?,
+                BinaryOp::Ge,
+                RuleExpr::Number { value: 0.0 },
             )?,
             rule(
                 "m0-stream-length-matches",
@@ -1439,6 +1487,7 @@ fn map_verapdf_property(value: &str) -> &str {
         "realLength" => "discoveredLength",
         "isEncrypted" => "encrypted",
         "containsMetadata" => "hasMetadata",
+        "isCatalogMetadata" => "catalogMetadata",
         other => other,
     }
 }
@@ -1488,7 +1537,14 @@ mod tests {
         let profiles = BuiltinProfileRepository::new().profiles_for(&FlavourSelection::default())?;
 
         assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles.first().map(|profile| profile.rules.len()), Some(4));
+        assert_eq!(
+            profiles.first().map(|profile| profile.rules.len()),
+            Some(10)
+        );
+        assert_eq!(
+            profiles.first().map(|profile| profile.identity.id.as_str()),
+            Some("pdfv-m4")
+        );
         Ok(())
     }
 
@@ -1580,7 +1636,7 @@ trailer
 << /Type /Catalog >>
 endobj
 2 0 obj
-<< /Length 3 >>
+<< /Length 4 >>
 stream
 abc
 endstream
@@ -1594,6 +1650,154 @@ trailer
 
         assert_eq!(report.status, crate::ValidationStatus::Valid);
         Ok(())
+    }
+
+    #[test]
+    fn test_should_apply_m4_feature_fact_rules_to_linked_objects() -> crate::Result<()> {
+        let report = Validator::new(crate::ValidationOptions::default())?
+            .validate_reader(Cursor::new(m4_feature_pdf()), crate::InputName::memory())?;
+        let profile =
+            report
+                .profile_reports
+                .first()
+                .ok_or(crate::ValidationError::LimitExceeded {
+                    limit: "profile_reports",
+                })?;
+
+        assert_eq!(
+            report.status,
+            crate::ValidationStatus::Valid,
+            "{profile:#?}"
+        );
+        assert_eq!(profile.rules_executed, 12);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_report_imported_derived_property_as_unsupported() -> crate::Result<()> {
+        let rule = super::Rule {
+            id: crate::RuleId(crate::Identifier::new("derived-font-name")?),
+            object_type: super::ObjectTypeName::new("font")?,
+            deferred: false,
+            tags: Vec::new(),
+            description: crate::BoundedText::new("derived font name", 64)?,
+            test: super::RuleExpr::Binary {
+                op: super::BinaryOp::Eq,
+                left: Box::new(super::property_expr("fontName")?),
+                right: Box::new(super::RuleExpr::Null),
+            },
+            error: super::ErrorTemplate {
+                message: crate::BoundedText::new("derived font name", 64)?,
+            },
+        };
+        let profile = super::ValidationProfile {
+            identity: crate::ProfileIdentity {
+                id: crate::Identifier::new("derived-property")?,
+                name: crate::BoundedText::new("derived property", 64)?,
+                version: None,
+            },
+            flavour: super::pdfa_1b_flavour()?,
+            rules: vec![rule],
+        };
+        let validator = Validator::with_profiles(
+            crate::ValidationOptions::default(),
+            Arc::new(StaticRepo(profile)),
+        )?;
+        let report =
+            validator.validate_reader(Cursor::new(m4_feature_pdf()), crate::InputName::memory())?;
+        let profile =
+            report
+                .profile_reports
+                .first()
+                .ok_or(crate::ValidationError::LimitExceeded {
+                    limit: "profile_reports",
+                })?;
+
+        assert_eq!(report.status, crate::ValidationStatus::Incomplete);
+        assert_eq!(profile.unsupported_rules.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_fail_m4_feature_fact_rule_on_invalid_font() -> crate::Result<()> {
+        let bytes = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 4 >>
+stream
+q Q
+endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+";
+        let report = Validator::new(crate::ValidationOptions::default())?
+            .validate_reader(Cursor::new(bytes), crate::InputName::memory())?;
+        let profile =
+            report
+                .profile_reports
+                .first()
+                .ok_or(crate::ValidationError::LimitExceeded {
+                    limit: "profile_reports",
+                })?;
+
+        assert_eq!(report.status, crate::ValidationStatus::Invalid);
+        assert!(profile.failed_assertions.iter().any(|assertion| {
+            assertion.rule_id.0.as_str() == "m4-font-subtype-present"
+                && assertion
+                    .object_context
+                    .as_ref()
+                    .is_some_and(|context| context.as_str() == "root/page[0]/font[F1]")
+        }));
+        Ok(())
+    }
+
+    fn m4_feature_pdf() -> &'static [u8] {
+        br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OutputIntents [8 0 R] >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Annots [5 0 R] /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Type /Annot /Subtype /Text >>
+endobj
+6 0 obj
+<< /Length 0 >>
+stream
+endstream
+endobj
+7 0 obj
+<< /Length 0 >>
+stream
+endstream
+endobj
+8 0 obj
+<< /Type /OutputIntent /S /GTS_PDFA1 /DestOutputProfile 7 0 R >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+"
     }
 
     #[test]

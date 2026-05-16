@@ -18,7 +18,7 @@ pub trait RuleEvaluator {
 }
 ```
 
-The default repository starts with a small built-in profile catalog compiled into Rust data. A later generator converts veraPDF XML or Arlington-derived data into static Rust data. Custom profile loading uses `quick-xml 0.40.1` with byte and element caps.
+The default repository starts with a built-in profile catalog compiled into Rust data. The M4 default profile includes parser smoke checks plus executable feature-fact rules for page, font, annotation, output-intent, and content-stream model objects. A later generator converts veraPDF XML or Arlington-derived data into static Rust data. Custom profile loading uses `quick-xml 0.40.1` with byte and element caps.
 
 ## 3. Rule IR
 
@@ -66,4 +66,3 @@ The implementation plan requires `spike-profile-expression-ir.md` before broad p
 - ← Depends on: [10-data-model.md](./10-data-model.md), [11-parser-core-design.md](./11-parser-core-design.md)
 - → Consumed by: [13-validation-engine-design.md](./13-validation-engine-design.md)
 - ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md)
-

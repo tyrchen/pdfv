@@ -25,13 +25,13 @@ The JSON report uses camelCase fields and includes source summary, status, selec
   "profileReports": [
     {
       "profile": {
-        "id": "pdfv-m0",
-        "name": "pdfv M0 built-in profile",
+        "id": "pdfv-m4",
+        "name": "pdfv M4 built-in profile",
         "version": "0.1.0"
       },
       "isCompliant": true,
-      "checksExecuted": 4,
-      "rulesExecuted": 4,
+      "checksExecuted": 3,
+      "rulesExecuted": 3,
       "failedRules": 0,
       "failedAssertions": [],
       "passedAssertions": [],
@@ -111,8 +111,8 @@ Use `--format xml` when a workflow expects a machine-readable XML report. `mrr` 
       <item size="80">
         <name>tests/fixtures/minimal-valid.pdf</name>
       </item>
-      <validationReport profileName="pdfv M0 built-in profile" statement="PDF file is compliant with Validation Profile requirements." isCompliant="true">
-        <details passedRules="4" failedRules="0" passedChecks="4" failedChecks="0" unsupportedRules="0"></details>
+      <validationReport profileName="pdfv M4 built-in profile" statement="PDF file is compliant with Validation Profile requirements." isCompliant="true">
+        <details passedRules="3" failedRules="0" passedChecks="3" failedChecks="0" unsupportedRules="0"></details>
       </validationReport>
     </job>
   </jobs>

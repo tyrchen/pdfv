@@ -36,7 +36,7 @@ fn test_should_validate_pdf_and_emit_text_report() -> Result<(), Box<dyn Error>>
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(contains("valid.pdf: valid").eval(&stdout));
-    assert!(contains("profiles: pdfv-m0").eval(&stdout));
+    assert!(contains("profiles: pdfv-m4").eval(&stdout));
     Ok(())
 }
 
@@ -302,7 +302,7 @@ fn test_should_list_profiles() -> Result<(), Box<dyn Error>> {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
-    assert!(contains("pdfv-m0").eval(&stdout));
+    assert!(contains("pdfv-m4").eval(&stdout));
     assert!(contains("verapdf-pdfa-1b").eval(&stdout));
     Ok(())
 }

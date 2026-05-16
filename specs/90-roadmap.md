@@ -69,7 +69,8 @@ Exit criteria:
 
 - Decision on MRR/XML compatibility from `spike-mrr-compatibility.md`.
 - XML compatibility output available through `pdfv validate --format xml`; `mrr` accepted only as a deprecated alias.
-- Larger profile coverage, richer feature facts, and optional password/decryption support if scoped.
+- Larger profile coverage and richer feature facts for page, font, annotation, output-intent, and content-stream objects.
+- Optional password/decryption support if scoped by a future implementation phase.
 - Public conformance fixture matrix published.
 
 ## 2. Calendar estimate

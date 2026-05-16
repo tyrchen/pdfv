@@ -1,4 +1,4 @@
-//! End-to-end validation session and M0 model graph.
+//! End-to-end validation session and validation model graph.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -17,6 +17,41 @@ use crate::{
     UnsupportedRule, ValidationError, ValidationOptions, ValidationReport, ValidationStatus,
     profile::DefaultRuleEvaluator,
 };
+
+const CATALOG_DIRECT_PROPERTIES: &[&str] = &["Type", "Metadata", "Pages", "OutputIntents"];
+const METADATA_DIRECT_PROPERTIES: &[&str] = &["Type", "Subtype", "Filter", "Length"];
+const PAGE_DIRECT_PROPERTIES: &[&str] = &["Type", "Parent", "Contents", "Resources", "Annots"];
+const FONT_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "BaseFont",
+    "FontDescriptor",
+    "FirstChar",
+    "LastChar",
+    "Widths",
+    "Encoding",
+    "ToUnicode",
+    "CIDToGIDMap",
+];
+const ANNOTATION_DIRECT_PROPERTIES: &[&str] = &[
+    "Type", "Subtype", "F", "C", "IC", "AP", "FT", "CA", "A", "AA",
+];
+const OUTPUT_INTENT_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "S",
+    "DestOutputProfile",
+    "OutputConditionIdentifier",
+    "Info",
+];
+const STREAM_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "Filter",
+    "DecodeParms",
+    "F",
+    "FFilter",
+    "FDecodeParms",
+];
 
 /// Bounded input name used by reader validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,7 +92,7 @@ impl std::fmt::Debug for Validator {
 }
 
 impl Validator {
-    /// Creates a validator with the built-in M0 profile repository.
+    /// Creates a validator with the built-in profile repository.
     ///
     /// # Errors
     ///
@@ -760,10 +795,15 @@ impl ModelObject for CatalogModel<'_> {
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
             "hasMetadata" => Ok(ModelValue::Bool(self.metadata.is_some())),
-            _ => Err(crate::ProfileError::UnknownProperty {
-                property: BoundedText::unchecked(name.as_str()),
-            }
-            .into()),
+            _ => self
+                .document
+                .objects
+                .get(&self.key)
+                .and_then(|object| object.object.as_dictionary())
+                .map_or_else(
+                    || unknown_property(name),
+                    |dictionary| dictionary_property(dictionary, name, CATALOG_DIRECT_PROPERTIES),
+                ),
         }
     }
 
@@ -859,11 +899,16 @@ impl ModelObject for MetadataModel<'_> {
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
-            "present" => Ok(ModelValue::Bool(true)),
-            _ => Err(crate::ProfileError::UnknownProperty {
-                property: BoundedText::unchecked(name.as_str()),
-            }
-            .into()),
+            "present" | "catalogMetadata" => Ok(ModelValue::Bool(true)),
+            _ => self.document.objects.get(&self.key).map_or_else(
+                || unknown_property(name),
+                |object| match &object.object {
+                    crate::CosObject::Stream(stream) => {
+                        dictionary_property(&stream.dictionary, name, METADATA_DIRECT_PROPERTIES)
+                    }
+                    _ => unknown_property(name),
+                },
+            ),
         }
     }
 
@@ -988,10 +1033,7 @@ impl ModelObject for PageModel<'_> {
             "annotationCount" => Ok(ModelValue::Number(usize_to_f64(
                 object_refs_or_direct_count(self.dictionary.get("Annots")),
             )?)),
-            _ => Err(crate::ProfileError::UnknownProperty {
-                property: BoundedText::unchecked(name.as_str()),
-            }
-            .into()),
+            _ => dictionary_property(self.dictionary, name, PAGE_DIRECT_PROPERTIES),
         }
     }
 
@@ -1117,10 +1159,7 @@ impl ModelObject for FontModel<'_> {
                 self.dictionary.get("FontDescriptor").is_some(),
             )),
             "hasSubtype" => Ok(ModelValue::Bool(self.dictionary.get("Subtype").is_some())),
-            _ => Err(crate::ProfileError::UnknownProperty {
-                property: BoundedText::unchecked(name.as_str()),
-            }
-            .into()),
+            _ => dictionary_property(self.dictionary, name, FONT_DIRECT_PROPERTIES),
         }
     }
 
@@ -1208,10 +1247,7 @@ impl ModelObject for AnnotationModel<'_> {
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
             "hasSubtype" => Ok(ModelValue::Bool(self.dictionary.get("Subtype").is_some())),
-            _ => Err(crate::ProfileError::UnknownProperty {
-                property: BoundedText::unchecked(name.as_str()),
-            }
-            .into()),
+            _ => dictionary_property(self.dictionary, name, ANNOTATION_DIRECT_PROPERTIES),
         }
     }
 
@@ -1302,10 +1338,7 @@ impl ModelObject for OutputIntentModel<'_> {
             "hasDestOutputProfile" => Ok(ModelValue::Bool(
                 self.dictionary.get("DestOutputProfile").is_some(),
             )),
-            _ => Err(crate::ProfileError::UnknownProperty {
-                property: BoundedText::unchecked(name.as_str()),
-            }
-            .into()),
+            _ => dictionary_property(self.dictionary, name, OUTPUT_INTENT_DIRECT_PROPERTIES),
         }
     }
 
@@ -1381,15 +1414,20 @@ impl ModelObject for ContentStreamModel<'_> {
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
+            "lengthMatches" => {
+                Ok(ModelValue::Bool(self.stream.declared_length.is_none_or(
+                    |declared| declared == self.stream.discovered_length,
+                )))
+            }
             "declaredLength" => Ok(ModelValue::Number(u64_to_f64(
                 self.stream
                     .declared_length
                     .unwrap_or(self.stream.discovered_length),
             )?)),
-            _ => Err(crate::ProfileError::UnknownProperty {
-                property: BoundedText::unchecked(name.as_str()),
-            }
-            .into()),
+            "discoveredLength" => Ok(ModelValue::Number(u64_to_f64(
+                self.stream.discovered_length,
+            )?)),
+            _ => dictionary_property(&self.stream.dictionary, name, STREAM_DIRECT_PROPERTIES),
         }
     }
 
@@ -1532,6 +1570,27 @@ fn array_values(value: Option<&crate::CosObject>) -> impl Iterator<Item = &crate
         })
         .into_iter()
         .flatten()
+}
+
+fn dictionary_property(
+    dictionary: &crate::Dictionary,
+    name: &PropertyName,
+    allowed_names: &[&str],
+) -> Result<ModelValue> {
+    if !allowed_names.contains(&name.as_str()) {
+        return unknown_property(name);
+    }
+    Ok(dictionary
+        .get(name.as_str())
+        .cloned()
+        .map_or(ModelValue::Null, ModelValue::from))
+}
+
+fn unknown_property(name: &PropertyName) -> Result<ModelValue> {
+    Err(crate::ProfileError::UnknownProperty {
+        property: BoundedText::unchecked(name.as_str()),
+    }
+    .into())
 }
 
 /// Stream model wrapper.

@@ -122,3 +122,14 @@ The smallest shippable slice stays end-to-end: M0 includes parser, profile, vali
 | 7.4 | Update product-facing README and report examples. | 00, 20, 50, 72 | 0.5 day |
 
 Exit criteria: `spike-mrr-compatibility.md` is published; XML report output is available from library and CLI; `mrr` maps to the same writer as a deprecated alias; tests cover single XML output and alias behavior; standard gates pass.
+
+## 12. Phase 8 — M4 advanced profile facts
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 8.1 | Promote the default built-in profile from M0 smoke checks to an M4 fact profile that also checks page, font, annotation, output-intent, and page content stream facts. | 12, 13, 90 | 0.5-1 day |
+| 8.2 | Expose direct dictionary-backed model properties needed by imported veraPDF expressions where the existing model wrappers already own the dictionary. | 12, 13, 70 | 0.5-1 day |
+| 8.3 | Add regression coverage for linked-object fact traversal, invalid feature facts, and CLI profile-list output. | 72 | 0.5 day |
+| 8.4 | Update product examples and fixture matrix for the M4 default profile. | 20, 50, 72 | 0.5 day |
+
+Exit criteria: default validation uses `pdfv-m4`; profile facts cover page contents/resources, font subtype, annotation subtype, output-intent destination profile, and content-stream length exposure; imported profile evaluation can read direct dictionary properties such as `Type`, `Subtype`, `Filter`, and `DestOutputProfile`; tests cover passing and failing linked-object facts; standard gates pass.
