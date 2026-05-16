@@ -2,9 +2,17 @@
 
 ## User-Facing
 
+- [User Guide](guides/user-guide.md)
+- [Developer Guide](guides/developer-guide.md)
 - [JSON and Config Examples](json-examples.md)
 - [veraPDF CLI Compatibility](verapdf-cli-compatibility.md)
 - [Conformance Fixture Matrix](conformance-fixture-matrix.md)
+
+## 简体中文
+
+- [用户指南](guides/user-guide.zh-CN.md)
+- [开发者指南](guides/developer-guide.zh-CN.md)
+- [中文 README](../README.zh-CN.md)
 
 ## Research
 

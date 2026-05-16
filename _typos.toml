@@ -1,4 +1,9 @@
 [default.extend-words]
+flate = "flate"
+Parms = "Parms"
+SEH = "SEH"
+UE = "UE"
+paeth = "paeth"
 
 [files]
 extend-exclude = ["CHANGELOG.md", "vendors/"]
