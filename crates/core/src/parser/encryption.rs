@@ -1,13 +1,17 @@
-//! PDF Standard security handler support for revisions 2 through 4.
+//! PDF Standard security handler support for password-based decryption.
 
 use std::sync::Arc;
 
 use aes::{
-    Aes128,
-    cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7},
+    Aes128, Aes256,
+    cipher::{
+        BlockCipherDecrypt, BlockModeDecrypt, BlockModeEncrypt, KeyInit as AesKeyInit, KeyIvInit,
+        block_padding::{NoPadding, Pkcs7},
+    },
 };
 use md5::{Digest, Md5};
-use rc4::{KeyInit, Rc4, StreamCipher};
+use rc4::{Rc4, StreamCipher};
+use sha2::{Sha256, Sha384, Sha512};
 use subtle::ConstantTimeEq;
 
 use super::{
@@ -21,14 +25,24 @@ const PASSWORD_PADDING: [u8; 32] = [
     0x2e, 0x2e, 0x00, 0xb6, 0xd0, 0x68, 0x3e, 0x80, 0x2f, 0x0c, 0xa9, 0xfe, 0x64, 0x53, 0x69, 0x7a,
 ];
 const AES_SALT: &[u8] = b"sAlT";
+const AES_256_KEY_BYTES: usize = 32;
+const AES_BLOCK_BYTES: usize = 16;
+const REVISION_5_6_PASSWORD_BYTES: usize = 127;
+const REVISION_5_6_HASH_BYTES: usize = 32;
+const REVISION_5_6_ENTRY_BYTES: usize = 48;
+const REVISION_5_6_SALT_BYTES: usize = 8;
+const PERMS_BYTES: usize = 16;
 
 type Aes128CbcDec = cbc::Decryptor<Aes128>;
+type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SecurityRevision {
     R2,
     R3,
     R4,
+    R5,
+    R6,
 }
 
 impl SecurityRevision {
@@ -37,12 +51,8 @@ impl SecurityRevision {
             2 => Ok(Self::R2),
             3 => Ok(Self::R3),
             4 => Ok(Self::R4),
-            5 | 6 => Err(DecryptionError::Unsupported {
-                message: format!("unsupported encryption revision {value}"),
-                version: None,
-                revision: u8::try_from(value).ok(),
-                algorithm: None,
-            }),
+            5 => Ok(Self::R5),
+            6 => Ok(Self::R6),
             _ if value > 0 => Err(DecryptionError::Unsupported {
                 message: format!("unsupported encryption revision {value}"),
                 version: None,
@@ -58,11 +68,17 @@ impl SecurityRevision {
             Self::R2 => 2,
             Self::R3 => 3,
             Self::R4 => 4,
+            Self::R5 => 5,
+            Self::R6 => 6,
         }
     }
 
     fn repeats_hash(self) -> bool {
         matches!(self, Self::R3 | Self::R4)
+    }
+
+    fn uses_aes_256(self) -> bool {
+        matches!(self, Self::R5 | Self::R6)
     }
 }
 
@@ -71,6 +87,7 @@ enum CryptMethod {
     Identity,
     Rc4,
     AesV2,
+    AesV3,
 }
 
 impl CryptMethod {
@@ -79,6 +96,7 @@ impl CryptMethod {
             Self::Identity => "identity",
             Self::Rc4 => "rc4",
             Self::AesV2 => "aesv2",
+            Self::AesV3 => "aesv3",
         }
     }
 }
@@ -91,6 +109,9 @@ struct EncryptionDictionary {
     key_length_bytes: usize,
     owner_key: Vec<u8>,
     user_key: Vec<u8>,
+    owner_encryption_key: Vec<u8>,
+    user_encryption_key: Vec<u8>,
+    perms: Vec<u8>,
     permissions: i32,
     document_id: Vec<u8>,
     encrypt_metadata: bool,
@@ -283,7 +304,7 @@ fn parse_encryption_dictionary(
         revision: Some(revision.value()),
         algorithm: None,
     })?;
-    if !matches!(version_u8, 1 | 2 | 4) {
+    if !matches!(version_u8, 1 | 2 | 4 | 5) {
         return Err(DecryptionError::Unsupported {
             message: format!("unsupported encryption version {version}"),
             version: Some(version_u8),
@@ -295,6 +316,18 @@ fn parse_encryption_dictionary(
     let key_length_bytes = key_length_bytes(revision, key_length_bits)?;
     let owner_key = required_string(dictionary, "O")?.as_bytes().to_vec();
     let user_key = required_string(dictionary, "U")?.as_bytes().to_vec();
+    validate_password_entries(revision, &owner_key, &user_key)?;
+    let owner_encryption_key = optional_string_bytes(dictionary, "OE")?;
+    let user_encryption_key = optional_string_bytes(dictionary, "UE")?;
+    let perms = optional_string_bytes(dictionary, "Perms")?;
+    validate_aes_256_entries(
+        revision,
+        version_u8,
+        key_length_bytes,
+        &owner_encryption_key,
+        &user_encryption_key,
+        &perms,
+    )?;
     let permissions = i32::try_from(required_integer(dictionary, "P")?)
         .map_err(|_| DecryptionError::Malformed("invalid permissions bits"))?;
     let document_id = document_id(trailers)?;
@@ -303,6 +336,7 @@ fn parse_encryption_dictionary(
         _ => true,
     };
     let (stream_method, string_method) = crypt_methods(dictionary, version_u8)?;
+    validate_aes_256_methods(revision, stream_method, string_method)?;
     Ok(EncryptionDictionary {
         object: object_key,
         version: version_u8,
@@ -310,6 +344,9 @@ fn parse_encryption_dictionary(
         key_length_bytes,
         owner_key,
         user_key,
+        owner_encryption_key,
+        user_encryption_key,
+        perms,
         permissions,
         document_id,
         encrypt_metadata,
@@ -340,7 +377,7 @@ fn crypt_methods(
     dictionary: &Dictionary,
     version: u8,
 ) -> Result<(CryptMethod, CryptMethod), DecryptionError> {
-    if version != 4 {
+    if !matches!(version, 4 | 5) {
         return Ok((CryptMethod::Rc4, CryptMethod::Rc4));
     }
     let stream_filter =
@@ -376,6 +413,8 @@ fn crypt_method(
         Ok(CryptMethod::Rc4)
     } else if cfm.matches("AESV2") {
         Ok(CryptMethod::AesV2)
+    } else if cfm.matches("AESV3") {
+        Ok(CryptMethod::AesV3)
     } else {
         Err(DecryptionError::Unsupported {
             message: format!(
@@ -390,6 +429,14 @@ fn crypt_method(
 }
 
 fn key_length_bytes(revision: SecurityRevision, bits: i64) -> Result<usize, DecryptionError> {
+    if revision.uses_aes_256() {
+        if bits != 256 {
+            return Err(DecryptionError::Malformed(
+                "revision 5 or 6 key length must be 256 bits",
+            ));
+        }
+        return Ok(AES_256_KEY_BYTES);
+    }
     if revision == SecurityRevision::R2 {
         if bits != 40 {
             return Err(DecryptionError::Malformed(
@@ -408,6 +455,9 @@ fn authenticate(
     dictionary: &EncryptionDictionary,
     password: &[u8],
 ) -> Result<Option<Vec<u8>>, DecryptionError> {
+    if dictionary.revision.uses_aes_256() {
+        return authenticate_aes_256(dictionary, password);
+    }
     if let Some(file_key) = authenticate_owner_password(dictionary, password)? {
         return Ok(Some(file_key));
     }
@@ -439,6 +489,11 @@ fn authenticate_user_password(
                 return Err(DecryptionError::Malformed("user key candidate too short"));
             };
             bool::from(actual.ct_eq(expected))
+        }
+        SecurityRevision::R5 | SecurityRevision::R6 => {
+            return Err(DecryptionError::Malformed(
+                "invalid revision for legacy user password authentication",
+            ));
         }
     };
     Ok(authenticated.then_some(file_key))
@@ -473,6 +528,9 @@ fn decrypt_owner_key(
             }
             Ok(current)
         }
+        SecurityRevision::R5 | SecurityRevision::R6 => Err(DecryptionError::Malformed(
+            "invalid revision for legacy owner password authentication",
+        )),
     }
 }
 
@@ -517,6 +575,190 @@ fn user_password_value(
             current.extend_from_slice(&[0_u8; 16]);
             Ok(current)
         }
+        SecurityRevision::R5 | SecurityRevision::R6 => Err(DecryptionError::Malformed(
+            "invalid revision for legacy user password value",
+        )),
+    }
+}
+
+fn authenticate_aes_256(
+    dictionary: &EncryptionDictionary,
+    password: &[u8],
+) -> Result<Option<Vec<u8>>, DecryptionError> {
+    if let Some(file_key) = authenticate_aes_256_owner_password(dictionary, password)? {
+        return Ok(Some(file_key));
+    }
+    authenticate_aes_256_user_password(dictionary, password)
+}
+
+fn authenticate_aes_256_owner_password(
+    dictionary: &EncryptionDictionary,
+    password: &[u8],
+) -> Result<Option<Vec<u8>>, DecryptionError> {
+    let password = revision_5_6_password(password);
+    let owner_validation_salt = slice_range(
+        &dictionary.owner_key,
+        REVISION_5_6_HASH_BYTES,
+        REVISION_5_6_SALT_BYTES,
+        "owner validation salt missing",
+    )?;
+    let expected = hash_prefix(&dictionary.owner_key, REVISION_5_6_HASH_BYTES)?;
+    let candidate = revision_5_6_hash(
+        dictionary.revision,
+        password,
+        owner_validation_salt,
+        Some(&dictionary.user_key),
+    )?;
+    if !bool::from(candidate.as_slice().ct_eq(expected)) {
+        return Ok(None);
+    }
+    let owner_key_salt = slice_range(
+        &dictionary.owner_key,
+        REVISION_5_6_HASH_BYTES + REVISION_5_6_SALT_BYTES,
+        REVISION_5_6_SALT_BYTES,
+        "owner key salt missing",
+    )?;
+    let key = revision_5_6_hash(
+        dictionary.revision,
+        password,
+        owner_key_salt,
+        Some(&dictionary.user_key),
+    )?;
+    let file_key = decrypt_aes_256_cbc_no_padding(&key, &dictionary.owner_encryption_key)?;
+    validate_perms(dictionary, &file_key)?;
+    Ok(Some(file_key))
+}
+
+fn authenticate_aes_256_user_password(
+    dictionary: &EncryptionDictionary,
+    password: &[u8],
+) -> Result<Option<Vec<u8>>, DecryptionError> {
+    let password = revision_5_6_password(password);
+    let user_validation_salt = slice_range(
+        &dictionary.user_key,
+        REVISION_5_6_HASH_BYTES,
+        REVISION_5_6_SALT_BYTES,
+        "user validation salt missing",
+    )?;
+    let expected = hash_prefix(&dictionary.user_key, REVISION_5_6_HASH_BYTES)?;
+    let candidate = revision_5_6_hash(dictionary.revision, password, user_validation_salt, None)?;
+    if !bool::from(candidate.as_slice().ct_eq(expected)) {
+        return Ok(None);
+    }
+    let user_key_salt = slice_range(
+        &dictionary.user_key,
+        REVISION_5_6_HASH_BYTES + REVISION_5_6_SALT_BYTES,
+        REVISION_5_6_SALT_BYTES,
+        "user key salt missing",
+    )?;
+    let key = revision_5_6_hash(dictionary.revision, password, user_key_salt, None)?;
+    let file_key = decrypt_aes_256_cbc_no_padding(&key, &dictionary.user_encryption_key)?;
+    validate_perms(dictionary, &file_key)?;
+    Ok(Some(file_key))
+}
+
+fn revision_5_6_password(password: &[u8]) -> &[u8] {
+    password
+        .get(..password.len().min(REVISION_5_6_PASSWORD_BYTES))
+        .unwrap_or(password)
+}
+
+fn revision_5_6_hash(
+    revision: SecurityRevision,
+    password: &[u8],
+    salt: &[u8],
+    owner_context: Option<&[u8]>,
+) -> Result<Vec<u8>, DecryptionError> {
+    let mut hasher = Sha256::new();
+    hasher.update(password);
+    hasher.update(salt);
+    if let Some(context) = owner_context {
+        hasher.update(context);
+    }
+    let mut digest = hasher.finalize().to_vec();
+    if revision == SecurityRevision::R6 {
+        digest = revision_6_hash_loop(password, owner_context, digest)?;
+    }
+    digest.truncate(AES_256_KEY_BYTES);
+    Ok(digest)
+}
+
+fn revision_6_hash_loop(
+    password: &[u8],
+    owner_context: Option<&[u8]>,
+    mut digest: Vec<u8>,
+) -> Result<Vec<u8>, DecryptionError> {
+    let mut round = 0_u8;
+    loop {
+        let context_len = owner_context.map_or(0, <[u8]>::len);
+        let mut k1 = Vec::with_capacity(password.len() + digest.len() + context_len);
+        k1.extend_from_slice(password);
+        k1.extend_from_slice(&digest);
+        if let Some(context) = owner_context {
+            k1.extend_from_slice(context);
+        }
+        let mut repeated = Vec::with_capacity(k1.len().saturating_mul(64));
+        for _ in 0..64 {
+            repeated.extend_from_slice(&k1);
+        }
+        let key = hash_prefix(&digest, 16)?;
+        let iv = slice_range(&digest, 16, 16, "revision 6 hash IV missing")?;
+        let encrypted = encrypt_aes_128_cbc_no_padding(key, iv, &repeated)?;
+        let selector = encrypted
+            .get(..16)
+            .ok_or(DecryptionError::Malformed("revision 6 selector missing"))?
+            .iter()
+            .fold(0_u16, |sum, byte| sum + u16::from(*byte))
+            % 3;
+        digest = match selector {
+            0 => Sha256::digest(&encrypted).to_vec(),
+            1 => Sha384::digest(&encrypted).to_vec(),
+            _ => Sha512::digest(&encrypted).to_vec(),
+        };
+        let Some(last) = encrypted.last().copied() else {
+            return Err(DecryptionError::Malformed("revision 6 hash block missing"));
+        };
+        if round >= 63 && last <= round.saturating_sub(32) {
+            break;
+        }
+        round = round.saturating_add(1);
+    }
+    Ok(digest)
+}
+
+fn validate_perms(
+    dictionary: &EncryptionDictionary,
+    file_key: &[u8],
+) -> Result<(), DecryptionError> {
+    let plaintext = decrypt_aes_256_block(file_key, &dictionary.perms)?;
+    let expected_permissions = dictionary.permissions.to_le_bytes();
+    let permissions = plaintext
+        .get(..4)
+        .ok_or(DecryptionError::Malformed("permissions prefix missing"))?;
+    if !bool::from(permissions.ct_eq(&expected_permissions)) {
+        return Err(tampered_perms(dictionary));
+    }
+    let Some(stable_suffix) = plaintext.get(4..12) else {
+        return Err(DecryptionError::Malformed("permissions suffix missing"));
+    };
+    let metadata_marker = if dictionary.encrypt_metadata {
+        b'T'
+    } else {
+        b'F'
+    };
+    let expected_suffix = [0xff, 0xff, 0xff, 0xff, metadata_marker, b'a', b'd', b'b'];
+    if !bool::from(stable_suffix.ct_eq(expected_suffix.as_slice())) {
+        return Err(tampered_perms(dictionary));
+    }
+    Ok(())
+}
+
+fn tampered_perms(dictionary: &EncryptionDictionary) -> DecryptionError {
+    DecryptionError::Unsupported {
+        message: String::from("invalid encryption permissions"),
+        version: Some(dictionary.version),
+        revision: Some(dictionary.revision.value()),
+        algorithm: Some(Identifier::unchecked("aesv3")),
     }
 }
 
@@ -629,6 +871,9 @@ fn decrypt_stream(
 }
 
 fn object_key(file_key: &[u8], key: ObjectKey, method: CryptMethod) -> Vec<u8> {
+    if method == CryptMethod::AesV3 {
+        return file_key.to_vec();
+    }
     let object_number = key.number.get().to_le_bytes();
     let generation = key.generation.to_le_bytes();
     let mut hasher = Md5::new();
@@ -652,6 +897,7 @@ fn decrypt_bytes(
         CryptMethod::Identity => Ok(bytes.to_vec()),
         CryptMethod::Rc4 => rc4_crypt(key, bytes),
         CryptMethod::AesV2 => decrypt_aes_v2(key, bytes),
+        CryptMethod::AesV3 => decrypt_aes_v3(key, bytes),
     }
 }
 
@@ -676,6 +922,134 @@ fn decrypt_aes_v2(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, DecryptionError> 
         .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|_| DecryptionError::Malformed("invalid AESV2 padding"))?;
     Ok(decrypted.to_vec())
+}
+
+fn decrypt_aes_v3(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, DecryptionError> {
+    let iv = bytes
+        .get(..AES_BLOCK_BYTES)
+        .ok_or(DecryptionError::Malformed("AESV3 stream missing IV"))?;
+    let ciphertext = bytes
+        .get(AES_BLOCK_BYTES..)
+        .ok_or(DecryptionError::Malformed("AESV3 ciphertext missing"))?;
+    let mut buffer = ciphertext.to_vec();
+    let decrypted = Aes256CbcDec::new_from_slices(key, iv)
+        .map_err(|_| DecryptionError::Malformed("invalid AESV3 key or IV"))?
+        .decrypt_padded::<Pkcs7>(&mut buffer)
+        .map_err(|_| DecryptionError::Malformed("invalid AESV3 padding"))?;
+    Ok(decrypted.to_vec())
+}
+
+fn decrypt_aes_256_cbc_no_padding(
+    key: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, DecryptionError> {
+    let mut buffer = ciphertext.to_vec();
+    let decrypted = Aes256CbcDec::new_from_slices(key, &[0_u8; AES_BLOCK_BYTES])
+        .map_err(|_| DecryptionError::Malformed("invalid AES-256 key or IV"))?
+        .decrypt_padded::<NoPadding>(&mut buffer)
+        .map_err(|_| DecryptionError::Malformed("invalid AES-256 ciphertext"))?;
+    Ok(decrypted.to_vec())
+}
+
+fn encrypt_aes_128_cbc_no_padding(
+    key: &[u8],
+    iv: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, DecryptionError> {
+    let mut buffer = plaintext.to_vec();
+    cbc::Encryptor::<Aes128>::new_from_slices(key, iv)
+        .map_err(|_| DecryptionError::Malformed("invalid AES-128 key or IV"))?
+        .encrypt_padded::<NoPadding>(&mut buffer, plaintext.len())
+        .map_err(|_| DecryptionError::Malformed("invalid AES-128 plaintext"))?;
+    Ok(buffer)
+}
+
+fn decrypt_aes_256_block(
+    key: &[u8],
+    ciphertext: &[u8],
+) -> Result<[u8; PERMS_BYTES], DecryptionError> {
+    let block = fixed_bytes::<PERMS_BYTES>(ciphertext, "invalid permissions length")?;
+    let cipher = Aes256::new_from_slice(key)
+        .map_err(|_| DecryptionError::Malformed("invalid AES-256 permissions key"))?;
+    let mut output = aes::Block::from(block);
+    cipher.decrypt_block(&mut output);
+    Ok(output.into())
+}
+
+fn validate_password_entries(
+    revision: SecurityRevision,
+    owner_key: &[u8],
+    user_key: &[u8],
+) -> Result<(), DecryptionError> {
+    if !revision.uses_aes_256() {
+        return Ok(());
+    }
+    if owner_key.len() != REVISION_5_6_ENTRY_BYTES {
+        return Err(DecryptionError::Malformed("invalid owner key length"));
+    }
+    if user_key.len() != REVISION_5_6_ENTRY_BYTES {
+        return Err(DecryptionError::Malformed("invalid user key length"));
+    }
+    Ok(())
+}
+
+fn validate_aes_256_entries(
+    revision: SecurityRevision,
+    version: u8,
+    key_length_bytes: usize,
+    owner_encryption_key: &[u8],
+    user_encryption_key: &[u8],
+    perms: &[u8],
+) -> Result<(), DecryptionError> {
+    if !revision.uses_aes_256() {
+        return Ok(());
+    }
+    if version != 5 {
+        return Err(DecryptionError::Unsupported {
+            message: format!("unsupported encryption version {version}"),
+            version: Some(version),
+            revision: Some(revision.value()),
+            algorithm: Some(Identifier::unchecked("aesv3")),
+        });
+    }
+    if key_length_bytes != AES_256_KEY_BYTES {
+        return Err(DecryptionError::Malformed("invalid AES-256 key length"));
+    }
+    if owner_encryption_key.len() != AES_256_KEY_BYTES {
+        return Err(DecryptionError::Malformed(
+            "invalid owner encryption key length",
+        ));
+    }
+    if user_encryption_key.len() != AES_256_KEY_BYTES {
+        return Err(DecryptionError::Malformed(
+            "invalid user encryption key length",
+        ));
+    }
+    if perms.len() != PERMS_BYTES {
+        return Err(DecryptionError::Malformed("invalid permissions length"));
+    }
+    Ok(())
+}
+
+fn validate_aes_256_methods(
+    revision: SecurityRevision,
+    stream_method: CryptMethod,
+    string_method: CryptMethod,
+) -> Result<(), DecryptionError> {
+    if !revision.uses_aes_256() {
+        return Ok(());
+    }
+    if matches!(stream_method, CryptMethod::Identity | CryptMethod::AesV3)
+        && matches!(string_method, CryptMethod::Identity | CryptMethod::AesV3)
+    {
+        return Ok(());
+    }
+    Err(DecryptionError::Unsupported {
+        message: String::from("unsupported AES-256 crypt filter method"),
+        version: Some(5),
+        revision: Some(revision.value()),
+        algorithm: Some(Identifier::unchecked("aesv3")),
+    })
 }
 
 fn padded_password(password: &[u8]) -> [u8; 32] {
@@ -737,10 +1111,44 @@ fn required_string<'a>(
     }
 }
 
+fn optional_string_bytes(
+    dictionary: &Dictionary,
+    key: &'static str,
+) -> Result<Vec<u8>, DecryptionError> {
+    match dictionary.get(key) {
+        Some(CosObject::String(string)) => Ok(string.as_bytes().to_vec()),
+        None => Ok(Vec::new()),
+        _ => Err(DecryptionError::Malformed("invalid string encryption key")),
+    }
+}
+
 fn hash_prefix(bytes: &[u8], len: usize) -> Result<&[u8], DecryptionError> {
     bytes
         .get(..len)
         .ok_or(DecryptionError::Malformed("hash prefix out of bounds"))
+}
+
+fn slice_range<'a>(
+    bytes: &'a [u8],
+    offset: usize,
+    len: usize,
+    message: &'static str,
+) -> Result<&'a [u8], DecryptionError> {
+    let end = offset
+        .checked_add(len)
+        .ok_or(DecryptionError::Malformed(message))?;
+    bytes
+        .get(offset..end)
+        .ok_or(DecryptionError::Malformed(message))
+}
+
+fn fixed_bytes<const N: usize>(
+    bytes: &[u8],
+    message: &'static str,
+) -> Result<[u8; N], DecryptionError> {
+    bytes
+        .try_into()
+        .map_err(|_| DecryptionError::Malformed(message))
 }
 
 fn parse_to_decryption(error: &ParseError) -> DecryptionError {

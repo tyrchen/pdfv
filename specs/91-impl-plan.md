@@ -153,3 +153,15 @@ Exit criteria: correct user and owner passwords validate supported RC4/AESV2 enc
 | 10.1 | Spike Standard security handler revisions 5-6, including Algorithm 2.A/2.B, `/OE`, `/UE`, `/Perms`, AESV3, and fixture availability. | docs/research, 14, 70 | 3-5 days |
 
 Exit gate: either Phase 10 updates [14-password-decryption-design.md](./14-password-decryption-design.md) with implementation-ready AES-256 details and fixtures, or records revisions 5-6 as explicitly unsupported with a deferred finding.
+
+## 15. Phase 11 — M4 AES-256 password decryption
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 11.1 | Extend the Standard security handler to parse validated revision 5-6 dictionaries, including `/OE`, `/UE`, `/Perms`, `/CFM /AESV3`, and strict key-field lengths. | 11, 14, 70 | 1-2 days |
+| 11.2 | Implement Algorithm 2.A/2.B authentication, owner/user password attempts, constant-time validation hash checks, AES-256-CBC file-key retrieval, and `/Perms` validation. | 14, 70 | 2-4 days |
+| 11.3 | Add AESV3 string and stream decryption using the recovered file key directly under existing decrypted-byte limits. | 11, 14, 70 | 1-2 days |
+| 11.4 | Add deterministic generated R5/R6 AESV3 fixtures covering user and owner passwords, wrong passwords, tampered `/Perms`, short key fields, and string/stream decryption. | 14, 72 | 1-2 days |
+| 11.5 | Add `sha2` as a scoped decryption dependency and update audit/deny verification evidence. | 61, 70 | 0.5 day |
+
+Exit criteria: generated R5 and R6 AESV3 fixtures validate with correct user and owner passwords; wrong passwords return `ValidationStatus::Encrypted` and CLI exit 3; tampered `/Perms` returns encrypted/unsupported before object decryption; AESV3 strings and streams decrypt under existing decrypted-byte caps; malformed short `/O`, `/U`, `/OE`, `/UE`, and `/Perms` fields parse-fail; standard gates plus strict clippy, `cargo audit`, and `cargo deny check` pass.
