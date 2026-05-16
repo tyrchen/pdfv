@@ -44,7 +44,7 @@ Phase 0 decided that `apps/server` is removed until a network service is explici
 | AES | `aes` | 0.9.0 checked 2026-05-16 | AESV2/AESV3 block cipher. |
 | CBC mode | `cbc` | 0.2.0 checked 2026-05-16 | AES-CBC stream/string decryption. |
 | Cipher traits | `cipher` | 0.5.1 checked 2026-05-16 | Shared crypto trait imports. |
-| SHA-2 | `sha2` | 0.11.0 checked 2026-05-16 | Future Standard security handler revisions 5-6 spike. |
+| SHA-2 | `sha2` | 0.11.0 checked 2026-05-16 | Future Standard security handler revisions 5-6 implementation. |
 
 Avoid `serde_yaml` for new code because `cargo search` reports `0.9.34+deprecated`. Prefer `config` with a maintained YAML backend selected by that crate, or reassess with a dedicated dependency spike if direct YAML serialization is needed.
 

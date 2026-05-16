@@ -35,8 +35,9 @@ Binding rules:
 - Password values use redacted secret wrappers and are never serialized in configs or reports.
 - The CLI does not accept literal password arguments; supported sources are stdin, file, or environment variable indirection.
 - Password comparisons use constant-time comparison where candidate values are compared with `/U` or `/O`-derived bytes.
-- MD5 and RC4 are allowed only for PDF Standard security handler compatibility for revisions 2-4; they are not general-purpose cryptographic utilities.
+- MD5 and RC4 are allowed only for PDF Standard security handler compatibility for revisions 2-4; SHA-2 and AES-256 are allowed only for future Standard security handler revisions 5-6. None of these are general-purpose cryptographic utilities.
 - Decrypted strings and streams remain hostile input and are subject to byte-counted limits before validation or downstream decoding.
+- Invalid AES-256 `/Perms` validation is treated as encrypted/unsupported rather than as a recoverable warning until a compatibility corpus proves looser behavior is necessary.
 
 ## 6. Verification gates
 
@@ -45,7 +46,7 @@ Binding rules:
 - Corpus tests for truncated files, recursive objects, giant arrays, giant names, bad lengths, decompression bombs, and invalid UTF-8.
 - `cargo audit` and `cargo deny check` required before release.
 - Password-bearing type `Debug` redaction test.
-- Encrypted fixture matrix covering missing password, wrong password, supported user/owner password, unsupported revision, and malformed `/Encrypt`.
+- Encrypted fixture matrix covering missing password, wrong password, supported user/owner password, unsupported revision, malformed `/Encrypt`, and future R5/R6 AESV3 `/Perms` tampering.
 
 ## 7. Cross-references
 

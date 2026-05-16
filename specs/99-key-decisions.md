@@ -82,3 +82,12 @@ Status: draft v1 · Owner: pdfv · Last updated: 2026-05-15
 - Why: revisions 2-4 unlock common older encrypted PDFs and align with the current parser/object model. Revisions 5-6 use a different key retrieval/hash path and `/OE`/`/UE`/`/Perms` handling (`vendors/veraPDF-parser/src/main/java/org/verapdf/tools/EncryptionToolsRevision5_6.java:40`, `vendors/veraPDF-parser/src/main/java/org/verapdf/tools/EncryptionToolsRevision5_6.java:96`), so bundling them into the first password phase would hide risk. Literal CLI passwords violate AGENTS.md secret-handling expectations.
 - Pinned by: [14-password-decryption-design.md](./14-password-decryption-design.md), [50-cli-design.md](./50-cli-design.md), [70-security.md](./70-security.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md)
 - Date: 2026-05-16
+
+## D10 — Clear AES-256 decryption for a dedicated implementation phase
+
+- Context: Phase 10 AES-256 decryption risk gate.
+- Alternatives considered: keep Standard security handler revisions 5-6 explicitly unsupported; implement revisions 5-6 immediately in Phase 10; clear an implementation-ready design and fixtures for a later phase.
+- Decision: Standard security handler revisions 5-6 are implementation-ready but remain a dedicated future implementation phase. The public password API, CLI secret-source policy, encrypted status, and redacted reporting contracts stay unchanged.
+- Why: revision 5-6 support requires Algorithm 2.A/2.B key retrieval, UTF-8 password truncation to 127 bytes, `/OE`/`/UE`, AESV3 content decryption, direct file-key object decryption, and `/Perms` validation. These fit the current parser/decryption architecture, but they are a separate risk surface from the already-landed revisions 2-4 compatibility layer.
+- Pinned by: [14-password-decryption-design.md](./14-password-decryption-design.md), [70-security.md](./70-security.md), [91-impl-plan.md](./91-impl-plan.md), [../docs/research/spike-aes-256-decryption.md](../docs/research/spike-aes-256-decryption.md)
+- Date: 2026-05-16

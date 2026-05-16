@@ -15,7 +15,7 @@ M4 password support lands in two explicit slices:
 | Slice | Included | Excluded |
 | --- | --- | --- |
 | Phase 9 | Standard security handler revisions 2-4; `/Filter /Standard`; `/V` 1, 2, and 4; RC4; AESV2; owner/user password authentication; object strings; streams; `/EncryptMetadata`; `/Crypt` identity handling. | AES-256 revisions 5-6; public-key security handlers; non-standard filters; editing permissions; writing encrypted PDFs. |
-| Future risk gate | Standard security handler revisions 5-6; AESV3; PDF 2.0 hash algorithm; `/Perms` validation. | Password recovery, DRM enforcement, public-key encryption. |
+| Future AES-256 implementation | Standard security handler revisions 5-6; `/V 5`; AESV3; Algorithm 2.A/2.B key retrieval; `/OE`; `/UE`; `/Perms` validation. | Password recovery, DRM enforcement, public-key encryption, writing encrypted PDFs. |
 
 veraPDF follows the same high-level shape: it reads the `/Encrypt` dictionary, only decrypts through the Standard security handler, checks the password before setting a document security handler, and decrypts strings/streams through object-key-aware filters (`vendors/veraPDF-parser/src/main/java/org/verapdf/io/Reader.java:155`, `vendors/veraPDF-parser/src/main/java/org/verapdf/io/Reader.java:175`, `vendors/veraPDF-parser/src/main/java/org/verapdf/pd/encryption/StandardSecurityHandler.java:76`, `vendors/veraPDF-parser/src/main/java/org/verapdf/pd/encryption/StandardSecurityHandler.java:151`, `vendors/veraPDF-parser/src/main/java/org/verapdf/pd/encryption/StandardSecurityHandler.java:174`). pdfv differs by keeping password state explicit in `ValidationOptions`/`ValidationSession` instead of a thread-local (`vendors/veraPDF-parser/src/main/java/org/verapdf/tools/StaticResources.java:59`).
 
@@ -113,10 +113,22 @@ pub struct EncryptionDictionary {
 
 All primitive wrappers are fallible:
 
-- `SecurityRevision` accepts only 2, 3, and 4 in Phase 9.
+- `SecurityRevision` accepts only 2, 3, and 4 in Phase 9. A future AES-256 phase may add 5 and 6 only with the dictionary invariants below.
 - `KeyLengthBits` accepts the PDF-defined range for the selected revision and rounds nothing.
 - `PermissionsBits` stores the signed 32-bit `/P` value as bytes for key derivation and exposes permission booleans separately.
 - `CryptFilterSet` accepts only direct `/CF` dictionaries in Phase 9.
+
+Revision 5 and 6 dictionaries are implementation-ready after the Phase 10 spike:
+
+- `/Filter` must be `/Standard`;
+- `/V` must be `5`;
+- `/R` must be `5` or `6`;
+- `/Length` must be `256`;
+- `/O` and `/U` must be exactly 48 bytes each;
+- `/OE` and `/UE` must be exactly 32 bytes each;
+- `/Perms` must be exactly 16 bytes;
+- `/CF` may select only `/Identity` or direct `/StdCF` dictionaries with `/CFM /AESV3`, `/Length 32`, and `/AuthEvent /DocOpen`;
+- `/StmF` and `/StrF` must resolve to supported filters; unsupported embedded-file-only handling remains out of scope.
 
 Unsupported encryption dictionaries produce structured parse errors or encrypted reports:
 
@@ -142,7 +154,19 @@ Phase 9 implements PDF Standard security handler revisions 2-4:
 - metadata stream handling when `/EncryptMetadata false`;
 - `/Crypt` filter identity handling consistent with veraPDF's `decryptRequired` logic (`vendors/veraPDF-parser/src/main/java/org/verapdf/pd/encryption/StandardSecurityHandler.java:191`).
 
-Phase 9 does not implement revisions 5-6. veraPDF carries a separate implementation for revision 5/6 key retrieval and revision 6 iterative hashing (`vendors/veraPDF-parser/src/main/java/org/verapdf/tools/EncryptionToolsRevision5_6.java:40`, `vendors/veraPDF-parser/src/main/java/org/verapdf/tools/EncryptionToolsRevision5_6.java:96`). pdfv requires a dedicated spike before accepting AES-256 support because it changes password encoding, hash selection, `/OE`/`/UE` handling, and `/Perms` validation.
+Phase 10 cleared revisions 5-6 for a future AES-256 implementation. The detailed spike is [../docs/research/spike-aes-256-decryption.md](../docs/research/spike-aes-256-decryption.md). The implementation must keep the same public `PasswordSecret` API but switch authentication internally to UTF-8 bytes truncated to 127 bytes for revisions 5-6.
+
+Revision 5-6 authentication and decryption must implement:
+
+- owner-password attempt followed by user-password attempt;
+- constant-time comparison of calculated validation hashes with `/O[0..32]` and `/U[0..32]`;
+- Algorithm 2.A file-key retrieval through `/OE` or `/UE`;
+- Algorithm 2.B hashing: revision 5 uses SHA-256; revision 6 starts with SHA-256 and then runs the AES-128-CBC hardened hash loop selecting SHA-256/SHA-384/SHA-512 by the encrypted block modulo 3 rule;
+- AES-256-CBC with zero IV and no padding for decrypting `/OE` and `/UE`;
+- direct use of the recovered 32-byte file key as the AESV3 string/stream key, without object-number MD5 derivation;
+- AESV3 string and stream decryption using a 16-byte IV prefix and AES-256-CBC;
+- `/Perms` validation by decrypting the 16-byte value with AES-256-ECB and checking the stable first 12 plaintext bytes against `/P`, `0xff 0xff 0xff 0xff`, the `EncryptMetadata` marker, and `adb`;
+- encrypted/unsupported status for wrong passwords, invalid `/Perms`, unsupported filters, or unsupported revision/version combinations, without exposing `/O`, `/U`, `/OE`, `/UE`, file keys, object keys, password bytes, or decrypted data.
 
 ## 7. Dependency Candidates
 
@@ -154,13 +178,14 @@ Versions below were checked on 2026-05-16 against current docs/crate metadata:
 | `subtle` | 2.6.1 | Constant-time comparison of candidate `/U` values. |
 | `md-5` | 0.11.0 | MD5 for PDF Standard security handler revisions 2-4. |
 | `rc4` | 0.2.0 | RC4 object/string/stream decryption for revisions 2-4. |
-| `aes` | 0.9.0 | AES block cipher for AESV2/AES-256 candidates. |
+| `aes` | 0.9.0 | AES block cipher for AESV2 and future AESV3. |
 | `cbc` | 0.2.0 | AES-CBC mode. |
 | `cipher` | 0.5.1 | Shared block/stream cipher traits. |
-| `sha2` | 0.11.0 | Future revision 5-6 spike. Not required for Phase 9 unless the spike lands in the same commit. |
+| `sha2` | 0.11.0 | Required for future revision 5-6 Algorithm 2.B SHA-256/SHA-384/SHA-512 hashing. |
+| `unicode-normalization` | 0.1.25 | Candidate only if real revision 5-6 fixtures prove SASLprep/stringprep compatibility is required. Do not add for the first AES-256 implementation. |
 | `pbkdf2` | 0.13.0 | Not part of PDF Standard revisions 2-6; only add if a future fixture proves a supported handler needs it. |
 
-Every new dependency must pass `cargo audit` and `cargo deny check`; RC4 and MD5 are allowed only inside the PDF compatibility module because PDF revisions 2-4 require them for decryption of existing files. They must not be exposed as general-purpose crypto utilities.
+Every new dependency must pass `cargo audit` and `cargo deny check`; RC4 and MD5 are allowed only inside the PDF compatibility module because PDF revisions 2-4 require them for decryption of existing files. SHA-2 and AES-256 usage for revisions 5-6 must likewise remain scoped to PDF Standard security handler compatibility and must not become general-purpose crypto utilities.
 
 ## 8. Resource Limits
 
@@ -181,7 +206,7 @@ AGENTS.md bindings:
 - Safety & Security: no `unsafe`, no panics on malformed encrypted PDFs, constant-time comparisons for password checks, no raw encrypted/decrypted bytes in errors.
 - Type Design & API: passwords are `PasswordSecret`, not `String`; security handler revisions, key lengths, and crypt filter methods are enums/newtypes.
 - Serialization: password values are never serialized; encryption parse facts omit keys and password-derived values.
-- Testing: fixture matrix covers no-password, wrong-password, user-password, owner-password, RC4, AESV2, metadata-unencrypted, unsupported revision 5/6, unsupported public-key handler, malformed `/Encrypt`, and batch exit aggregation.
+- Testing: fixture matrix covers no-password, wrong-password, user-password, owner-password, RC4, AESV2, metadata-unencrypted, unsupported revision 5/6, unsupported public-key handler, malformed `/Encrypt`, and batch exit aggregation. The future AES-256 phase must add generated R5/R6 AESV3 user-password and owner-password fixtures, malformed short R5/R6 key fields, tampered `/Perms`, and AESV3 string/stream coverage.
 - Logging & Observability: spans may include encryption revision and algorithm names, never password, `/O`, `/U`, file key, object key material, or decrypted content.
 - Performance: encrypted PDFs must meet the same parser budgets plus explicit decrypted-byte caps.
 - Documentation: public APIs document which revisions are supported and why MD5/RC4 appear in dependencies.
@@ -214,8 +239,18 @@ Phase 9 is complete only when:
 - `Debug` for every password-bearing type is redacted by test;
 - strict clippy boundary lints, `cargo audit`, and `cargo deny check` pass.
 
+The future AES-256 implementation is complete only when:
+
+- generated R5 and R6 AESV3 fixtures validate with correct user passwords;
+- generated R5 and R6 AESV3 fixtures validate with correct owner passwords;
+- wrong passwords return `ValidationStatus::Encrypted` and CLI exit code 3;
+- tampered `/Perms` returns encrypted/unsupported without decrypting document objects;
+- AESV3 strings and streams decrypt under the existing decrypted-byte caps;
+- malformed short `/O`, `/U`, `/OE`, `/UE`, and `/Perms` fields parse-fail;
+- strict clippy boundary lints, `cargo audit`, and `cargo deny check` pass after adding `sha2`.
+
 ## 12. Cross-references
 
 - ← Depends on: [10-data-model.md](./10-data-model.md), [11-parser-core-design.md](./11-parser-core-design.md), [13-validation-engine-design.md](./13-validation-engine-design.md), [50-cli-design.md](./50-cli-design.md), [70-security.md](./70-security.md)
 - → Consumed by: [20-reporting-design.md](./20-reporting-design.md), [72-testing-strategy.md](./72-testing-strategy.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md)
-- ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md)
+- ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md), [../docs/research/spike-aes-256-decryption.md](../docs/research/spike-aes-256-decryption.md)

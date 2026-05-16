@@ -16,7 +16,7 @@ Status: draft · Owner: pdfv · Depends on: all component specs
 
 Fixtures live under `tests/fixtures/` with a manifest naming source, license, expected parse status, expected validation status, and reason. Generated fixtures include source generator code. Large fixtures are gated to ignored tests if they slow normal `cargo test`.
 
-Password/decryption fixtures must include: no password, wrong password, correct user password, correct owner password, RC4 revision 2/3/4 where available, AESV2 revision 4, unencrypted metadata handling, unsupported revision 5/6, unsupported public-key handler, malformed `/Encrypt`, encrypted string objects, and encrypted streams. Fixture manifests must not contain real user passwords from external documents; generated passwords are test-only.
+Password/decryption fixtures must include: no password, wrong password, correct user password, correct owner password, RC4 revision 2/3/4 where available, AESV2 revision 4, unencrypted metadata handling, unsupported revision 5/6, unsupported public-key handler, malformed `/Encrypt`, encrypted string objects, and encrypted streams. Future AES-256 coverage must add generated R5/R6 AESV3 user-password and owner-password fixtures, tampered `/Perms`, and malformed short `/O`, `/U`, `/OE`, `/UE`, and `/Perms` fields. Fixture manifests must not contain real user passwords from external documents; generated passwords are test-only.
 
 ## 3. Required test names
 

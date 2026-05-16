@@ -21,3 +21,17 @@ M4 model-fact coverage is exercised by generated unit fixtures with page, font,
 annotation, output-intent, and page-content-stream objects. Those fixtures keep
 advanced object coverage local to the model graph tests until a licensed public
 PDF/A corpus is added.
+
+## Encrypted Fixtures
+
+Password/decryption coverage is generated in unit and CLI tests rather than
+checked in as binary PDFs. Phase 9 covers RC4 revision 2, RC4 revision 3, RC4
+revision 4 through crypt filters, AESV2 revision 4, missing/wrong password,
+unsupported revision 6, unsupported public-key handlers, malformed `/Encrypt`,
+metadata-unencrypted handling, and redaction.
+
+The Phase 10 AES-256 spike did not find reusable AESV3 fixtures in the vendored
+veraPDF trees. Future revision 5-6 implementation will add deterministic
+generated R5/R6 AESV3 fixtures covering user password, owner password, wrong
+password, tampered `/Perms`, malformed short key fields, and string/stream
+decryption under resource limits.
