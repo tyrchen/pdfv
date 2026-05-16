@@ -42,4 +42,4 @@ criterion = { version = "0.8.2", default-features = false, features = ["cargo_be
 libfuzzer-sys = "0.4.12"
 
 # workspace crates
-pdfv-core = { path = "crates/core" }
+pdfv-core = { version = "0.1.0", path = "crates/core" }

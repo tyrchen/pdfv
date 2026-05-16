@@ -1,0 +1,14 @@
+[files]
+extend-exclude = [
+  "crates/core/src/generated_profiles/*.xml",
+  "vendors/**",
+]
+
+[default.extend-words]
+Flate = "Flate"
+Fo = "Fo"
+Parms = "Parms"
+SEH = "SEH"
+UE = "UE"
+flate = "flate"
+paeth = "paeth"

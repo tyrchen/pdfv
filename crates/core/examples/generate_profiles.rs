@@ -54,6 +54,11 @@ fn main() -> io::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("crates/core/src/generated_profiles.rs"));
     let root = workspace_root()?;
+    let generated_profile_dir = output
+        .parent()
+        .ok_or_else(|| io::Error::other("generated profile output must have a parent"))?
+        .join("generated_profiles");
+    fs::create_dir_all(&generated_profile_dir)?;
     let pin = vendor_pin(&root)?;
     let mut generated = String::new();
     generated.push_str("//! Generated built-in profile source catalog.\n");
@@ -83,6 +88,7 @@ fn main() -> io::Result<()> {
         let path = root.join(&source_file);
         let xml = fs::read_to_string(&path)?;
         ensure_expected_flavour(&xml, display_flavour, file_name)?;
+        fs::copy(&path, generated_profile_dir.join(file_name))?;
         generated.push_str("    GeneratedProfileSource {\n");
         generated.push_str(&format!("        id: \"{id}\",\n"));
         generated.push_str(&format!(
@@ -90,7 +96,7 @@ fn main() -> io::Result<()> {
         ));
         generated.push_str(&format!("        source_file: \"{source_file}\",\n"));
         generated.push_str(&format!(
-            "        xml: include_str!(\"../../../{source_file}\"),\n"
+            "        xml: include_str!(\"generated_profiles/{file_name}\"),\n"
         ));
         generated.push_str("    },\n");
     }

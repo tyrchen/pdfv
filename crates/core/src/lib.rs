@@ -3959,7 +3959,8 @@ first failures:
 "#,
             version = super::ENGINE_VERSION,
         );
-        let expected_html = "\
+        let expected_html =
+            "\
 <!doctype html>
 <html lang=\"en\"><head><meta charset=\"utf-8\"><title>pdfv metadata repair \
              report</title><style>body{font-family:system-ui,sans-serif;margin:2rem;color:#\
