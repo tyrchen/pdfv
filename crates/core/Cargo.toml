@@ -22,6 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
 subtle = { workspace = true, optional = true }
+tempfile.workspace = true
 thiserror.workspace = true
 typed-builder.workspace = true
 flate2 = { workspace = true, optional = true }

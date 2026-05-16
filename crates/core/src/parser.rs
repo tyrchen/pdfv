@@ -4,19 +4,22 @@
 mod encryption;
 
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
-    io::{Read, Seek, SeekFrom},
+    fmt,
+    io::{Read, Seek, SeekFrom, Write},
     num::NonZeroU32,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 
 #[cfg(not(feature = "decrypt"))]
 use crate::Identifier;
 use crate::{
-    BoundedText, ConfigError, ObjectKey, ObjectLocation, ParseError, ParseFact, PasswordSecret,
-    PdfVersion, ResourceLimits, Result, StreamFact, ValidationWarning, XrefFact,
+    BoundedText, ConfigError, Identifier, ObjectKey, ObjectLocation, ParseError, ParseFact,
+    PasswordSecret, PdfVersion, ResourceLimits, Result, StreamFact, ValidationWarning, XrefFact,
 };
 
 const HEADER_MARKER: &[u8] = b"%PDF-";
@@ -24,6 +27,14 @@ const EOF_MARKER: &[u8] = b"%%EOF";
 const STREAM_MARKER: &[u8] = b"stream";
 const ENDSTREAM_MARKER: &[u8] = b"endstream";
 const ENDOBJ_MARKER: &[u8] = b"endobj";
+const SPILL_SEARCH_CHUNK_BYTES: usize = 8192;
+
+#[allow(
+    clippy::disallowed_types,
+    reason = "parser source storage is synchronous Read+Seek; async file handles do not fit this \
+              API"
+)]
+type SpillFileHandle = std::fs::File;
 
 /// Seekable PDF source accepted by [`Parser`].
 pub trait PdfSource: Read + Seek {}
@@ -34,13 +45,29 @@ impl<T> PdfSource for T where T: Read + Seek {}
 #[derive(Clone, Debug)]
 pub struct Parser {
     limits: ResourceLimits,
+    decoder_registry: Option<DecoderRegistry>,
 }
 
 impl Parser {
     /// Creates a parser with the supplied resource limits.
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
-        Self { limits }
+        Self {
+            limits,
+            decoder_registry: None,
+        }
+    }
+
+    /// Creates a parser with explicit resource limits and stream decoders.
+    #[must_use]
+    pub fn with_decoder_registry(
+        limits: ResourceLimits,
+        decoder_registry: DecoderRegistry,
+    ) -> Self {
+        Self {
+            limits,
+            decoder_registry: Some(decoder_registry),
+        }
     }
 
     /// Parses a seekable PDF source into a tolerant document model.
@@ -77,21 +104,363 @@ impl Parser {
             .rewind()
             .map_err(|source| crate::PdfvError::Io { path: None, source })?;
 
-        let capacity = usize::try_from(byte_len).map_err(|_| ParseError::LimitExceeded {
-            limit: "max_file_bytes",
-        })?;
-        let mut bytes = Vec::with_capacity(capacity);
-        source
-            .read_to_end(&mut bytes)
-            .map_err(|source| crate::PdfvError::Io { path: None, source })?;
+        let storage = SourceStorage::from_source(
+            source,
+            byte_len,
+            self.limits.memory_source_threshold_bytes,
+        )?;
 
-        ByteParser::new(bytes, self.limits.clone(), options).parse_document()
+        ByteParser::new(
+            storage,
+            self.limits.clone(),
+            self.decoder_registry.clone(),
+            options,
+        )
+        .parse_document()
     }
 }
 
 impl Default for Parser {
     fn default() -> Self {
         Self::new(ResourceLimits::default())
+    }
+}
+
+fn default_decoder_registry() -> &'static DecoderRegistry {
+    static REGISTRY: OnceLock<DecoderRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(DecoderRegistry::default)
+}
+
+/// Stream decoder extension point used by [`DecoderRegistry`].
+pub trait StreamDecoder: fmt::Debug {
+    /// Decodes one PDF stream filter under parser resource limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] when the encoded bytes are malformed or the
+    /// decoded output exceeds configured limits.
+    fn decode(
+        &self,
+        input: &[u8],
+        params: &DecodeParams,
+        limits: &ResourceLimits,
+    ) -> std::result::Result<DecoderOutput, ParseError>;
+}
+
+/// Result of applying one stream decoder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DecoderOutput {
+    /// Decoded or byte-preserved output bytes.
+    pub bytes: Vec<u8>,
+    /// Whether the decoder deliberately preserved encoded bytes in metadata mode.
+    pub metadata_mode: bool,
+}
+
+/// Registry mapping PDF filter names to bounded decoders.
+#[derive(Clone)]
+pub struct DecoderRegistry {
+    decoders: BTreeMap<PdfName, Arc<dyn StreamDecoder + Send + Sync>>,
+}
+
+/// Parser-owned storage for source bytes.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum SourceStorage {
+    /// Source bytes are held in memory.
+    Memory(Arc<[u8]>),
+    /// Source bytes are held in a temporary spill file.
+    SpillFile {
+        /// Spill file handle.
+        file: Arc<SpillFileHandle>,
+        /// Total source byte length.
+        len: usize,
+        /// Temporary path retained for deterministic cleanup on drop.
+        path: Arc<tempfile::TempPath>,
+    },
+}
+
+impl SourceStorage {
+    fn from_source<R: PdfSource>(
+        mut source: R,
+        byte_len: u64,
+        memory_threshold: u64,
+    ) -> Result<Self> {
+        if byte_len <= memory_threshold {
+            let capacity = usize::try_from(byte_len).map_err(|_| ParseError::LimitExceeded {
+                limit: "max_file_bytes",
+            })?;
+            let mut bytes = Vec::with_capacity(capacity);
+            source
+                .read_to_end(&mut bytes)
+                .map_err(|source| crate::PdfvError::Io { path: None, source })?;
+            return Ok(Self::Memory(Arc::from(bytes)));
+        }
+
+        let mut tempfile =
+            NamedTempFile::new().map_err(|source| crate::PdfvError::Io { path: None, source })?;
+        let copied = std::io::copy(&mut source, &mut tempfile)
+            .map_err(|source| crate::PdfvError::Io { path: None, source })?;
+        if copied != byte_len {
+            return Err(ParseError::Malformed {
+                message: bounded("source length changed while spilling"),
+            }
+            .into());
+        }
+        tempfile
+            .as_file_mut()
+            .flush()
+            .map_err(|source| crate::PdfvError::Io { path: None, source })?;
+        let file = tempfile
+            .reopen()
+            .map_err(|source| crate::PdfvError::Io { path: None, source })?;
+        Ok(Self::SpillFile {
+            file: Arc::new(file),
+            len: usize::try_from(byte_len).map_err(|_| ParseError::LimitExceeded {
+                limit: "max_file_bytes",
+            })?,
+            path: Arc::new(tempfile.into_temp_path()),
+        })
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Memory(bytes) => bytes.len(),
+            Self::SpillFile { len, .. } => *len,
+        }
+    }
+
+    fn slice(&self, start: usize, end: usize) -> std::result::Result<Cow<'_, [u8]>, ParseError> {
+        if start > end || end > self.len() {
+            return Err(ParseError::Malformed {
+                message: bounded("byte range out of bounds"),
+            });
+        }
+        match self {
+            Self::Memory(bytes) => {
+                bytes
+                    .get(start..end)
+                    .map(Cow::Borrowed)
+                    .ok_or(ParseError::Malformed {
+                        message: bounded("byte range out of bounds"),
+                    })
+            }
+            Self::SpillFile { file, .. } => {
+                let mut buffer = vec![0_u8; end.saturating_sub(start)];
+                read_exact_at(file, &mut buffer, start)?;
+                Ok(Cow::Owned(buffer))
+            }
+        }
+    }
+
+    fn byte(&self, pos: usize) -> Option<u8> {
+        if pos >= self.len() {
+            return None;
+        }
+        match self {
+            Self::Memory(bytes) => bytes.get(pos).copied(),
+            Self::SpillFile { file, .. } => {
+                let mut byte = [0_u8; 1];
+                read_exact_at(file, &mut byte, pos).ok()?;
+                Some(byte[0])
+            }
+        }
+    }
+
+    fn starts_with(&self, pos: usize, expected: &[u8]) -> bool {
+        let Some(end) = pos.checked_add(expected.len()) else {
+            return false;
+        };
+        self.slice(pos, end)
+            .is_ok_and(|bytes| bytes.as_ref() == expected)
+    }
+
+    fn find_bytes(&self, needle: &[u8], start: usize, end: usize) -> Option<usize> {
+        if needle.is_empty() || start > end || end > self.len() {
+            return None;
+        }
+        match self {
+            Self::Memory(_) => {
+                let bytes = self.slice(start, end).ok()?;
+                find_bytes(bytes.as_ref(), needle, 0)
+                    .and_then(|relative| start.checked_add(relative))
+            }
+            Self::SpillFile { file, .. } => find_bytes_in_spill_file(file, needle, start, end),
+        }
+    }
+
+    fn stream_source(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> std::result::Result<(Arc<[u8]>, StreamRange), ParseError> {
+        match self {
+            Self::Memory(bytes) => Ok((
+                Arc::clone(bytes),
+                StreamRange {
+                    start: u64::try_from(start).map_err(|_| ParseError::ArithmeticOverflow {
+                        context: "stream start",
+                    })?,
+                    end: u64::try_from(end).map_err(|_| ParseError::ArithmeticOverflow {
+                        context: "stream end",
+                    })?,
+                },
+            )),
+            Self::SpillFile { .. } => {
+                let bytes = self.slice(start, end)?.into_owned();
+                let end =
+                    u64::try_from(bytes.len()).map_err(|_| ParseError::ArithmeticOverflow {
+                        context: "stream end",
+                    })?;
+                Ok((Arc::from(bytes), StreamRange { start: 0, end }))
+            }
+        }
+    }
+}
+
+fn read_exact_at(
+    file: &SpillFileHandle,
+    buffer: &mut [u8],
+    offset: usize,
+) -> std::result::Result<(), ParseError> {
+    let mut file = file.try_clone().map_err(|_| ParseError::Malformed {
+        message: bounded("failed to clone spill file handle"),
+    })?;
+    file.seek(SeekFrom::Start(u64::try_from(offset).map_err(|_| {
+        ParseError::ArithmeticOverflow {
+            context: "spill file offset",
+        }
+    })?))
+    .map_err(|_| ParseError::Malformed {
+        message: bounded("failed to seek spill file"),
+    })?;
+    file.read_exact(buffer).map_err(|_| ParseError::Malformed {
+        message: bounded("failed to read spill file"),
+    })
+}
+
+fn find_bytes_in_spill_file(
+    file: &SpillFileHandle,
+    needle: &[u8],
+    start: usize,
+    end: usize,
+) -> Option<usize> {
+    let overlap = needle.len().saturating_sub(1);
+    let mut pos = start;
+    let mut carried = Vec::new();
+    while pos < end {
+        let read_len = end.saturating_sub(pos).min(SPILL_SEARCH_CHUNK_BYTES);
+        let mut chunk = vec![0_u8; read_len];
+        read_exact_at(file, &mut chunk, pos).ok()?;
+        let search_base = pos.saturating_sub(carried.len());
+        let carried_len = carried.len();
+        carried.extend_from_slice(&chunk);
+        if let Some(relative) = find_bytes(&carried, needle, 0) {
+            return search_base.checked_add(relative);
+        }
+        if carried.len() > overlap {
+            let keep_start = carried.len().saturating_sub(overlap);
+            carried = carried.get(keep_start..)?.to_vec();
+        }
+        pos = pos.checked_add(read_len)?;
+        if read_len == 0 || carried_len == carried.len() && chunk.is_empty() {
+            break;
+        }
+    }
+    None
+}
+
+impl DecoderRegistry {
+    /// Creates the default pure-Rust decoder registry.
+    #[must_use]
+    pub fn new() -> Self {
+        let mut registry = Self {
+            decoders: BTreeMap::new(),
+        };
+        let flate: Arc<dyn StreamDecoder + Send + Sync> = Arc::new(FlateDecoder);
+        let ascii_hex: Arc<dyn StreamDecoder + Send + Sync> = Arc::new(AsciiHexDecoder);
+        let ascii85: Arc<dyn StreamDecoder + Send + Sync> = Arc::new(Ascii85Decoder);
+        let run_length: Arc<dyn StreamDecoder + Send + Sync> = Arc::new(RunLengthDecoder);
+        let lzw: Arc<dyn StreamDecoder + Send + Sync> = Arc::new(LzwDecoder);
+        let crypt: Arc<dyn StreamDecoder + Send + Sync> = Arc::new(CryptDecoder);
+        let metadata_mode: Arc<dyn StreamDecoder + Send + Sync> = Arc::new(MetadataModeDecoder);
+        registry.register_many(["FlateDecode", "Fl"], &flate);
+        registry.register_many(["ASCIIHexDecode", "AHx"], &ascii_hex);
+        registry.register_many(["ASCII85Decode", "A85"], &ascii85);
+        registry.register_many(["RunLengthDecode", "RL"], &run_length);
+        registry.register_many(["LZWDecode", "LZW"], &lzw);
+        registry.register_many(["Crypt"], &crypt);
+        registry.register_many(
+            ["DCTDecode", "JPXDecode", "JBIG2Decode", "CCITTFaxDecode"],
+            &metadata_mode,
+        );
+        registry
+    }
+
+    /// Registers a decoder for a PDF filter name.
+    pub fn register(&mut self, name: PdfName, decoder: &Arc<dyn StreamDecoder + Send + Sync>) {
+        self.decoders.insert(name, Arc::clone(decoder));
+    }
+
+    fn register_many<const N: usize>(
+        &mut self,
+        names: [&'static str; N],
+        decoder: &Arc<dyn StreamDecoder + Send + Sync>,
+    ) {
+        for name in names {
+            self.register(PdfName::from_static(name), decoder);
+        }
+    }
+
+    fn decoder(&self, name: &PdfName) -> Option<&Arc<dyn StreamDecoder + Send + Sync>> {
+        self.decoders.get(name)
+    }
+}
+
+impl Default for DecoderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for DecoderRegistry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DecoderRegistry")
+            .field("decoder_count", &self.decoders.len())
+            .finish()
+    }
+}
+
+/// Structured parameters for one stream filter.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecodeParams {
+    /// Predictor algorithm, where 1 means no predictor.
+    pub predictor: u16,
+    /// Number of colour components for predictor decoding.
+    pub colors: u16,
+    /// Bits per component for predictor decoding.
+    pub bits_per_component: u16,
+    /// Predictor column count.
+    pub columns: u32,
+    /// LZW early-change mode.
+    pub early_change: u8,
+    /// Named crypt filter, when `/Filter /Crypt` carries one.
+    pub crypt_filter_name: Option<PdfName>,
+}
+
+impl Default for DecodeParams {
+    fn default() -> Self {
+        Self {
+            predictor: 1,
+            colors: 1,
+            bits_per_component: 8,
+            columns: 1,
+            early_change: 1,
+            crypt_filter_name: None,
+        }
     }
 }
 
@@ -388,6 +757,9 @@ pub struct StreamObject {
     pub discovered_length: u64,
     /// Stream filters as name objects.
     pub filters: Vec<PdfName>,
+    /// Structured decode parameters aligned with `filters`.
+    #[serde(default)]
+    pub decode_params: Vec<DecodeParams>,
     /// Shared source bytes used for lazy stream decoding.
     #[serde(skip, default = "empty_source")]
     pub raw_source: Arc<[u8]>,
@@ -398,6 +770,20 @@ pub struct StreamObject {
 }
 
 impl StreamObject {
+    pub(crate) fn remove_crypt_filters(&mut self) {
+        let mut next_filters = Vec::with_capacity(self.filters.len());
+        let mut next_params = Vec::with_capacity(self.decode_params.len());
+        for (index, filter) in self.filters.iter().enumerate() {
+            if filter.matches("Crypt") {
+                continue;
+            }
+            next_filters.push(filter.clone());
+            next_params.push(self.decode_params.get(index).cloned().unwrap_or_default());
+        }
+        self.filters = next_filters;
+        self.decode_params = next_params;
+    }
+
     pub(crate) fn raw_bytes(&self) -> std::result::Result<&[u8], ParseError> {
         let raw_start =
             usize::try_from(self.raw_range.start).map_err(|_| ParseError::ArithmeticOverflow {
@@ -424,27 +810,56 @@ impl StreamObject {
         &self,
         limits: &ResourceLimits,
     ) -> std::result::Result<Vec<u8>, ParseError> {
-        let mut current = self.raw_bytes()?.to_vec();
-        for filter in &self.filters {
-            if filter.matches("FlateDecode") || filter.matches("Fl") {
-                current = decode_flate_limited(&current, limits.max_stream_decode_bytes)?;
-            } else {
-                return Err(ParseError::UnsupportedFilter {
-                    filter: BoundedText::unchecked(String::from_utf8_lossy(filter.as_bytes())),
-                });
-            }
-        }
-        let decoded_len =
-            u64::try_from(current.len()).map_err(|_| ParseError::ArithmeticOverflow {
-                context: "decoded stream length",
-            })?;
-        if decoded_len > limits.max_stream_decode_bytes {
-            return Err(ParseError::LimitExceeded {
-                limit: "max_stream_decode_bytes",
-            });
-        }
-        Ok(current)
+        self.decoded_bytes_with_registry(limits, default_decoder_registry())
+            .map(|decoded| decoded.bytes)
     }
+
+    fn decoded_bytes_with_registry(
+        &self,
+        limits: &ResourceLimits,
+        registry: &DecoderRegistry,
+    ) -> std::result::Result<DecodedStream, ParseError> {
+        let mut current = self.raw_bytes()?.to_vec();
+        let mut facts = Vec::new();
+        for (index, filter) in self.filters.iter().enumerate() {
+            let params = self.decode_params.get(index).cloned().unwrap_or_default();
+            let decoder = registry
+                .decoder(filter)
+                .ok_or(ParseError::UnsupportedFilter {
+                    filter: BoundedText::unchecked(String::from_utf8_lossy(filter.as_bytes())),
+                })?;
+            let input_len = checked_u64_len(current.len(), "stream filter input length")?;
+            let output = decoder.decode(&current, &params, limits)?;
+            let output_len = checked_u64_len(output.bytes.len(), "stream filter output length")?;
+            enforce_decoded_len(output_len, limits.max_stream_decode_bytes)?;
+            let filter = filter_identifier(filter)?;
+            facts.push(if output.metadata_mode {
+                StreamFact::FilterMetadataMode {
+                    filter,
+                    bytes: output_len,
+                }
+            } else {
+                StreamFact::FilterDecoded {
+                    filter,
+                    input_bytes: input_len,
+                    output_bytes: output_len,
+                }
+            });
+            current = output.bytes;
+        }
+        let decoded_len = checked_u64_len(current.len(), "decoded stream length")?;
+        enforce_decoded_len(decoded_len, limits.max_stream_decode_bytes)?;
+        Ok(DecodedStream {
+            bytes: current,
+            facts,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DecodedStream {
+    bytes: Vec<u8>,
+    facts: Vec<StreamFact>,
 }
 
 fn empty_source() -> Arc<[u8]> {
@@ -463,8 +878,9 @@ pub struct StreamRange {
 }
 
 struct ByteParser<'a> {
-    bytes: Arc<[u8]>,
+    source: SourceStorage,
     limits: ResourceLimits,
+    decoder_registry: Option<DecoderRegistry>,
     options: ParseOptions<'a>,
     pos: usize,
     parse_facts: Vec<ParseFact>,
@@ -485,10 +901,16 @@ struct XrefStreamSummary {
 }
 
 impl<'a> ByteParser<'a> {
-    fn new(bytes: Vec<u8>, limits: ResourceLimits, options: ParseOptions<'a>) -> Self {
+    fn new(
+        source: SourceStorage,
+        limits: ResourceLimits,
+        decoder_registry: Option<DecoderRegistry>,
+        options: ParseOptions<'a>,
+    ) -> Self {
         Self {
-            bytes: Arc::from(bytes),
+            source,
             limits,
+            decoder_registry,
             options,
             pos: 0,
             parse_facts: Vec::new(),
@@ -595,7 +1017,7 @@ impl<'a> ByteParser<'a> {
         objects: &mut ObjectStore,
         trailers: &mut Vec<Trailer>,
     ) -> Result<()> {
-        while self.pos < self.bytes.len() {
+        while self.pos < self.source.len() {
             self.skip_ws_and_comments();
             if self.starts_with(EOF_MARKER) {
                 self.parse_post_eof_fact()?;
@@ -614,6 +1036,7 @@ impl<'a> ByteParser<'a> {
                 self.skip_ws_and_comments();
                 let offset = self.offset()?;
                 let dictionary = self.parse_dictionary(0)?;
+                self.push_xref_chain_facts(None, offset, &dictionary)?;
                 trailers.push(Trailer { dictionary, offset });
                 continue;
             }
@@ -675,6 +1098,7 @@ impl<'a> ByteParser<'a> {
                     dictionary: stream.dictionary.clone(),
                     offset,
                 });
+                self.push_xref_chain_facts(Some(key), offset, &stream.dictionary)?;
                 self.push_fact(ParseFact::Xref {
                     section: ObjectLocation {
                         object: Some(key),
@@ -689,16 +1113,13 @@ impl<'a> ByteParser<'a> {
             }
             if matches!(stream.dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("ObjStm"))
             {
-                let decoded = stream.decoded_bytes(&self.limits)?;
-                let decoded_len =
-                    u64::try_from(decoded.len()).map_err(|_| ParseError::ArithmeticOverflow {
-                        context: "decoded stream length",
-                    })?;
+                let decoded = self.decode_stream(key, &stream)?;
+                let decoded_len = checked_u64_len(decoded.bytes.len(), "decoded stream length")?;
                 self.push_fact(ParseFact::Stream {
                     object: key,
                     fact: StreamFact::Decoded { bytes: decoded_len },
                 });
-                let mut parsed_objects = self.parse_object_stream(key, &stream, &decoded)?;
+                let mut parsed_objects = self.parse_object_stream(key, &stream, &decoded.bytes)?;
                 expanded_objects.append(&mut parsed_objects);
                 self.push_fact(ParseFact::Xref {
                     section: ObjectLocation {
@@ -728,8 +1149,8 @@ impl<'a> ByteParser<'a> {
     }
 
     fn parse_xref_stream(
-        &self,
-        _stream_key: ObjectKey,
+        &mut self,
+        stream_key: ObjectKey,
         stream: &StreamObject,
     ) -> std::result::Result<XrefStreamSummary, ParseError> {
         let size = non_negative_u64_from_dictionary(&stream.dictionary, "Size")?;
@@ -751,7 +1172,7 @@ impl<'a> ByteParser<'a> {
                 message: bounded("xref stream entry width must be non-zero"),
             });
         }
-        let decoded = stream.decoded_bytes(&self.limits)?;
+        let decoded = self.decode_stream(stream_key, stream)?.bytes;
         let total_entries = indexes
             .iter()
             .try_fold(0_u64, |sum, (_, count)| sum.checked_add(*count))
@@ -802,6 +1223,25 @@ impl<'a> ByteParser<'a> {
         })
     }
 
+    fn decode_stream(
+        &mut self,
+        key: ObjectKey,
+        stream: &StreamObject,
+    ) -> std::result::Result<DecodedStream, ParseError> {
+        let decoded = if let Some(registry) = &self.decoder_registry {
+            stream.decoded_bytes_with_registry(&self.limits, registry)?
+        } else {
+            stream.decoded_bytes_with_registry(&self.limits, default_decoder_registry())?
+        };
+        for fact in &decoded.facts {
+            self.push_fact(ParseFact::Stream {
+                object: key,
+                fact: fact.clone(),
+            });
+        }
+        Ok(decoded)
+    }
+
     fn parse_object_stream(
         &self,
         stream_key: ObjectKey,
@@ -829,8 +1269,9 @@ impl<'a> ByteParser<'a> {
             });
         }
         let mut parser = ByteParser::new(
-            decoded.to_vec(),
+            SourceStorage::Memory(Arc::from(decoded.to_vec())),
             self.limits.clone(),
+            None,
             ParseOptions::default(),
         );
         let mut headers = Vec::with_capacity(count);
@@ -896,7 +1337,7 @@ impl<'a> ByteParser<'a> {
     }
 
     fn parse_header(&mut self) -> std::result::Result<(u64, PdfVersion), ParseError> {
-        let Some(header_pos) = find_bytes(&self.bytes, HEADER_MARKER, 0) else {
+        let Some(header_pos) = self.source.find_bytes(HEADER_MARKER, 0, self.source.len()) else {
             return Err(ParseError::Malformed {
                 message: bounded("missing PDF header"),
             });
@@ -1233,7 +1674,7 @@ impl<'a> ByteParser<'a> {
             }
         }
         let token = self.slice(start, self.pos)?;
-        let text = std::str::from_utf8(token).map_err(|_| ParseError::Malformed {
+        let text = std::str::from_utf8(token.as_ref()).map_err(|_| ParseError::Malformed {
             message: bounded("number is not valid ASCII"),
         })?;
         if has_dot {
@@ -1282,32 +1723,32 @@ impl<'a> ByteParser<'a> {
             .and_then(|length| usize::try_from(length).ok())
             .and_then(|length| data_start.checked_add(length));
         let declared_keyword =
-            declared_end.and_then(|offset| endstream_after_optional_eol(&self.bytes, offset));
-        let (data_end, endstream_pos) = if let (Some(data_end), Some(keyword_pos)) =
-            (declared_end, declared_keyword)
-        {
-            (data_end, keyword_pos)
-        } else {
-            let max_scan =
-                usize::try_from(self.limits.max_stream_declared_bytes).map_err(|_| {
-                    ParseError::LimitExceeded {
-                        limit: "max_stream_declared_bytes",
-                    }
-                })?;
-            let scan_end = data_start
-                .checked_add(max_scan)
-                .map_or(self.bytes.len(), |end| end.min(self.bytes.len()));
-            let keyword_pos = find_bytes(self.slice(data_start, scan_end)?, ENDSTREAM_MARKER, 0)
-                .and_then(|relative| data_start.checked_add(relative))
-                .ok_or(ParseError::Malformed {
-                    message: bounded("missing endstream"),
-                })?;
-            (
-                trim_eol_before(&self.bytes, data_start, keyword_pos),
-                keyword_pos,
-            )
-        };
-        let endstream_keyword_eol_compliant = has_eol_before(&self.bytes, endstream_pos);
+            declared_end.and_then(|offset| endstream_after_optional_eol(&self.source, offset));
+        let (data_end, endstream_pos) =
+            if let (Some(data_end), Some(keyword_pos)) = (declared_end, declared_keyword) {
+                (data_end, keyword_pos)
+            } else {
+                let max_scan =
+                    usize::try_from(self.limits.max_stream_declared_bytes).map_err(|_| {
+                        ParseError::LimitExceeded {
+                            limit: "max_stream_declared_bytes",
+                        }
+                    })?;
+                let scan_end = data_start
+                    .checked_add(max_scan)
+                    .map_or(self.source.len(), |end| end.min(self.source.len()));
+                let keyword_pos = self
+                    .source
+                    .find_bytes(ENDSTREAM_MARKER, data_start, scan_end)
+                    .ok_or(ParseError::Malformed {
+                        message: bounded("missing endstream"),
+                    })?;
+                (
+                    trim_eol_before(&self.source, data_start, keyword_pos),
+                    keyword_pos,
+                )
+            };
+        let endstream_keyword_eol_compliant = has_eol_before(&self.source, endstream_pos);
         let discovered_length =
             u64::try_from(data_end.saturating_sub(data_start)).map_err(|_| {
                 ParseError::ArithmeticOverflow {
@@ -1333,20 +1774,16 @@ impl<'a> ByteParser<'a> {
             },
         });
 
+        let decode_params = stream_decode_params(&dictionary, filters.len());
+        let (raw_source, raw_range) = self.source.stream_source(data_start, data_end)?;
         Ok(StreamObject {
             dictionary,
-            raw_range: StreamRange {
-                start: u64::try_from(data_start).map_err(|_| ParseError::ArithmeticOverflow {
-                    context: "stream start",
-                })?,
-                end: u64::try_from(data_end).map_err(|_| ParseError::ArithmeticOverflow {
-                    context: "stream end",
-                })?,
-            },
+            raw_range,
             declared_length,
             discovered_length,
             filters,
-            raw_source: Arc::clone(&self.bytes),
+            decode_params,
+            raw_source,
             stream_keyword_crlf_compliant,
             endstream_keyword_eol_compliant,
         })
@@ -1362,7 +1799,7 @@ impl<'a> ByteParser<'a> {
         let mut parsed_entries = 0_u64;
         loop {
             self.skip_ws_and_comments();
-            if self.pos >= self.bytes.len() || self.starts_with(b"trailer") {
+            if self.pos >= self.source.len() || self.starts_with(b"trailer") {
                 break;
             }
             if self.starts_with(b"startxref") || self.starts_with(EOF_MARKER) {
@@ -1390,7 +1827,7 @@ impl<'a> ByteParser<'a> {
                 if offset.is_none()
                     || generation.is_none()
                     || !matches!(marker, Some(b'n' | b'f'))
-                    || !line_had_eol(&self.bytes, line_start, self.pos)
+                    || !line_had_eol(&self.source, line_start)
                 {
                     compliant = false;
                 }
@@ -1422,7 +1859,7 @@ impl<'a> ByteParser<'a> {
         });
         loop {
             self.skip_ws_and_comments();
-            if self.pos >= self.bytes.len() {
+            if self.pos >= self.source.len() {
                 return Ok(());
             }
             if self.starts_with(b"trailer") {
@@ -1430,6 +1867,7 @@ impl<'a> ByteParser<'a> {
                 self.skip_ws_and_comments();
                 let offset = self.offset()?;
                 let dictionary = self.parse_dictionary(0)?;
+                self.push_xref_chain_facts(None, offset, &dictionary)?;
                 trailers.push(Trailer { dictionary, offset });
                 return Ok(());
             }
@@ -1442,16 +1880,44 @@ impl<'a> ByteParser<'a> {
 
     fn parse_post_eof_fact(&mut self) -> std::result::Result<(), ParseError> {
         self.consume_bytes(EOF_MARKER)?;
-        let remaining = self
-            .bytes
-            .len()
-            .saturating_sub(self.pos)
-            .saturating_sub(count_trailing_ws(self.slice(self.pos, self.bytes.len())?));
+        let remaining =
+            self.source
+                .len()
+                .saturating_sub(self.pos)
+                .saturating_sub(count_trailing_ws(
+                    self.slice(self.pos, self.source.len())?.as_ref(),
+                ));
         if remaining > 0 {
             self.push_fact(ParseFact::PostEofData {
                 bytes: u64::try_from(remaining).map_err(|_| ParseError::ArithmeticOverflow {
                     context: "post eof bytes",
                 })?,
+            });
+        }
+        Ok(())
+    }
+
+    fn push_xref_chain_facts(
+        &mut self,
+        object: Option<ObjectKey>,
+        offset: u64,
+        dictionary: &Dictionary,
+    ) -> std::result::Result<(), ParseError> {
+        let section = ObjectLocation {
+            object,
+            offset: Some(offset),
+            path: None,
+        };
+        if let Some(prev) = optional_non_negative_offset(dictionary, "Prev")? {
+            self.push_fact(ParseFact::Xref {
+                section: section.clone(),
+                fact: XrefFact::PrevChain { offset: prev },
+            });
+        }
+        if let Some(hybrid) = optional_non_negative_offset(dictionary, "XRefStm")? {
+            self.push_fact(ParseFact::Xref {
+                section,
+                fact: XrefFact::HybridReference { offset: hybrid },
             });
         }
         Ok(())
@@ -1491,12 +1957,15 @@ impl<'a> ByteParser<'a> {
 
     fn parse_fixed_digits(&mut self, len: usize) -> Option<u64> {
         let end = self.pos.checked_add(len)?;
-        let slice = self.bytes.get(self.pos..end)?;
+        let slice = self.source.slice(self.pos, end).ok()?;
         if !slice.iter().all(u8::is_ascii_digit) {
             return None;
         }
         self.pos = end;
-        std::str::from_utf8(slice).ok()?.parse::<u64>().ok()
+        std::str::from_utf8(slice.as_ref())
+            .ok()?
+            .parse::<u64>()
+            .ok()
     }
 
     fn parse_unsigned<T>(&mut self) -> std::result::Result<Option<T>, ParseError>
@@ -1516,7 +1985,7 @@ impl<'a> ByteParser<'a> {
             return Ok(None);
         }
         let token = self.slice(start, self.pos)?;
-        let text = std::str::from_utf8(token).map_err(|_| ParseError::Malformed {
+        let text = std::str::from_utf8(token.as_ref()).map_err(|_| ParseError::Malformed {
             message: bounded("unsigned integer is not ASCII"),
         })?;
         text.parse::<T>()
@@ -1584,13 +2053,11 @@ impl<'a> ByteParser<'a> {
     }
 
     fn starts_with(&self, expected: &[u8]) -> bool {
-        self.bytes
-            .get(self.pos..)
-            .is_some_and(|tail| tail.starts_with(expected))
+        self.source.starts_with(self.pos, expected)
     }
 
     fn peek_byte(&self) -> Option<u8> {
-        self.bytes.get(self.pos).copied()
+        self.source.byte(self.pos)
     }
 
     fn next_byte(&mut self) -> Option<u8> {
@@ -1599,10 +2066,8 @@ impl<'a> ByteParser<'a> {
         Some(byte)
     }
 
-    fn slice(&self, start: usize, end: usize) -> std::result::Result<&[u8], ParseError> {
-        self.bytes.get(start..end).ok_or(ParseError::Malformed {
-            message: bounded("byte range out of bounds"),
-        })
+    fn slice(&self, start: usize, end: usize) -> std::result::Result<Cow<'_, [u8]>, ParseError> {
+        self.source.slice(start, end)
     }
 
     fn offset(&self) -> std::result::Result<u64, ParseError> {
@@ -1648,52 +2113,44 @@ fn find_bytes(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
         .and_then(|relative| start.checked_add(relative))
 }
 
-fn has_eol_before(bytes: &[u8], pos: usize) -> bool {
+fn has_eol_before(source: &SourceStorage, pos: usize) -> bool {
     matches!(
-        pos.checked_sub(1)
-            .and_then(|index| bytes.get(index))
-            .copied(),
+        pos.checked_sub(1).and_then(|index| source.byte(index)),
         Some(b'\n' | b'\r')
     )
 }
 
-fn line_had_eol(bytes: &[u8], line_start: usize, _current: usize) -> bool {
-    bytes
-        .get(line_start..)
-        .is_some_and(|line| line.iter().any(|byte| matches!(byte, b'\n' | b'\r')))
+fn line_had_eol(source: &SourceStorage, line_start: usize) -> bool {
+    let Some(relative) = source.find_bytes(b"\n", line_start, source.len()) else {
+        return source.find_bytes(b"\r", line_start, source.len()).is_some();
+    };
+    relative >= line_start
 }
 
-fn endstream_after_optional_eol(bytes: &[u8], offset: usize) -> Option<usize> {
-    if bytes
-        .get(offset..)
-        .is_some_and(|tail| tail.starts_with(ENDSTREAM_MARKER))
-    {
+fn endstream_after_optional_eol(source: &SourceStorage, offset: usize) -> Option<usize> {
+    if source.starts_with(offset, ENDSTREAM_MARKER) {
         return Some(offset);
     }
-    if bytes
-        .get(offset..)
-        .is_some_and(|tail| tail.starts_with(b"\r\nendstream"))
-    {
+    if source.starts_with(offset, b"\r\nendstream") {
         return offset.checked_add(2);
     }
-    if bytes
-        .get(offset..)
-        .is_some_and(|tail| tail.starts_with(b"\nendstream") || tail.starts_with(b"\rendstream"))
-    {
+    if source.starts_with(offset, b"\nendstream") || source.starts_with(offset, b"\rendstream") {
         return offset.checked_add(1);
     }
     None
 }
 
-fn trim_eol_before(bytes: &[u8], data_start: usize, keyword_pos: usize) -> usize {
+fn trim_eol_before(source: &SourceStorage, data_start: usize, keyword_pos: usize) -> usize {
     if keyword_pos >= data_start.saturating_add(2)
-        && bytes.get(keyword_pos.saturating_sub(2)..keyword_pos) == Some(b"\r\n")
+        && source
+            .slice(keyword_pos.saturating_sub(2), keyword_pos)
+            .is_ok_and(|bytes| bytes.as_ref() == b"\r\n")
     {
         return keyword_pos.saturating_sub(2);
     }
     if keyword_pos > data_start
         && matches!(
-            bytes.get(keyword_pos.saturating_sub(1)).copied(),
+            source.byte(keyword_pos.saturating_sub(1)),
             Some(b'\n' | b'\r')
         )
     {
@@ -1735,6 +2192,20 @@ fn non_negative_u64_from_dictionary(
     u64::try_from(value).map_err(|_| ParseError::Malformed {
         message: BoundedText::unchecked(format!("invalid non-negative dictionary key {key}")),
     })
+}
+
+fn optional_non_negative_offset(
+    dictionary: &Dictionary,
+    key: &'static str,
+) -> std::result::Result<Option<u64>, ParseError> {
+    let Some(value) = integer_from_dictionary(dictionary, key) else {
+        return Ok(None);
+    };
+    u64::try_from(value)
+        .map(Some)
+        .map_err(|_| ParseError::Malformed {
+            message: BoundedText::unchecked(format!("invalid xref offset dictionary key {key}")),
+        })
 }
 
 fn xref_widths(dictionary: &Dictionary) -> std::result::Result<[usize; 3], ParseError> {
@@ -1903,6 +2374,698 @@ fn is_identity_crypt_filter(dictionary: &Dictionary, filter_index: usize) -> boo
     }
 }
 
+fn stream_decode_params(dictionary: &Dictionary, filter_count: usize) -> Vec<DecodeParams> {
+    match dictionary.get("DecodeParms") {
+        Some(CosObject::Dictionary(params)) => vec![decode_params_from_dictionary(params)],
+        Some(CosObject::Array(values)) => values
+            .iter()
+            .take(filter_count)
+            .map(|value| match value {
+                CosObject::Dictionary(params) => decode_params_from_dictionary(params),
+                _ => DecodeParams::default(),
+            })
+            .collect(),
+        _ => vec![DecodeParams::default(); filter_count],
+    }
+}
+
+fn decode_params_from_dictionary(dictionary: &Dictionary) -> DecodeParams {
+    DecodeParams {
+        predictor: integer_from_dictionary(dictionary, "Predictor")
+            .and_then(|value| u16::try_from(value).ok())
+            .unwrap_or(1),
+        colors: integer_from_dictionary(dictionary, "Colors")
+            .and_then(|value| u16::try_from(value).ok())
+            .unwrap_or(1),
+        bits_per_component: integer_from_dictionary(dictionary, "BitsPerComponent")
+            .and_then(|value| u16::try_from(value).ok())
+            .unwrap_or(8),
+        columns: integer_from_dictionary(dictionary, "Columns")
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(1),
+        early_change: integer_from_dictionary(dictionary, "EarlyChange")
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(1),
+        crypt_filter_name: match dictionary.get("Name") {
+            Some(CosObject::Name(name)) => Some(name.clone()),
+            _ => None,
+        },
+    }
+}
+
+fn checked_u64_len(len: usize, context: &'static str) -> std::result::Result<u64, ParseError> {
+    u64::try_from(len).map_err(|_| ParseError::ArithmeticOverflow { context })
+}
+
+fn enforce_decoded_len(len: u64, max_decode_bytes: u64) -> std::result::Result<(), ParseError> {
+    if len > max_decode_bytes {
+        return Err(ParseError::LimitExceeded {
+            limit: "max_stream_decode_bytes",
+        });
+    }
+    Ok(())
+}
+
+fn filter_identifier(filter: &PdfName) -> std::result::Result<Identifier, ParseError> {
+    Identifier::new(String::from_utf8_lossy(filter.as_bytes()).into_owned()).map_err(|_| {
+        ParseError::Malformed {
+            message: bounded("stream filter name is not a valid identifier"),
+        }
+    })
+}
+
+#[derive(Debug)]
+struct FlateDecoder;
+
+impl StreamDecoder for FlateDecoder {
+    fn decode(
+        &self,
+        input: &[u8],
+        params: &DecodeParams,
+        limits: &ResourceLimits,
+    ) -> std::result::Result<DecoderOutput, ParseError> {
+        let decoded = decode_flate_limited(input, limits.max_stream_decode_bytes)?;
+        Ok(DecoderOutput {
+            bytes: apply_predictor(decoded, params, limits.max_stream_decode_bytes)?,
+            metadata_mode: false,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct AsciiHexDecoder;
+
+impl StreamDecoder for AsciiHexDecoder {
+    fn decode(
+        &self,
+        input: &[u8],
+        _params: &DecodeParams,
+        limits: &ResourceLimits,
+    ) -> std::result::Result<DecoderOutput, ParseError> {
+        let mut output = Vec::new();
+        let mut high: Option<u8> = None;
+        for byte in input {
+            if is_ws(*byte) {
+                continue;
+            }
+            if *byte == b'>' {
+                break;
+            }
+            let Some(nibble) = decode_hex_digit(*byte) else {
+                return Err(ParseError::StreamDecode {
+                    message: bounded("invalid ASCIIHex digit"),
+                });
+            };
+            if let Some(previous) = high.take() {
+                push_limited_byte(
+                    &mut output,
+                    previous.saturating_mul(16).saturating_add(nibble),
+                    limits.max_stream_decode_bytes,
+                )?;
+            } else {
+                high = Some(nibble);
+            }
+        }
+        if let Some(previous) = high {
+            push_limited_byte(
+                &mut output,
+                previous.saturating_mul(16),
+                limits.max_stream_decode_bytes,
+            )?;
+        }
+        Ok(DecoderOutput {
+            bytes: output,
+            metadata_mode: false,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct Ascii85Decoder;
+
+impl StreamDecoder for Ascii85Decoder {
+    fn decode(
+        &self,
+        input: &[u8],
+        _params: &DecodeParams,
+        limits: &ResourceLimits,
+    ) -> std::result::Result<DecoderOutput, ParseError> {
+        let mut output = Vec::new();
+        let mut group = Vec::with_capacity(5);
+        let mut iter = input.iter().copied().peekable();
+        while let Some(byte) = iter.next() {
+            if is_ws(byte) {
+                continue;
+            }
+            if byte == b'~' && iter.peek() == Some(&b'>') {
+                break;
+            }
+            if byte == b'z' {
+                if !group.is_empty() {
+                    return Err(ParseError::StreamDecode {
+                        message: bounded("ASCII85 z inside a partial group"),
+                    });
+                }
+                extend_limited(&mut output, &[0, 0, 0, 0], limits.max_stream_decode_bytes)?;
+                continue;
+            }
+            if !(b'!'..=b'u').contains(&byte) {
+                return Err(ParseError::StreamDecode {
+                    message: bounded("invalid ASCII85 digit"),
+                });
+            }
+            group.push(byte.saturating_sub(b'!'));
+            if group.len() == 5 {
+                append_ascii85_group(&mut output, &group, 4, limits.max_stream_decode_bytes)?;
+                group.clear();
+            }
+        }
+        if !group.is_empty() {
+            let output_bytes = group.len().saturating_sub(1);
+            while group.len() < 5 {
+                group.push(84);
+            }
+            append_ascii85_group(
+                &mut output,
+                &group,
+                output_bytes,
+                limits.max_stream_decode_bytes,
+            )?;
+        }
+        Ok(DecoderOutput {
+            bytes: output,
+            metadata_mode: false,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct RunLengthDecoder;
+
+impl StreamDecoder for RunLengthDecoder {
+    fn decode(
+        &self,
+        input: &[u8],
+        _params: &DecodeParams,
+        limits: &ResourceLimits,
+    ) -> std::result::Result<DecoderOutput, ParseError> {
+        let mut output = Vec::new();
+        let mut pos = 0_usize;
+        while let Some(length) = input.get(pos).copied() {
+            pos = pos.saturating_add(1);
+            match length {
+                128 => break,
+                0..=127 => {
+                    let count = usize::from(length).saturating_add(1);
+                    let end = pos
+                        .checked_add(count)
+                        .ok_or(ParseError::ArithmeticOverflow {
+                            context: "RunLength literal",
+                        })?;
+                    let literal = input.get(pos..end).ok_or(ParseError::StreamDecode {
+                        message: bounded("RunLength literal exceeds input"),
+                    })?;
+                    extend_limited(&mut output, literal, limits.max_stream_decode_bytes)?;
+                    pos = end;
+                }
+                _ => {
+                    let Some(value) = input.get(pos).copied() else {
+                        return Err(ParseError::StreamDecode {
+                            message: bounded("RunLength repeat missing byte"),
+                        });
+                    };
+                    pos = pos.saturating_add(1);
+                    let count = 257_usize.saturating_sub(usize::from(length));
+                    for _ in 0..count {
+                        push_limited_byte(&mut output, value, limits.max_stream_decode_bytes)?;
+                    }
+                }
+            }
+        }
+        Ok(DecoderOutput {
+            bytes: output,
+            metadata_mode: false,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct LzwDecoder;
+
+impl StreamDecoder for LzwDecoder {
+    fn decode(
+        &self,
+        input: &[u8],
+        params: &DecodeParams,
+        limits: &ResourceLimits,
+    ) -> std::result::Result<DecoderOutput, ParseError> {
+        let decoded = decode_lzw(input, params.early_change, limits.max_stream_decode_bytes)?;
+        Ok(DecoderOutput {
+            bytes: apply_predictor(decoded, params, limits.max_stream_decode_bytes)?,
+            metadata_mode: false,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct CryptDecoder;
+
+impl StreamDecoder for CryptDecoder {
+    fn decode(
+        &self,
+        input: &[u8],
+        params: &DecodeParams,
+        _limits: &ResourceLimits,
+    ) -> std::result::Result<DecoderOutput, ParseError> {
+        if params
+            .crypt_filter_name
+            .as_ref()
+            .is_none_or(|name| name.matches("Identity"))
+        {
+            return Ok(DecoderOutput {
+                bytes: input.to_vec(),
+                metadata_mode: false,
+            });
+        }
+        Err(ParseError::UnsupportedFilter {
+            filter: BoundedText::unchecked("Crypt"),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct MetadataModeDecoder;
+
+impl StreamDecoder for MetadataModeDecoder {
+    fn decode(
+        &self,
+        input: &[u8],
+        _params: &DecodeParams,
+        _limits: &ResourceLimits,
+    ) -> std::result::Result<DecoderOutput, ParseError> {
+        Ok(DecoderOutput {
+            bytes: input.to_vec(),
+            metadata_mode: true,
+        })
+    }
+}
+
+fn append_ascii85_group(
+    output: &mut Vec<u8>,
+    group: &[u8],
+    output_bytes: usize,
+    max_decode_bytes: u64,
+) -> std::result::Result<(), ParseError> {
+    let mut value = 0_u32;
+    for digit in group {
+        value = value
+            .checked_mul(85)
+            .and_then(|current| current.checked_add(u32::from(*digit)))
+            .ok_or(ParseError::StreamDecode {
+                message: bounded("ASCII85 group overflows"),
+            })?;
+    }
+    let bytes = value.to_be_bytes();
+    let Some(slice) = bytes.get(..output_bytes) else {
+        return Err(ParseError::StreamDecode {
+            message: bounded("invalid ASCII85 group length"),
+        });
+    };
+    extend_limited(output, slice, max_decode_bytes)
+}
+
+fn push_limited_byte(
+    output: &mut Vec<u8>,
+    byte: u8,
+    max_decode_bytes: u64,
+) -> std::result::Result<(), ParseError> {
+    let next_len = checked_u64_len(output.len(), "decoded stream length")?
+        .checked_add(1)
+        .ok_or(ParseError::ArithmeticOverflow {
+            context: "decoded stream length",
+        })?;
+    enforce_decoded_len(next_len, max_decode_bytes)?;
+    output.push(byte);
+    Ok(())
+}
+
+fn extend_limited(
+    output: &mut Vec<u8>,
+    bytes: &[u8],
+    max_decode_bytes: u64,
+) -> std::result::Result<(), ParseError> {
+    let next_len = checked_u64_len(output.len(), "decoded stream length")?
+        .checked_add(checked_u64_len(bytes.len(), "decoded stream length")?)
+        .ok_or(ParseError::ArithmeticOverflow {
+            context: "decoded stream length",
+        })?;
+    enforce_decoded_len(next_len, max_decode_bytes)?;
+    output.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn apply_predictor(
+    bytes: Vec<u8>,
+    params: &DecodeParams,
+    max_decode_bytes: u64,
+) -> std::result::Result<Vec<u8>, ParseError> {
+    match params.predictor {
+        1 => Ok(bytes),
+        2 => apply_tiff_predictor(bytes, params, max_decode_bytes),
+        10..=15 => apply_png_predictor(&bytes, params, max_decode_bytes),
+        _ => Err(ParseError::StreamDecode {
+            message: bounded("unsupported predictor"),
+        }),
+    }
+}
+
+fn predictor_geometry(params: &DecodeParams) -> std::result::Result<(usize, usize), ParseError> {
+    if params.colors == 0 || params.bits_per_component == 0 || params.columns == 0 {
+        return Err(ParseError::StreamDecode {
+            message: bounded("invalid predictor geometry"),
+        });
+    }
+    let bits_per_row = u64::from(params.colors)
+        .checked_mul(u64::from(params.bits_per_component))
+        .and_then(|bits| bits.checked_mul(u64::from(params.columns)))
+        .ok_or(ParseError::ArithmeticOverflow {
+            context: "predictor row size",
+        })?;
+    let row_bytes = bits_per_row
+        .checked_add(7)
+        .ok_or(ParseError::ArithmeticOverflow {
+            context: "predictor row size",
+        })?
+        / 8;
+    let bytes_per_pixel_bits = u64::from(params.colors)
+        .checked_mul(u64::from(params.bits_per_component))
+        .ok_or(ParseError::ArithmeticOverflow {
+            context: "predictor pixel size",
+        })?;
+    let bytes_per_pixel =
+        bytes_per_pixel_bits
+            .checked_add(7)
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "predictor pixel size",
+            })?
+            / 8;
+    Ok((
+        usize::try_from(row_bytes).map_err(|_| ParseError::LimitExceeded {
+            limit: "max_stream_decode_bytes",
+        })?,
+        usize::try_from(bytes_per_pixel.max(1)).map_err(|_| ParseError::LimitExceeded {
+            limit: "max_stream_decode_bytes",
+        })?,
+    ))
+}
+
+fn apply_tiff_predictor(
+    mut bytes: Vec<u8>,
+    params: &DecodeParams,
+    max_decode_bytes: u64,
+) -> std::result::Result<Vec<u8>, ParseError> {
+    enforce_decoded_len(
+        checked_u64_len(bytes.len(), "predictor output length")?,
+        max_decode_bytes,
+    )?;
+    let (row_bytes, bytes_per_pixel) = predictor_geometry(params)?;
+    if row_bytes == 0 || !bytes.len().is_multiple_of(row_bytes) {
+        return Err(ParseError::StreamDecode {
+            message: bounded("TIFF predictor row length mismatch"),
+        });
+    }
+    for row in bytes.chunks_mut(row_bytes) {
+        for index in bytes_per_pixel..row.len() {
+            let left = row
+                .get(index.saturating_sub(bytes_per_pixel))
+                .copied()
+                .ok_or(ParseError::StreamDecode {
+                    message: bounded("TIFF predictor left byte missing"),
+                })?;
+            let Some(byte) = row.get_mut(index) else {
+                return Err(ParseError::StreamDecode {
+                    message: bounded("TIFF predictor byte missing"),
+                });
+            };
+            *byte = byte.wrapping_add(left);
+        }
+    }
+    Ok(bytes)
+}
+
+fn apply_png_predictor(
+    bytes: &[u8],
+    params: &DecodeParams,
+    max_decode_bytes: u64,
+) -> std::result::Result<Vec<u8>, ParseError> {
+    let (row_bytes, bytes_per_pixel) = predictor_geometry(params)?;
+    let encoded_row = row_bytes
+        .checked_add(1)
+        .ok_or(ParseError::ArithmeticOverflow {
+            context: "PNG predictor row size",
+        })?;
+    if encoded_row == 0 || !bytes.len().is_multiple_of(encoded_row) {
+        return Err(ParseError::StreamDecode {
+            message: bounded("PNG predictor row length mismatch"),
+        });
+    }
+    let row_count = bytes.len() / encoded_row;
+    let output_capacity =
+        row_count
+            .checked_mul(row_bytes)
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "PNG predictor output length",
+            })?;
+    enforce_decoded_len(
+        checked_u64_len(output_capacity, "PNG predictor output length")?,
+        max_decode_bytes,
+    )?;
+    let mut output = vec![0_u8; output_capacity];
+    for row_index in 0..row_count {
+        let encoded_start =
+            row_index
+                .checked_mul(encoded_row)
+                .ok_or(ParseError::ArithmeticOverflow {
+                    context: "PNG predictor row offset",
+                })?;
+        let filter = *bytes.get(encoded_start).ok_or(ParseError::StreamDecode {
+            message: bounded("PNG predictor filter byte missing"),
+        })?;
+        let encoded = bytes
+            .get(encoded_start.saturating_add(1)..encoded_start.saturating_add(encoded_row))
+            .ok_or(ParseError::StreamDecode {
+                message: bounded("PNG predictor row missing"),
+            })?;
+        let output_start =
+            row_index
+                .checked_mul(row_bytes)
+                .ok_or(ParseError::ArithmeticOverflow {
+                    context: "PNG predictor output row offset",
+                })?;
+        for index in 0..row_bytes {
+            let raw = *encoded.get(index).ok_or(ParseError::StreamDecode {
+                message: bounded("PNG predictor source byte missing"),
+            })?;
+            let left = if index >= bytes_per_pixel {
+                output
+                    .get(output_start + index - bytes_per_pixel)
+                    .copied()
+                    .ok_or(ParseError::StreamDecode {
+                        message: bounded("PNG predictor left byte missing"),
+                    })?
+            } else {
+                0
+            };
+            let up = if row_index > 0 {
+                output
+                    .get(output_start + index - row_bytes)
+                    .copied()
+                    .ok_or(ParseError::StreamDecode {
+                        message: bounded("PNG predictor upper byte missing"),
+                    })?
+            } else {
+                0
+            };
+            let up_left = if row_index > 0 && index >= bytes_per_pixel {
+                output
+                    .get(output_start + index - row_bytes - bytes_per_pixel)
+                    .copied()
+                    .ok_or(ParseError::StreamDecode {
+                        message: bounded("PNG predictor upper-left byte missing"),
+                    })?
+            } else {
+                0
+            };
+            let value = png_predictor_value(filter, raw, left, up, up_left)?;
+            let Some(target) = output.get_mut(output_start + index) else {
+                return Err(ParseError::StreamDecode {
+                    message: bounded("PNG predictor target byte missing"),
+                });
+            };
+            *target = value;
+        }
+    }
+    Ok(output)
+}
+
+fn png_predictor_value(
+    filter: u8,
+    raw: u8,
+    left: u8,
+    up: u8,
+    up_left: u8,
+) -> std::result::Result<u8, ParseError> {
+    match filter {
+        0 => Ok(raw),
+        1 => Ok(raw.wrapping_add(left)),
+        2 => Ok(raw.wrapping_add(up)),
+        3 => {
+            let average =
+                u8::try_from(u16::midpoint(u16::from(left), u16::from(up))).map_err(|_| {
+                    ParseError::StreamDecode {
+                        message: bounded("PNG predictor average byte out of range"),
+                    }
+                })?;
+            Ok(raw.wrapping_add(average))
+        }
+        4 => Ok(raw.wrapping_add(paeth_predictor(left, up, up_left))),
+        _ => Err(ParseError::StreamDecode {
+            message: bounded("invalid PNG predictor filter"),
+        }),
+    }
+}
+
+fn paeth_predictor(left: u8, up: u8, up_left: u8) -> u8 {
+    let left = i16::from(left);
+    let up = i16::from(up);
+    let up_left = i16::from(up_left);
+    let estimate = left + up - up_left;
+    let left_distance = (estimate - left).abs();
+    let up_distance = (estimate - up).abs();
+    let up_left_distance = (estimate - up_left).abs();
+    if left_distance <= up_distance && left_distance <= up_left_distance {
+        u8::try_from(left).unwrap_or(0)
+    } else if up_distance <= up_left_distance {
+        u8::try_from(up).unwrap_or(0)
+    } else {
+        u8::try_from(up_left).unwrap_or(0)
+    }
+}
+
+fn decode_lzw(
+    input: &[u8],
+    early_change: u8,
+    max_decode_bytes: u64,
+) -> std::result::Result<Vec<u8>, ParseError> {
+    let mut reader = MsbBitReader::new(input);
+    let mut dictionary = initial_lzw_dictionary();
+    let mut code_bits = 9_u8;
+    let mut next_code = 258_u16;
+    let mut previous: Option<Vec<u8>> = None;
+    let mut output = Vec::new();
+    while let Some(code) = reader.read_bits(code_bits)? {
+        match code {
+            256 => {
+                dictionary = initial_lzw_dictionary();
+                code_bits = 9;
+                next_code = 258;
+                previous = None;
+            }
+            257 => break,
+            _ => {
+                let entry = if let Some(value) = dictionary.get(usize::from(code)).cloned() {
+                    value
+                } else if code == next_code {
+                    let mut value = previous.clone().ok_or(ParseError::StreamDecode {
+                        message: bounded("LZW missing previous entry"),
+                    })?;
+                    let first = *value.first().ok_or(ParseError::StreamDecode {
+                        message: bounded("LZW empty previous entry"),
+                    })?;
+                    value.push(first);
+                    value
+                } else {
+                    return Err(ParseError::StreamDecode {
+                        message: bounded("invalid LZW code"),
+                    });
+                };
+                extend_limited(&mut output, &entry, max_decode_bytes)?;
+                if let Some(previous_entry) = previous {
+                    let mut new_entry = previous_entry;
+                    let first = *entry.first().ok_or(ParseError::StreamDecode {
+                        message: bounded("LZW empty entry"),
+                    })?;
+                    new_entry.push(first);
+                    if dictionary.len() < 4096 {
+                        dictionary.push(new_entry);
+                        next_code = next_code.saturating_add(1);
+                        let threshold =
+                            (1_u16 << code_bits).saturating_sub(u16::from(early_change.min(1)));
+                        if next_code >= threshold && code_bits < 12 {
+                            code_bits = code_bits.saturating_add(1);
+                        }
+                    }
+                }
+                previous = Some(entry);
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn initial_lzw_dictionary() -> Vec<Vec<u8>> {
+    let mut dictionary = Vec::with_capacity(258);
+    for byte in 0_u8..=255 {
+        dictionary.push(vec![byte]);
+    }
+    dictionary.push(Vec::new());
+    dictionary.push(Vec::new());
+    dictionary
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MsbBitReader<'a> {
+    input: &'a [u8],
+    bit_pos: usize,
+}
+
+impl<'a> MsbBitReader<'a> {
+    fn new(input: &'a [u8]) -> Self {
+        Self { input, bit_pos: 0 }
+    }
+
+    fn read_bits(&mut self, bits: u8) -> std::result::Result<Option<u16>, ParseError> {
+        let remaining_bits = self
+            .input
+            .len()
+            .checked_mul(8)
+            .and_then(|total| total.checked_sub(self.bit_pos))
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "LZW bit position",
+            })?;
+        if remaining_bits < usize::from(bits) {
+            return Ok(None);
+        }
+        let mut value = 0_u16;
+        for _ in 0..bits {
+            let byte_index = self.bit_pos / 8;
+            let bit_index = 7_usize.saturating_sub(self.bit_pos % 8);
+            let byte = self
+                .input
+                .get(byte_index)
+                .copied()
+                .ok_or(ParseError::StreamDecode {
+                    message: bounded("LZW bit read out of bounds"),
+                })?;
+            value = value.checked_shl(1).ok_or(ParseError::ArithmeticOverflow {
+                context: "LZW code",
+            })? | u16::from((byte >> bit_index) & 1);
+            self.bit_pos = self.bit_pos.saturating_add(1);
+        }
+        Ok(Some(value))
+    }
+}
+
 fn encryption_reference(trailers: &[Trailer]) -> Option<&CosObject> {
     trailers
         .iter()
@@ -2021,7 +3184,7 @@ mod tests {
     use proptest::prelude::*;
     use rstest::rstest;
 
-    use super::{CosObject, Parser};
+    use super::{CosObject, ParsedDocument, Parser, StreamObject};
     use crate::{ParseFact, ResourceLimits, StreamFact};
 
     fn minimal_pdf() -> Vec<u8> {
@@ -2299,6 +3462,49 @@ endobj
     }
 
     #[test]
+    fn test_should_emit_xref_prev_and_hybrid_reference_facts() -> crate::Result<()> {
+        let bytes = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog >>
+endobj
+xref
+0 2
+0000000000 65535 f 
+0000000009 00000 n 
+trailer
+<< /Size 2 /Root 1 0 R >>
+xref
+0 1
+0000000000 65535 f 
+trailer
+<< /Size 2 /Root 1 0 R /Prev 40 /XRefStm 120 >>
+%%EOF
+";
+
+        let document = Parser::default().parse(Cursor::new(bytes))?;
+
+        assert!(document.parse_facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ParseFact::Xref {
+                    fact: crate::XrefFact::PrevChain { offset: 40 },
+                    ..
+                }
+            )
+        }));
+        assert!(document.parse_facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ParseFact::Xref {
+                    fact: crate::XrefFact::HybridReference { offset: 120 },
+                    ..
+                }
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn test_should_expand_unfiltered_object_stream() -> crate::Result<()> {
         let object_stream = b"1 0 << /Type /Catalog >>";
         let mut bytes = br"%PDF-1.7
@@ -2391,6 +3597,126 @@ endobj
     }
 
     #[test]
+    fn test_should_decode_asciihex_ascii85_runlength_and_lzw_streams() -> crate::Result<()> {
+        let cases: [(&str, Vec<u8>, &[u8]); 4] = [
+            ("ASCIIHexDecode", b"61 62>".to_vec(), b"ab"),
+            ("ASCII85Decode", b"9jqo~>".to_vec(), b"Man"),
+            (
+                "RunLengthDecode",
+                vec![2, b'a', b'b', b'c', 254, b'x', 128],
+                b"abcxxx",
+            ),
+            (
+                "LZWDecode",
+                pack_lzw_codes(&[(256, 9), (97, 9), (98, 9), (97, 9), (257, 9)]),
+                b"aba",
+            ),
+        ];
+        for (filter, encoded, expected) in cases {
+            let document =
+                Parser::default().parse(Cursor::new(single_stream_pdf(filter, "", &encoded)))?;
+            let stream = parsed_stream(&document)?;
+
+            assert_eq!(stream.decoded_bytes(&ResourceLimits::default())?, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_apply_flate_png_predictor() -> Result<(), Box<dyn Error>> {
+        use std::io::Write;
+
+        use flate2::{Compression, write::ZlibEncoder};
+
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&[1, b'a', 1, 1])?;
+        let compressed = encoder.finish()?;
+        let document = Parser::default().parse(Cursor::new(single_stream_pdf(
+            "FlateDecode",
+            "/DecodeParms << /Predictor 12 /Columns 3 >>",
+            &compressed,
+        )))?;
+        let stream = parsed_stream(&document)?;
+
+        assert_eq!(stream.decoded_bytes(&ResourceLimits::default())?, b"abc");
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_emit_per_filter_decode_facts_for_object_stream() -> crate::Result<()> {
+        let object_stream = b"1 0 << /Type /Catalog >>";
+        let encoded = hex_bytes(object_stream);
+        let mut bytes = br"%PDF-1.7
+2 0 obj
+<< /Type /ObjStm /N 1 /First 4 /Filter /ASCIIHexDecode /Length "
+            .to_vec();
+        bytes.extend(encoded.len().to_string().as_bytes());
+        bytes.extend(
+            br" >>
+stream
+",
+        );
+        bytes.extend(encoded);
+        bytes.extend(
+            br"
+endstream
+endobj
+3 0 obj
+<< /Type /XRef /Size 4 /W [1 1 1] /Index [0 0] /Length 0 /Root 1 0 R >>
+stream
+endstream
+endobj
+%%EOF
+",
+        );
+
+        let document = Parser::default().parse(Cursor::new(bytes))?;
+
+        assert!(document.catalog.is_some());
+        assert!(document.parse_facts.iter().any(|fact| {
+            matches!(
+                fact,
+                ParseFact::Stream {
+                    fact: StreamFact::FilterDecoded {
+                        filter,
+                        output_bytes: 24,
+                        ..
+                    },
+                    ..
+                } if filter.as_str() == "ASCIIHexDecode"
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_preserve_image_filter_bytes_in_metadata_mode() -> crate::Result<()> {
+        let document =
+            Parser::default().parse(Cursor::new(single_stream_pdf("DCTDecode", "", b"image")))?;
+        let stream = parsed_stream(&document)?;
+
+        assert_eq!(stream.decoded_bytes(&ResourceLimits::default())?, b"image");
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_parse_with_spill_file_source_storage_above_threshold() -> crate::Result<()> {
+        let limits = ResourceLimits {
+            memory_source_threshold_bytes: 0,
+            ..ResourceLimits::default()
+        };
+        let document = Parser::new(limits.clone()).parse(Cursor::new(single_stream_pdf(
+            "ASCIIHexDecode",
+            "",
+            b"61 62>",
+        )))?;
+        let stream = parsed_stream(&document)?;
+
+        assert_eq!(stream.decoded_bytes(&limits)?, b"ab");
+        Ok(())
+    }
+
+    #[test]
     fn test_should_enforce_name_limit() {
         let limits = ResourceLimits {
             max_name_bytes: 2,
@@ -2447,5 +3773,68 @@ endobj
         fn test_should_not_panic_on_arbitrary_bytes(input in proptest::collection::vec(any::<u8>(), 0..512)) {
             let _ = Parser::default().parse(Cursor::new(input));
         }
+    }
+
+    fn single_stream_pdf(filter: &str, params: &str, encoded: &[u8]) -> Vec<u8> {
+        let mut bytes = format!(
+            "%PDF-1.7\n1 0 obj\n<< /Length {} /Filter /{filter} {params} >>\nstream\n",
+            encoded.len()
+        )
+        .into_bytes();
+        bytes.extend(encoded);
+        bytes.extend(b"\nendstream\nendobj\n%%EOF\n");
+        bytes
+    }
+
+    fn parsed_stream(document: &ParsedDocument) -> crate::Result<&StreamObject> {
+        let object =
+            document
+                .objects
+                .values()
+                .next()
+                .ok_or_else(|| crate::ParseError::MissingObject {
+                    message: crate::BoundedText::unchecked("missing stream object"),
+                })?;
+        let CosObject::Stream(stream) = &object.object else {
+            return Err(crate::ParseError::Malformed {
+                message: crate::BoundedText::unchecked("missing stream"),
+            }
+            .into());
+        };
+        Ok(stream)
+    }
+
+    fn pack_lzw_codes(codes: &[(u16, u8)]) -> Vec<u8> {
+        let mut output = Vec::new();
+        let mut current = 0_u8;
+        let mut used = 0_u8;
+        for (code, bits) in codes {
+            for bit in (0..*bits).rev() {
+                current <<= 1;
+                current |= u8::try_from((code >> bit) & 1).unwrap_or(0);
+                used = used.saturating_add(1);
+                if used == 8 {
+                    output.push(current);
+                    current = 0;
+                    used = 0;
+                }
+            }
+        }
+        if used != 0 {
+            current <<= 8_u8.saturating_sub(used);
+            output.push(current);
+        }
+        output
+    }
+
+    fn hex_bytes(bytes: &[u8]) -> Vec<u8> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut output = Vec::with_capacity(bytes.len().saturating_mul(2).saturating_add(1));
+        for byte in bytes {
+            output.push(HEX.get(usize::from(byte >> 4)).copied().unwrap_or(b'0'));
+            output.push(HEX.get(usize::from(byte & 0x0f)).copied().unwrap_or(b'0'));
+        }
+        output.push(b'>');
+        output
     }
 }

@@ -32,6 +32,20 @@ fn bench_parse_1_mib_malformed(c: &mut Criterion) {
     });
 }
 
+fn bench_decode_ascii85_stream(c: &mut Criterion) {
+    let fixture = filtered_pdf("ASCII85Decode", b"9jqo~>");
+    c.bench_function("decode_ascii85_stream", |b| {
+        b.iter(|| Parser::default().parse(Cursor::new(fixture.as_slice())));
+    });
+}
+
+fn bench_decode_runlength_stream(c: &mut Criterion) {
+    let fixture = filtered_pdf("RunLengthDecode", &[2, b'a', b'b', b'c', 254, b'x', 128]);
+    c.bench_function("decode_runlength_stream", |b| {
+        b.iter(|| Parser::default().parse(Cursor::new(fixture.as_slice())));
+    });
+}
+
 fn simple_pdf_with_payload(payload_len: usize) -> Vec<u8> {
     let mut pdf = br"%PDF-1.7
 1 0 obj
@@ -59,10 +73,24 @@ trailer
     pdf
 }
 
+fn filtered_pdf(filter: &str, encoded: &[u8]) -> Vec<u8> {
+    let mut pdf = format!(
+        "%PDF-1.7\n1 0 obj\n<< /Type /ObjStm /N 0 /First 0 /Filter /{filter} /Length {} \
+         >>\nstream\n",
+        encoded.len()
+    )
+    .into_bytes();
+    pdf.extend(encoded);
+    pdf.extend(b"\nendstream\nendobj\n%%EOF\n");
+    pdf
+}
+
 criterion_group!(
     parser_m1,
     bench_parse_minimal,
     bench_parse_10_mib_simple,
-    bench_parse_1_mib_malformed
+    bench_parse_1_mib_malformed,
+    bench_decode_ascii85_stream,
+    bench_decode_runlength_stream
 );
 criterion_main!(parser_m1);

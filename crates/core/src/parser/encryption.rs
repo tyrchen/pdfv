@@ -874,6 +874,7 @@ fn decrypt_stream(
     stream.raw_range.end = decrypted_len;
     stream.discovered_length = decrypted_len;
     stream.declared_length = Some(decrypted_len);
+    stream.remove_crypt_filters();
     Ok(())
 }
 

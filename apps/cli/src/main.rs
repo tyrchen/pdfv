@@ -46,6 +46,7 @@ const HARD_MAX_PASSWORD_BYTES: usize = 4096;
 const HARD_MAX_STREAM_BYTES: u64 = 1024 * 1024 * 1024;
 const HARD_MAX_PARSE_FACTS: usize = 1_000_000;
 const HARD_MAX_ENCRYPTION_DICT_ENTRIES: u64 = 1024;
+const HARD_MAX_MEMORY_SOURCE_THRESHOLD_BYTES: u64 = HARD_MAX_FILE_BYTES;
 
 /// Command-line arguments for the pdfv binary.
 #[derive(Debug, Parser)]
@@ -610,6 +611,11 @@ fn validated_resource_limits(limits: ResourceLimits) -> Result<ResourceLimits> {
         "maxEncryptionDictEntries",
         limits.max_encryption_dict_entries,
         HARD_MAX_ENCRYPTION_DICT_ENTRIES,
+    )?;
+    ensure_limit(
+        "memorySourceThresholdBytes",
+        limits.memory_source_threshold_bytes,
+        HARD_MAX_MEMORY_SOURCE_THRESHOLD_BYTES,
     )?;
     ensure_limit_usize(
         "maxParseFacts",

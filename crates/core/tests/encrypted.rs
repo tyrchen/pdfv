@@ -706,6 +706,30 @@ fn test_should_validate_rc4_crypt_filter_revision_four_fixture() -> Result<(), B
 }
 
 #[test]
+fn test_should_compose_named_crypt_stream_filter_with_downstream_decode()
+-> Result<(), Box<dyn Error>> {
+    let fixture = encrypted_rc4_named_crypt_flate_stream_fixture()?;
+    let password = PasswordSecret::new("user")?;
+    let mut limits = ResourceLimits::default();
+    limits.max_decrypted_string_bytes = 64;
+    limits.max_decrypted_stream_bytes = 128;
+    let mut parse_options = ParseOptions::default();
+    parse_options.password = Some(&password);
+    let document =
+        Parser::new(limits.clone()).parse_with_options(Cursor::new(fixture), parse_options)?;
+    let object_two = document
+        .objects
+        .get(&object_key(2))
+        .ok_or_else(|| std::io::Error::other("missing object 2"))?;
+    let CosObject::Stream(stream) = &object_two.object else {
+        return Err(std::io::Error::other("missing stream").into());
+    };
+
+    assert_eq!(stream.decoded_bytes(&limits)?, b"stream-secret");
+    Ok(())
+}
+
+#[test]
 fn test_should_leave_metadata_stream_unencrypted_when_encrypt_metadata_false()
 -> Result<(), Box<dyn Error>> {
     let fixture = encrypted_metadata_false_fixture()?;
@@ -768,6 +792,55 @@ fn encrypted_metadata_false_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
         ),
         false,
     )
+}
+
+fn encrypted_rc4_named_crypt_flate_stream_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
+    use std::io::Write;
+
+    use flate2::{Compression, write::ZlibEncoder};
+
+    let owner_key = owner_key(Revision::R4, 16, OWNER_PASSWORD);
+    let mut owner_entry = padded_password(USER_PASSWORD).to_vec();
+    for round in 0_u8..=19 {
+        owner_entry = rc4_crypt(&xor_key(&owner_key, round), &owner_entry)?;
+    }
+    let file_key = file_key(Revision::R4, 16, USER_PASSWORD, &owner_entry, true);
+    let mut user_entry = user_value_r4(&file_key)?;
+    user_entry.resize(32, 0);
+    let title = encrypt_object(
+        Revision::R4,
+        &file_key,
+        object_key(1),
+        CipherMethod::Rc4,
+        b"secret-title",
+    )?;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(b"stream-secret")?;
+    let compressed = encoder.finish()?;
+    let stream = encrypt_object(
+        Revision::R4,
+        &file_key,
+        object_key(2),
+        CipherMethod::Rc4,
+        &compressed,
+    )?;
+    let encrypt_dictionary = format!(
+        "<< /Filter /Standard /V 4 /R 4 /Length 128 /O <{}> /U <{}> /P -4 /EncryptMetadata true \
+         /CF << /StdCF << /CFM /V2 /Length 16 /AuthEvent /DocOpen >> >> /StmF /StdCF /StrF /StdCF \
+         >>",
+        hex(&owner_entry),
+        hex(&user_entry),
+    );
+    Ok(pdf_bytes_with_stream_header(
+        &title,
+        &stream,
+        &format!(
+            "<< /Length {} /Filter [/Crypt /FlateDecode] /DecodeParms [<< /Name /StdCF >> null] \
+             >>\nstream\n",
+            stream.len()
+        ),
+        &encrypt_dictionary,
+    ))
 }
 
 fn encrypted_rc4_fixture_for(
@@ -834,6 +907,16 @@ fn encrypted_rc4_fixture_for(
 }
 
 fn pdf_bytes(title: &[u8], stream: &[u8], encrypt_dictionary: &str) -> Vec<u8> {
+    let stream_header = format!("<< /Length {} >>\nstream\n", stream.len());
+    pdf_bytes_with_stream_header(title, stream, &stream_header, encrypt_dictionary)
+}
+
+fn pdf_bytes_with_stream_header(
+    title: &[u8],
+    stream: &[u8],
+    stream_header: &str,
+    encrypt_dictionary: &str,
+) -> Vec<u8> {
     let mut bytes = b"%PDF-1.7\n".to_vec();
     let mut offsets = vec![0_usize];
     push_object(
@@ -842,7 +925,6 @@ fn pdf_bytes(title: &[u8], stream: &[u8], encrypt_dictionary: &str) -> Vec<u8> {
         1,
         format!("<< /Type /Catalog /Title <{}> >>", hex(title)).as_bytes(),
     );
-    let stream_header = format!("<< /Length {} >>\nstream\n", stream.len());
     push_object_stream(
         &mut bytes,
         &mut offsets,

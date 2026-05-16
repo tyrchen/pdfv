@@ -27,8 +27,9 @@ use std::{
 };
 
 pub use parser::{
-    CosObject, Dictionary, IndirectObject, ObjectStore, ParseOptions, ParsedDocument, Parser,
-    PdfName, PdfSource, PdfString, StreamObject, Trailer,
+    CosObject, DecodeParams, DecoderRegistry, Dictionary, IndirectObject, ObjectStore,
+    ParseOptions, ParsedDocument, Parser, PdfName, PdfSource, PdfString, SourceStorage,
+    StreamDecoder, StreamObject, Trailer,
 };
 #[cfg(feature = "custom-profiles")]
 pub use profile::CustomProfileRepository;
@@ -57,6 +58,7 @@ const HARD_MAX_PASSWORD_BYTES: usize = 4096;
 const DEFAULT_MAX_STRING_BYTES: usize = 1_048_576;
 const DEFAULT_MAX_STREAM_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES: u64 = 64;
+const DEFAULT_MEMORY_SOURCE_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Result alias for pdfv library operations.
 pub type Result<T> = std::result::Result<T, PdfvError>;
@@ -527,6 +529,10 @@ pub struct ResourceLimits {
     #[builder(default = DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES)]
     #[serde(default = "default_max_encryption_dict_entries")]
     pub max_encryption_dict_entries: u64,
+    /// Maximum source bytes kept in memory before spilling to a temporary file.
+    #[builder(default = DEFAULT_MEMORY_SOURCE_THRESHOLD_BYTES)]
+    #[serde(default = "default_memory_source_threshold_bytes")]
+    pub memory_source_threshold_bytes: u64,
     /// Maximum retained parse facts.
     pub max_parse_facts: usize,
 }
@@ -547,6 +553,7 @@ impl Default for ResourceLimits {
             max_stream_decode_bytes: DEFAULT_MAX_STREAM_DECODE_BYTES,
             max_decrypted_stream_bytes: DEFAULT_MAX_STREAM_DECODE_BYTES,
             max_encryption_dict_entries: DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES,
+            memory_source_threshold_bytes: DEFAULT_MEMORY_SOURCE_THRESHOLD_BYTES,
             max_parse_facts: 100_000,
         }
     }
@@ -566,6 +573,10 @@ fn default_max_decrypted_stream_bytes() -> u64 {
 
 fn default_max_encryption_dict_entries() -> u64 {
     DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES
+}
+
+fn default_memory_source_threshold_bytes() -> u64 {
+    DEFAULT_MEMORY_SOURCE_THRESHOLD_BYTES
 }
 
 /// Maximum displayed assertion failures per rule.
@@ -911,6 +922,16 @@ pub enum XrefFact {
         /// Number of compressed-object entries parsed.
         compressed_entries: u64,
     },
+    /// A previous xref section offset was declared.
+    PrevChain {
+        /// Previous xref byte offset.
+        offset: u64,
+    },
+    /// A hybrid-reference xref stream offset was declared.
+    HybridReference {
+        /// Hybrid xref stream byte offset.
+        offset: u64,
+    },
     /// Object stream was parsed and expanded.
     ObjectStreamParsed,
 }
@@ -939,6 +960,22 @@ pub enum StreamFact {
     /// Stream was decoded within configured limits.
     Decoded {
         /// Decoded stream byte count.
+        bytes: u64,
+    },
+    /// A single stream filter decoded successfully.
+    FilterDecoded {
+        /// Filter name.
+        filter: Identifier,
+        /// Input bytes consumed by this filter.
+        input_bytes: u64,
+        /// Output bytes produced by this filter.
+        output_bytes: u64,
+    },
+    /// A filter was retained in byte-preserving metadata mode.
+    FilterMetadataMode {
+        /// Filter name.
+        filter: Identifier,
+        /// Bytes preserved without pixel/image decoding.
         bytes: u64,
     },
 }
@@ -1749,6 +1786,8 @@ fn xref_fact_text(fact: &XrefFact) -> String {
             entries,
             compressed_entries,
         } => format!("xrefStreamParsed entries={entries} compressedEntries={compressed_entries}"),
+        XrefFact::PrevChain { offset } => format!("prevChain offset={offset}"),
+        XrefFact::HybridReference { offset } => format!("hybridReference offset={offset}"),
         XrefFact::ObjectStreamParsed => String::from("objectStreamParsed"),
     }
 }
@@ -1767,6 +1806,20 @@ fn stream_fact_text(fact: &StreamFact) -> String {
              endstreamKeywordEolCompliant={endstream_keyword_eol_compliant}"
         ),
         StreamFact::Decoded { bytes } => format!("decoded bytes={bytes}"),
+        StreamFact::FilterDecoded {
+            filter,
+            input_bytes,
+            output_bytes,
+        } => format!(
+            "filterDecoded filter={} inputBytes={input_bytes} outputBytes={output_bytes}",
+            filter.as_str()
+        ),
+        StreamFact::FilterMetadataMode { filter, bytes } => {
+            format!(
+                "filterMetadataMode filter={} bytes={bytes}",
+                filter.as_str()
+            )
+        }
     }
 }
 
