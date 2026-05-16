@@ -444,6 +444,23 @@ const STREAM_PROPERTIES: &[&str] = &[
     "FDecodeParms",
 ];
 
+const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
+    "BaseFont",
+    "CIDToGIDMap",
+    "CMapName",
+    "Encoding",
+    "FT",
+    "Filter",
+    "S",
+    "Subtype",
+    "Type",
+    "conformance",
+    "conformancePrefix",
+    "header",
+    "partPrefix",
+    "revPrefix",
+];
+
 const EMPTY_LINK_NAMES: &[(&str, &str)] = &[];
 const DOCUMENT_LINKS: &[(&str, &str)] = &[("catalog", "catalog"), ("streams", "stream")];
 const CATALOG_LINKS: &[(&str, &str)] = &[
@@ -860,8 +877,24 @@ impl ValidationSession {
                 truncated = true;
                 break;
             }
-            let object_budget = remaining_object_budget(&self.limits, visited.len(), stack.len())?;
-            for linked in object.linked_objects(&graph, object_budget)? {
+            let object_budget =
+                match remaining_object_budget(&self.limits, visited.len(), stack.len()) {
+                    Ok(budget) => budget,
+                    Err(error) if is_object_limit_error(&error) => {
+                        truncated = true;
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                };
+            let linked_objects = match object.linked_objects(&graph, object_budget) {
+                Ok(objects) => objects,
+                Err(error) if is_object_limit_error(&error) => {
+                    truncated = true;
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            for linked in linked_objects {
                 stack.push(linked);
             }
         }
@@ -900,13 +933,72 @@ fn selected_feature_families(
     }
 }
 
+fn is_object_limit_error(error: &PdfvError) -> bool {
+    matches!(
+        error,
+        PdfvError::Validation(ValidationError::LimitExceeded {
+            limit: "max_objects"
+        })
+    )
+}
+
 fn validate_feature_configuration(options: &ValidationOptions) -> Result<()> {
     let registry = ModelRegistry::default_registry();
     let _selected = selected_feature_families(&options.feature_selection, &registry)?;
     if let Some(policy) = &options.policy {
         policy.validate()?;
+        validate_policy_schema(policy, &registry)?;
     }
     Ok(())
+}
+
+fn validate_policy_schema(policy: &PolicySet, registry: &ModelRegistry) -> Result<()> {
+    for rule in &policy.rules {
+        if !registry.has_family(&rule.family) {
+            return Err(policy_invalid("family", "unknown policy feature family"));
+        }
+        if !registry.has_family_property(&rule.family, &rule.field) {
+            return Err(policy_invalid(
+                "field",
+                "unknown policy feature field for family",
+            ));
+        }
+        match rule.operator {
+            PolicyOperator::Exists | PolicyOperator::Absent => {
+                if rule.value.is_some() {
+                    return Err(policy_invalid(
+                        "value",
+                        "exists and absent operators do not accept values",
+                    ));
+                }
+            }
+            PolicyOperator::Equals | PolicyOperator::NotEquals => {
+                if rule.value.is_none() {
+                    return Err(policy_invalid(
+                        "value",
+                        "comparison operator requires a value",
+                    ));
+                }
+            }
+            PolicyOperator::Min | PolicyOperator::Max => {
+                if !matches!(rule.value, Some(PolicyValue::Number(_))) {
+                    return Err(policy_invalid(
+                        "value",
+                        "numeric operator requires a number value",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn policy_invalid(field: &'static str, reason: &'static str) -> PdfvError {
+    crate::PolicyError::InvalidField {
+        field,
+        reason: BoundedText::unchecked(reason),
+    }
+    .into()
 }
 
 fn feature_object(
@@ -921,7 +1013,7 @@ fn feature_object(
     for property in properties {
         match object.property(&property) {
             Ok(value) => {
-                values.insert(property, FeatureValue::from(value));
+                values.insert(property.clone(), safe_feature_value(&property, value));
             }
             Err(PdfvError::Profile(crate::ProfileError::UnknownProperty { .. })) => {}
             Err(error) => return Err(error),
@@ -949,6 +1041,25 @@ impl From<ModelValue> for FeatureValue {
                 Self::List(values.into_iter().map(FeatureValue::from).collect())
             }
         }
+    }
+}
+
+fn safe_feature_value(property: &PropertyName, value: ModelValue) -> FeatureValue {
+    match value {
+        ModelValue::String(value)
+            if !SAFE_FEATURE_STRING_PROPERTIES.contains(&property.as_str()) =>
+        {
+            FeatureValue::RedactedString {
+                bytes: u64::try_from(value.as_str().len()).unwrap_or(u64::MAX),
+            }
+        }
+        ModelValue::List(values) => FeatureValue::List(
+            values
+                .into_iter()
+                .map(|value| safe_feature_value(property, value))
+                .collect(),
+        ),
+        other => FeatureValue::from(other),
     }
 }
 
@@ -3961,6 +4072,47 @@ trailer
                 .iter()
                 .any(|value| value == "root/page[0]/contentStream[0]")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_redact_content_strings_from_feature_report() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(m6_model_pdf()))?;
+        let session =
+            super::ValidationSession::new(document, crate::ResourceLimits::default(), 100, false);
+        let action_family = crate::ObjectTypeName::new("action")?;
+        let report = session.extract_features(&super::FeatureSelection::Families {
+            families: vec![action_family.clone()],
+        })?;
+        let Some(action) = report
+            .objects
+            .iter()
+            .find(|object| object.family == action_family)
+        else {
+            return Err(crate::ParseError::MissingObject {
+                message: crate::BoundedText::unchecked("missing action feature"),
+            }
+            .into());
+        };
+        assert!(matches!(
+            action.properties.get(&PropertyName::new("URI")?),
+            Some(crate::FeatureValue::RedactedString { bytes }) if *bytes > 0
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_truncate_feature_report_on_object_cap() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(m6_model_pdf()))?;
+        let limits = crate::ResourceLimits {
+            max_objects: 1,
+            ..crate::ResourceLimits::default()
+        };
+        let session = super::ValidationSession::new(document, limits, 100, false);
+        let report = session.extract_features(&super::FeatureSelection::All)?;
+
+        assert!(report.truncated);
+        assert_eq!(report.visited_objects, 1);
         Ok(())
     }
 

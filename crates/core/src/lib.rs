@@ -802,6 +802,11 @@ pub enum FeatureValue {
     Number(f64),
     /// Bounded string feature value.
     String(BoundedText),
+    /// Content-bearing string value redacted from reports.
+    RedactedString {
+        /// Original string byte length.
+        bytes: u64,
+    },
     /// Object key feature value.
     ObjectKey(ObjectKey),
     /// Bounded list feature value.
@@ -1976,11 +1981,12 @@ fn write_xml_feature_report<W: Write>(report: &FeatureReport, out: &mut W) -> Re
         for (name, value) in &object.properties {
             writeln!(
                 out,
-                r#"          <property name="{}" value="{}"></property>"#,
+                r#"          <property name="{}">"#,
                 XmlEscapedAttr::new(name.as_str())?,
-                XmlEscapedAttr::new(&feature_value_text(value))?,
             )
             .map_err(write_error)?;
+            write_xml_feature_value(value, out, 12)?;
+            writeln!(out, "          </property>").map_err(write_error)?;
         }
         writeln!(out, "        </featureObject>").map_err(write_error)?;
     }
@@ -2034,19 +2040,44 @@ fn reference_suffix(references: &[SpecReference]) -> String {
     )
 }
 
-fn feature_value_text(value: &FeatureValue) -> String {
+fn write_xml_feature_value<W: Write>(
+    value: &FeatureValue,
+    out: &mut W,
+    indent: usize,
+) -> Result<()> {
+    let spaces = " ".repeat(indent);
     match value {
-        FeatureValue::Null => String::new(),
-        FeatureValue::Bool(value) => value.to_string(),
-        FeatureValue::Number(value) => value.to_string(),
-        FeatureValue::String(value) => value.as_str().to_owned(),
-        FeatureValue::ObjectKey(value) => format!("{} {}", value.number, value.generation),
-        FeatureValue::List(values) => values
-            .iter()
-            .map(feature_value_text)
-            .collect::<Vec<_>>()
-            .join(","),
+        FeatureValue::Null => writeln!(out, r#"{spaces}<value type="null"></value>"#),
+        FeatureValue::Bool(value) => {
+            writeln!(out, r#"{spaces}<value type="bool">{value}</value>"#)
+        }
+        FeatureValue::Number(value) => {
+            writeln!(out, r#"{spaces}<value type="number">{value}</value>"#)
+        }
+        FeatureValue::String(value) => writeln!(
+            out,
+            r#"{spaces}<value type="string">{}</value>"#,
+            XmlEscapedText::new(value.as_str())?,
+        ),
+        FeatureValue::RedactedString { bytes } => writeln!(
+            out,
+            r#"{spaces}<value type="redactedString" bytes="{bytes}"></value>"#
+        ),
+        FeatureValue::ObjectKey(value) => writeln!(
+            out,
+            r#"{spaces}<value type="objectKey" number="{}" generation="{}"></value>"#,
+            value.number, value.generation,
+        ),
+        FeatureValue::List(values) => {
+            writeln!(out, r#"{spaces}<value type="list">"#).map_err(write_error)?;
+            for item in values {
+                write_xml_feature_value(item, out, indent.saturating_add(2))?;
+            }
+            writeln!(out, "{spaces}</value>")
+        }
     }
+    .map_err(write_error)?;
+    Ok(())
 }
 
 fn write_xml_parse_facts<W: Write>(facts: &[ParseFact], out: &mut W) -> Result<()> {

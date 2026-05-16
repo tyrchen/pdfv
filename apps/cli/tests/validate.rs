@@ -240,6 +240,50 @@ fn test_should_reject_unknown_feature_family() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_should_reject_invalid_policy_schema_as_usage() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    let policy = temp.path().join("policy.yaml");
+    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(
+        &policy,
+        b"name: invalid-policy\nrules:\n  - id: typo-passes\n    description: Field typo must not pass absent\n    family: catalog\n    field: missingField\n    operator: absent\n",
+    )?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "json", "--policy-file"])
+        .arg(&policy)
+        .arg(&path)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(contains("unknown policy feature field").eval(&stderr));
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_oversized_policy_file() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    let policy = temp.path().join("policy.yaml");
+    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&policy, "x".repeat(1024 * 1024 + 1).as_bytes())?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--policy-file"])
+        .arg(&policy)
+        .arg(&path)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(contains("policyFile").eval(&stderr));
+    assert!(contains("byte limit").eval(&stderr));
+    Ok(())
+}
+
+#[test]
 fn test_should_discover_recursive_inputs_with_bounded_jobs() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let nested = temp.path().join("nested");

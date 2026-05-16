@@ -48,6 +48,7 @@ const HARD_MAX_STREAM_BYTES: u64 = 1024 * 1024 * 1024;
 const HARD_MAX_PARSE_FACTS: usize = 1_000_000;
 const HARD_MAX_ENCRYPTION_DICT_ENTRIES: u64 = 1024;
 const HARD_MAX_MEMORY_SOURCE_THRESHOLD_BYTES: u64 = HARD_MAX_FILE_BYTES;
+const MAX_POLICY_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Command-line arguments for the pdfv binary.
 #[derive(Debug, Parser)]
@@ -479,8 +480,25 @@ fn parse_feature_selection(value: &str) -> Result<FeatureSelection> {
 }
 
 fn load_policy_file(path: &Path) -> Result<PolicySet> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to inspect policy file {}", path.display()))?;
+    if metadata.is_dir() {
+        return Err(feature_config_error("policyFile", "policy file is a directory").into());
+    }
+    if metadata.len() > MAX_POLICY_FILE_BYTES {
+        return Err(feature_config_error("policyFile", "policy file exceeds byte limit").into());
+    }
+    let file = File::open(path)
+        .with_context(|| format!("failed to open policy file {}", path.display()))?;
+    let mut contents = String::new();
+    file.take(MAX_POLICY_FILE_BYTES.saturating_add(1))
+        .read_to_string(&mut contents)
+        .with_context(|| format!("failed to read policy file {}", path.display()))?;
+    if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_POLICY_FILE_BYTES {
+        return Err(feature_config_error("policyFile", "policy file exceeds byte limit").into());
+    }
     let policy: PolicySet = config::Config::builder()
-        .add_source(config::File::from(path).required(true))
+        .add_source(config::File::from_str(&contents, config::FileFormat::Yaml))
         .build()
         .with_context(|| format!("failed to read policy file {}", path.display()))?
         .try_deserialize()
@@ -935,7 +953,7 @@ fn default_report_format() -> ReportFormat {
 fn exit_for_error(error: Option<&PdfvError>) -> u8 {
     match error {
         Some(PdfvError::Profile(pdfv_core::ProfileError::UnsupportedSelection)) => EXIT_INCOMPLETE,
-        Some(PdfvError::Configuration(_)) => EXIT_USAGE,
+        Some(PdfvError::Configuration(_) | PdfvError::Policy(_)) => EXIT_USAGE,
         _ => EXIT_INTERNAL,
     }
 }
