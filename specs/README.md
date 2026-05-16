@@ -1,3 +1,3 @@
 # Specs
 
-All specs that for AI to generate code.
+Start with [index.md](./index.md). It lists the dependency-ordered spec set for building `pdfv`.

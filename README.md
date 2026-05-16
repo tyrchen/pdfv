@@ -22,7 +22,9 @@ Have fun with this crate!
 
 ## License
 
-This project is distributed under the terms of MIT.
+This project is distributed under the terms of the Mozilla Public License 2.0.
+
+See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for vendored veraPDF license notices.
 
 See [LICENSE](LICENSE.md) for details.
 
