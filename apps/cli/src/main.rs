@@ -20,9 +20,10 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pdfv_core::{
-    BatchReport, BoundedText, BuiltinProfileRepository, FlavourSelection, MaxDisplayedFailures,
-    PasswordSecret, PdfvError, ReportFormat, ResourceLimits, ValidationFlavour, ValidationOptions,
-    ValidationStatus, ValidationWarning, Validator,
+    BatchReport, BoundedText, BuiltinProfileRepository, FeatureSelection, FlavourSelection,
+    MaxDisplayedFailures, ObjectTypeName, PasswordSecret, PdfvError, PolicySet, ReportFormat,
+    ResourceLimits, ValidationFlavour, ValidationOptions, ValidationStatus, ValidationWarning,
+    Validator,
 };
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -117,6 +118,12 @@ struct ValidateArgs {
     /// Record passed assertions.
     #[arg(long)]
     record_passes: bool,
+    /// Extract feature families into JSON/XML reports. Use all or comma-separated family names.
+    #[arg(long, value_name = "FEATURES", num_args = 0..=1, default_missing_value = "all")]
+    extract: Option<String>,
+    /// Evaluate a bounded YAML policy file over the extracted feature report.
+    #[arg(long, value_name = "PATH")]
+    policy_file: Option<PathBuf>,
     /// Read the PDF password from stdin.
     #[arg(long, conflicts_with_all = ["password_file", "password_env"])]
     password_stdin: bool,
@@ -315,6 +322,20 @@ fn validation_options(args: &ValidateArgs, config: &CliConfig) -> Result<Validat
     )?;
     let resource_limits = validated_resource_limits(config.resources.clone().unwrap_or_default())?;
     let password = resolve_password(args, config, resource_limits.max_password_bytes)?;
+    let policy = args
+        .policy_file
+        .as_ref()
+        .map(|path| load_policy_file(path))
+        .transpose()?;
+    let feature_selection = if policy.is_some() {
+        parse_feature_selection(args.extract.as_deref().unwrap_or("all"))?
+    } else {
+        args.extract
+            .as_deref()
+            .map(parse_feature_selection)
+            .transpose()?
+            .unwrap_or_default()
+    };
     Ok(ValidationOptions::builder()
         .flavour(flavour)
         .resource_limits(resource_limits)
@@ -325,6 +346,8 @@ fn validation_options(args: &ValidateArgs, config: &CliConfig) -> Result<Validat
                 .unwrap_or_default(),
         )
         .record_passed_assertions(args.record_passes || config.validation.record_passed_assertions)
+        .feature_selection(feature_selection)
+        .policy(policy)
         .build())
 }
 
@@ -433,6 +456,39 @@ fn parse_flavour_selection(value: &str) -> std::result::Result<FlavourSelection,
         return Ok(FlavourSelection::Auto { default: None });
     }
     parse_flavour(value).map(|flavour| FlavourSelection::Explicit { flavour })
+}
+
+fn parse_feature_selection(value: &str) -> Result<FeatureSelection> {
+    const MAX_FEATURE_FAMILIES: usize = 64;
+    if value == "all" {
+        return Ok(FeatureSelection::All);
+    }
+    let families = value
+        .split(',')
+        .map(str::trim)
+        .filter(|family| !family.is_empty())
+        .map(|family| ObjectTypeName::new(family.to_owned()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if families.is_empty() {
+        return Err(feature_config_error("extract", "feature selection is empty").into());
+    }
+    if families.len() > MAX_FEATURE_FAMILIES {
+        return Err(feature_config_error("extract", "too many feature families").into());
+    }
+    Ok(FeatureSelection::Families { families })
+}
+
+fn load_policy_file(path: &Path) -> Result<PolicySet> {
+    let policy: PolicySet = config::Config::builder()
+        .add_source(config::File::from(path).required(true))
+        .build()
+        .with_context(|| format!("failed to read policy file {}", path.display()))?
+        .try_deserialize()
+        .with_context(|| format!("failed to parse policy file {}", path.display()))?;
+    policy
+        .validate()
+        .with_context(|| format!("invalid policy file {}", path.display()))?;
+    Ok(policy)
 }
 
 fn parse_flavour(value: &str) -> std::result::Result<ValidationFlavour, String> {
@@ -680,6 +736,13 @@ fn validated_resource_limits(limits: ResourceLimits) -> Result<ResourceLimits> {
 }
 
 fn password_config_error(field: &'static str, reason: &'static str) -> PdfvError {
+    PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
+        field,
+        reason: BoundedText::new(reason, 128).unwrap_or_else(|_| unreachable_bounded_text()),
+    })
+}
+
+fn feature_config_error(field: &'static str, reason: &'static str) -> PdfvError {
     PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
         field,
         reason: BoundedText::new(reason, 128).unwrap_or_else(|_| unreachable_bounded_text()),

@@ -10,11 +10,13 @@ use std::{
 };
 
 use crate::{
-    Assertion, BoundedText, BuiltinProfileRepository, ENGINE_VERSION, ErrorArgument, Identifier,
-    IndirectObject, InputKind, InputSummary, ModelValue, ObjectKey, ObjectLocation, ObjectTypeName,
-    ParsedDocument, Parser, PdfName, PdfvError, ProfileReport, ProfileRepository, PropertyName,
-    ResourceLimits, Result, Rule, RuleEvaluator, RuleId, RuleOutcome, TaskDuration,
-    UnsupportedRule, ValidationError, ValidationOptions, ValidationReport, ValidationStatus,
+    Assertion, BoundedText, BuiltinProfileRepository, ENGINE_VERSION, ErrorArgument, FeatureObject,
+    FeatureReport, FeatureValue, Identifier, IndirectObject, InputKind, InputSummary, ModelValue,
+    ObjectKey, ObjectLocation, ObjectTypeName, ParsedDocument, Parser, PdfName, PdfvError,
+    PolicyOperator, PolicyReport, PolicyRule, PolicyRuleResult, PolicySet, PolicyValue,
+    ProfileReport, ProfileRepository, PropertyName, ResourceLimits, Result, Rule, RuleEvaluator,
+    RuleId, RuleOutcome, TaskDuration, UnsupportedRule, ValidationError, ValidationOptions,
+    ValidationReport, ValidationStatus,
     profile::DefaultRuleEvaluator,
     xmp::{FlavourDetector, parse_document_xmp},
 };
@@ -463,6 +465,31 @@ const PAGE_LINKS: &[(&str, &str)] = &[
     ("contentStreams", "contentStream"),
 ];
 
+/// Feature extraction selection.
+#[derive(Clone, Debug, Default, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum FeatureSelection {
+    /// Do not extract features.
+    #[default]
+    None,
+    /// Extract all built-in feature families.
+    All,
+    /// Extract selected feature families.
+    Families {
+        /// Selected validation-model family names.
+        families: Vec<ObjectTypeName>,
+    },
+}
+
+impl FeatureSelection {
+    /// Returns true when feature extraction is enabled.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// Bounded input name used by reader validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputName(Option<PathBuf>);
@@ -515,6 +542,7 @@ impl Validator {
         validator
             .profiles
             .profiles_for(&validator.options.flavour)?;
+        validate_feature_configuration(&validator.options)?;
         Ok(validator)
     }
 
@@ -531,6 +559,7 @@ impl Validator {
         validator
             .profiles
             .profiles_for(&validator.options.flavour)?;
+        validate_feature_configuration(&validator.options)?;
         Ok(validator)
     }
 
@@ -570,6 +599,11 @@ impl Validator {
         self.validate_reader_with_kind(source, &name, InputKind::Memory)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the facade keeps parse, validation, feature, and policy task ordering in one \
+                  place so report construction remains auditable"
+    )]
     fn validate_reader_with_kind<R: Read + Seek>(
         &self,
         mut source: R,
@@ -648,7 +682,7 @@ impl Validator {
         for profile in &profiles {
             profile_reports.push(session.validate_profile(profile)?);
         }
-        let status = if profile_reports
+        let mut status = if profile_reports
             .iter()
             .any(|report| !report.unsupported_rules.is_empty())
         {
@@ -663,8 +697,53 @@ impl Validator {
             .map(|profile| profile.flavour.clone())
             .collect::<Vec<_>>();
 
+        let needs_features =
+            self.options.feature_selection.is_enabled() || self.options.policy.is_some();
+        let feature_started = Instant::now();
+        let feature_report = if needs_features {
+            Some(session.extract_features(&self.options.feature_selection)?)
+        } else {
+            None
+        };
+        let feature_duration = needs_features.then(|| {
+            TaskDuration::from_duration(
+                Identifier::unchecked("featureExtraction"),
+                feature_started.elapsed(),
+            )
+        });
+        let policy_started = Instant::now();
+        let policy_report = match (&self.options.policy, feature_report.as_ref()) {
+            (Some(policy), Some(features)) => {
+                policy.validate()?;
+                let report = evaluate_policy(policy, features)?;
+                if !report.is_compliant && matches!(status, ValidationStatus::Valid) {
+                    status = ValidationStatus::Invalid;
+                }
+                Some(report)
+            }
+            (Some(_), None) => {
+                return Err(crate::PolicyError::Evaluation {
+                    reason: BoundedText::unchecked("policy evaluation requires feature report"),
+                }
+                .into());
+            }
+            (None, _) => None,
+        };
+        let policy_duration = self.options.policy.is_some().then(|| {
+            TaskDuration::from_duration(Identifier::unchecked("policy"), policy_started.elapsed())
+        });
         let parse_facts = session.document.parse_facts.clone();
         let warnings = session.document.warnings.clone();
+        let mut task_durations = vec![TaskDuration::from_duration(
+            Identifier::new("validate")?,
+            started.elapsed(),
+        )];
+        if let Some(duration) = feature_duration {
+            task_durations.push(duration);
+        }
+        if let Some(duration) = policy_duration {
+            task_durations.push(duration);
+        }
         Ok(ValidationReport::builder()
             .engine_version(ENGINE_VERSION.to_owned())
             .source(source_summary)
@@ -673,10 +752,9 @@ impl Validator {
             .profile_reports(profile_reports)
             .parse_facts(parse_facts)
             .warnings(warnings)
-            .task_durations(vec![TaskDuration::from_duration(
-                Identifier::new("validate")?,
-                started.elapsed(),
-            )])
+            .feature_report(feature_report)
+            .policy_report(policy_report)
+            .task_durations(task_durations)
             .build())
     }
 }
@@ -754,6 +832,242 @@ impl ValidationSession {
         }
         Ok(state.finish())
     }
+
+    fn extract_features(&self, selection: &FeatureSelection) -> Result<FeatureReport> {
+        let registry = ModelRegistry::default_registry();
+        let selected = selected_feature_families(selection, &registry)?;
+        let graph = ModelGraph::with_all_families(&self.document, &self.limits);
+        let mut stack = Vec::from([ModelObjectRef::Document(DocumentModel::new(&self.document))]);
+        let mut visited = HashSet::new();
+        let mut objects = Vec::new();
+        let mut truncated = false;
+
+        while let Some(object) = stack.pop() {
+            let visited_key = object.identity_key();
+            if !visited.insert(visited_key) {
+                continue;
+            }
+            let object_type = object.object_type();
+            if selected.contains(&object_type)
+                && let Some(feature) = feature_object(&registry, &object, &object_type)?
+            {
+                objects.push(feature);
+            }
+            if u64::try_from(visited.len()).map_err(|_| ValidationError::LimitExceeded {
+                limit: "max_objects",
+            })? > self.limits.max_objects
+            {
+                truncated = true;
+                break;
+            }
+            let object_budget = remaining_object_budget(&self.limits, visited.len(), stack.len())?;
+            for linked in object.linked_objects(&graph, object_budget)? {
+                stack.push(linked);
+            }
+        }
+        let visited_objects = u64::try_from(visited.len()).unwrap_or(u64::MAX);
+        Ok(FeatureReport::builder()
+            .objects(objects)
+            .visited_objects(visited_objects)
+            .selected_families(selected.into_iter().collect())
+            .truncated(truncated)
+            .build())
+    }
+}
+
+fn selected_feature_families(
+    selection: &FeatureSelection,
+    registry: &ModelRegistry,
+) -> Result<BTreeSet<ObjectTypeName>> {
+    match selection {
+        FeatureSelection::None | FeatureSelection::All => {
+            Ok(registry.family_names().cloned().collect())
+        }
+        FeatureSelection::Families { families } => {
+            let mut selected = BTreeSet::new();
+            for family in families {
+                if !registry.has_family(family) {
+                    return Err(crate::ConfigError::InvalidValue {
+                        field: "extract",
+                        reason: BoundedText::unchecked("unknown feature family"),
+                    }
+                    .into());
+                }
+                selected.insert(family.clone());
+            }
+            Ok(selected)
+        }
+    }
+}
+
+fn validate_feature_configuration(options: &ValidationOptions) -> Result<()> {
+    let registry = ModelRegistry::default_registry();
+    let _selected = selected_feature_families(&options.feature_selection, &registry)?;
+    if let Some(policy) = &options.policy {
+        policy.validate()?;
+    }
+    Ok(())
+}
+
+fn feature_object(
+    registry: &ModelRegistry,
+    object: &ModelObjectRef<'_>,
+    object_type: &ObjectTypeName,
+) -> Result<Option<FeatureObject>> {
+    let Some(properties) = registry.family_property_names(object_type) else {
+        return Ok(None);
+    };
+    let mut values = BTreeMap::new();
+    for property in properties {
+        match object.property(&property) {
+            Ok(value) => {
+                values.insert(property, FeatureValue::from(value));
+            }
+            Err(PdfvError::Profile(crate::ProfileError::UnknownProperty { .. })) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(Some(
+        FeatureObject::builder()
+            .family(object_type.clone())
+            .location(object.location())
+            .context(object.context())
+            .properties(values)
+            .build(),
+    ))
+}
+
+impl From<ModelValue> for FeatureValue {
+    fn from(value: ModelValue) -> Self {
+        match value {
+            ModelValue::Null => Self::Null,
+            ModelValue::Bool(value) => Self::Bool(value),
+            ModelValue::Number(value) => Self::Number(value),
+            ModelValue::String(value) => Self::String(value),
+            ModelValue::ObjectKey(value) => Self::ObjectKey(value),
+            ModelValue::List(values) => {
+                Self::List(values.into_iter().map(FeatureValue::from).collect())
+            }
+        }
+    }
+}
+
+fn evaluate_policy(policy: &PolicySet, features: &FeatureReport) -> Result<PolicyReport> {
+    let results = policy
+        .rules
+        .iter()
+        .map(|rule| evaluate_policy_rule(rule, features))
+        .collect::<Result<Vec<_>>>()?;
+    let is_compliant = results.iter().all(|result| result.passed);
+    Ok(PolicyReport::builder()
+        .name(policy.name.clone())
+        .is_compliant(is_compliant)
+        .results(results)
+        .build())
+}
+
+fn evaluate_policy_rule(rule: &PolicyRule, features: &FeatureReport) -> Result<PolicyRuleResult> {
+    let matches = features
+        .objects
+        .iter()
+        .filter(|object| object.family == rule.family)
+        .collect::<Vec<_>>();
+    let values = matches
+        .iter()
+        .filter_map(|object| object.properties.get(&rule.field))
+        .collect::<Vec<_>>();
+    let passed = match rule.operator {
+        PolicyOperator::Exists => !values.is_empty(),
+        PolicyOperator::Absent => values.is_empty(),
+        PolicyOperator::Equals => {
+            let expected = required_policy_value(rule)?;
+            values
+                .iter()
+                .any(|actual| policy_value_matches(actual, expected))
+        }
+        PolicyOperator::NotEquals => {
+            let expected = required_policy_value(rule)?;
+            values
+                .iter()
+                .all(|actual| !policy_value_matches(actual, expected))
+        }
+        PolicyOperator::Min => {
+            let expected = required_policy_number(rule)?;
+            values
+                .iter()
+                .filter_map(|value| feature_number(value))
+                .any(|actual| actual >= expected)
+        }
+        PolicyOperator::Max => {
+            let expected = required_policy_number(rule)?;
+            values
+                .iter()
+                .filter_map(|value| feature_number(value))
+                .any(|actual| actual <= expected)
+        }
+    };
+    let matches = u64::try_from(matches.len()).unwrap_or(u64::MAX);
+    Ok(PolicyRuleResult::builder()
+        .id(rule.id.clone())
+        .description(rule.description.clone())
+        .passed(passed)
+        .matches(matches)
+        .message(policy_message(rule, passed, matches)?)
+        .build())
+}
+
+fn required_policy_value(rule: &PolicyRule) -> Result<&PolicyValue> {
+    rule.value.as_ref().ok_or_else(|| {
+        crate::PolicyError::InvalidField {
+            field: "value",
+            reason: BoundedText::unchecked("operator requires a comparison value"),
+        }
+        .into()
+    })
+}
+
+fn required_policy_number(rule: &PolicyRule) -> Result<f64> {
+    match required_policy_value(rule)? {
+        PolicyValue::Number(value) => Ok(f64::from(*value)),
+        _ => Err(crate::PolicyError::InvalidField {
+            field: "value",
+            reason: BoundedText::unchecked("operator requires a numeric comparison value"),
+        }
+        .into()),
+    }
+}
+
+fn policy_value_matches(actual: &FeatureValue, expected: &PolicyValue) -> bool {
+    match (actual, expected) {
+        (FeatureValue::Bool(actual), PolicyValue::Bool(expected)) => actual == expected,
+        (FeatureValue::Number(actual), PolicyValue::Number(expected)) => {
+            (*actual - f64::from(*expected)).abs() < f64::EPSILON
+        }
+        (FeatureValue::String(actual), PolicyValue::String(expected)) => actual == expected,
+        _ => false,
+    }
+}
+
+fn feature_number(value: &FeatureValue) -> Option<f64> {
+    match value {
+        FeatureValue::Number(value) if value.is_finite() => Some(*value),
+        _ => None,
+    }
+}
+
+fn policy_message(
+    rule: &PolicyRule,
+    passed: bool,
+    matches: u64,
+) -> std::result::Result<BoundedText, crate::ConfigError> {
+    let status = if passed { "passed" } else { "failed" };
+    BoundedText::new(
+        format!(
+            "policy rule {} {status} with {matches} matching feature objects",
+            rule.id.as_str()
+        ),
+        256,
+    )
 }
 
 /// Property exposed by a validation model family.
@@ -907,8 +1221,17 @@ impl ModelRegistry {
         })
     }
 
+    fn family_property_names(&self, family: &ObjectTypeName) -> Option<Vec<PropertyName>> {
+        self.families.get(family).map(|family| {
+            family
+                .property_schema()
+                .iter()
+                .map(|property| property.name.clone())
+                .collect()
+        })
+    }
+
     /// Iterates registered family names.
-    #[cfg(test)]
     pub(crate) fn family_names(&self) -> impl Iterator<Item = &ObjectTypeName> {
         self.families.keys()
     }
@@ -1280,7 +1603,6 @@ impl<'a> ModelGraph<'a> {
         }
     }
 
-    #[cfg(test)]
     fn with_all_families(document: &'a ParsedDocument, limits: &'a ResourceLimits) -> Self {
         Self {
             document,

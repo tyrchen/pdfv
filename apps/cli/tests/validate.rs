@@ -154,6 +154,92 @@ fn test_should_accept_mrr_as_deprecated_xml_alias() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn test_should_extract_feature_report_to_json() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "json", "--extract", "catalog,page"])
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""featureReport""#).eval(&stdout));
+    assert!(contains(r#""selectedFamilies":["catalog","page"]"#).eval(&stdout));
+    assert!(contains(r#""family":"catalog""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_merge_feature_and_policy_reports_to_xml() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    let policy = temp.path().join("policy.yaml");
+    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(
+        &policy,
+        b"name: catalog-policy\nrules:\n  - id: catalog-has-no-metadata\n    description: Catalog metadata is absent\n    family: catalog\n    field: hasMetadata\n    operator: equals\n    value:\n      type: bool\n      value: false\n",
+    )?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "xml", "--policy-file"])
+        .arg(&policy)
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains("<featureReport").eval(&stdout));
+    assert!(contains(r#"<policyReport name="catalog-policy" isCompliant="true">"#).eval(&stdout));
+    assert!(contains(r#"<rule id="catalog-has-no-metadata" passed="true""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_return_invalid_when_policy_fails() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    let policy = temp.path().join("policy.yaml");
+    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(
+        &policy,
+        b"name: failing-catalog-policy\nrules:\n  - id: catalog-requires-metadata\n    description: Catalog metadata is required\n    family: catalog\n    field: hasMetadata\n    operator: equals\n    value:\n      type: bool\n      value: true\n",
+    )?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--format", "json", "--policy-file"])
+        .arg(&policy)
+        .arg(&path)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""policyReport""#).eval(&stdout));
+    assert!(contains(r#""isCompliant":false"#).eval(&stdout));
+    assert!(contains(r#""status":"invalid""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_unknown_feature_family() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--extract", "missingFamily"])
+        .arg(&path)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(contains("unknown feature family").eval(&stderr));
+    Ok(())
+}
+
+#[test]
 fn test_should_discover_recursive_inputs_with_bounded_jobs() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let nested = temp.path().join("nested");

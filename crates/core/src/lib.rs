@@ -21,6 +21,7 @@ mod validation;
 mod xmp;
 
 use std::{
+    collections::BTreeMap,
     fmt,
     io::Write,
     num::{NonZeroU32, NonZeroU64},
@@ -46,9 +47,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use typed_builder::TypedBuilder;
 pub use validation::{
-    AnnotationModel, CatalogModel, ContentStreamModel, FontModel, InputName, LinkName,
-    MetadataModel, ModelGraph, ModelObject, ModelObjectRef, ObjectIdentity, OutputIntentModel,
-    PageModel, Validator,
+    AnnotationModel, CatalogModel, ContentStreamModel, FeatureSelection, FontModel, InputName,
+    LinkName, MetadataModel, ModelGraph, ModelObject, ModelObjectRef, ObjectIdentity,
+    OutputIntentModel, PageModel, Validator,
 };
 pub use xmp::{
     DetectedFlavours, FlavourClaim, FlavourDetector, NamespaceBinding, XmpIdentificationKind,
@@ -98,6 +99,9 @@ pub enum PdfvError {
     /// Validation engine failure.
     #[error("validation error: {0}")]
     Validation(#[from] ValidationError),
+    /// Policy loading or evaluation failure.
+    #[error("policy error: {0}")]
+    Policy(#[from] PolicyError),
     /// Report serialization failure.
     #[error("report error: {0}")]
     Report(#[from] ReportError),
@@ -210,6 +214,26 @@ pub enum ValidationError {
     LimitExceeded {
         /// Limit that was exceeded.
         limit: &'static str,
+    },
+}
+
+/// Feature policy error.
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PolicyError {
+    /// A policy document field failed validation.
+    #[error("invalid policy field {field}: {reason}")]
+    InvalidField {
+        /// Field that failed validation.
+        field: &'static str,
+        /// Bounded reason string.
+        reason: BoundedText,
+    },
+    /// A policy rule could not be evaluated against the feature report.
+    #[error("policy rule could not be evaluated: {reason}")]
+    Evaluation {
+        /// Bounded reason string.
+        reason: BoundedText,
     },
 }
 
@@ -435,6 +459,13 @@ pub struct ValidationOptions {
     /// Whether recoverable parser warnings are included in the report.
     #[builder(default = true)]
     pub report_parse_warnings: bool,
+    /// Optional feature families to extract into reports.
+    #[builder(default)]
+    pub feature_selection: FeatureSelection,
+    /// Optional feature-policy rules to evaluate.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<PolicySet>,
 }
 
 impl Default for ValidationOptions {
@@ -716,8 +747,185 @@ pub struct ValidationReport {
     pub parse_facts: Vec<ParseFact>,
     /// User-visible warnings.
     pub warnings: Vec<ValidationWarning>,
+    /// Optional read-only feature extraction report.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_report: Option<FeatureReport>,
+    /// Optional policy evaluation report.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_report: Option<PolicyReport>,
     /// Task duration measurements.
     pub task_durations: Vec<TaskDuration>,
+}
+
+/// Machine-readable read-only feature extraction report.
+#[derive(Clone, Debug, Deserialize, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureReport {
+    /// Extracted feature objects in deterministic traversal order.
+    pub objects: Vec<FeatureObject>,
+    /// Total model objects visited while extracting features.
+    pub visited_objects: u64,
+    /// Feature families requested by the caller.
+    pub selected_families: Vec<ObjectTypeName>,
+    /// Whether extraction stopped because a resource limit was reached.
+    pub truncated: bool,
+}
+
+/// One extracted validation-model object.
+#[derive(Clone, Debug, Deserialize, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureObject {
+    /// Validation model family name.
+    pub family: ObjectTypeName,
+    /// Stable object location.
+    pub location: ObjectLocation,
+    /// Bounded diagnostic context path.
+    pub context: BoundedText,
+    /// Extracted scalar properties keyed by validation-model property name.
+    pub properties: BTreeMap<PropertyName, FeatureValue>,
+}
+
+/// Feature property value.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", tag = "type", content = "value")]
+pub enum FeatureValue {
+    /// Null feature value.
+    Null,
+    /// Boolean feature value.
+    Bool(bool),
+    /// Numeric feature value.
+    Number(f64),
+    /// Bounded string feature value.
+    String(BoundedText),
+    /// Object key feature value.
+    ObjectKey(ObjectKey),
+    /// Bounded list feature value.
+    List(Vec<FeatureValue>),
+}
+
+/// Bounded policy rules evaluated over a [`FeatureReport`].
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PolicySet {
+    /// Optional policy document name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<BoundedText>,
+    /// Policy rules.
+    pub rules: Vec<PolicyRule>,
+}
+
+impl PolicySet {
+    /// Validates collection-level policy limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyError`] when the policy exceeds compiled limits.
+    pub fn validate(&self) -> std::result::Result<(), PolicyError> {
+        const MAX_POLICY_RULES: usize = 1024;
+        if self.rules.is_empty() {
+            return Err(PolicyError::InvalidField {
+                field: "rules",
+                reason: BoundedText::unchecked("policy must contain at least one rule"),
+            });
+        }
+        if self.rules.len() > MAX_POLICY_RULES {
+            return Err(PolicyError::InvalidField {
+                field: "rules",
+                reason: BoundedText::unchecked("policy rule count exceeds limit"),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One bounded policy rule.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PolicyRule {
+    /// Rule identifier.
+    pub id: Identifier,
+    /// Human-readable rule description.
+    pub description: BoundedText,
+    /// Feature family to inspect.
+    pub family: ObjectTypeName,
+    /// Feature property to inspect.
+    pub field: PropertyName,
+    /// Comparison operator.
+    pub operator: PolicyOperator,
+    /// Optional comparison value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<PolicyValue>,
+}
+
+/// Bounded policy comparison operator.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum PolicyOperator {
+    /// At least one matching feature object contains the field.
+    Exists,
+    /// No matching feature object contains the field.
+    Absent,
+    /// At least one matching value equals the rule value.
+    Equals,
+    /// No matching value equals the rule value.
+    NotEquals,
+    /// At least one matching numeric value is greater than or equal to the rule value.
+    Min,
+    /// At least one matching numeric value is less than or equal to the rule value.
+    Max,
+}
+
+/// Policy comparison value.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", tag = "type", content = "value")]
+pub enum PolicyValue {
+    /// Boolean comparison value.
+    Bool(bool),
+    /// Integer comparison value.
+    Number(i32),
+    /// Bounded string comparison value.
+    String(BoundedText),
+}
+
+/// Policy evaluation report.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PolicyReport {
+    /// Optional policy document name.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<BoundedText>,
+    /// Whether all policy rules passed.
+    pub is_compliant: bool,
+    /// Rule results.
+    pub results: Vec<PolicyRuleResult>,
+}
+
+/// One policy rule result.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TypedBuilder)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PolicyRuleResult {
+    /// Rule identifier.
+    pub id: Identifier,
+    /// Human-readable rule description.
+    pub description: BoundedText,
+    /// Rule pass/fail status.
+    pub passed: bool,
+    /// Number of matching feature objects considered.
+    pub matches: u64,
+    /// Bounded diagnostic message.
+    pub message: BoundedText,
 }
 
 /// Input summary included in reports.
@@ -1538,6 +1746,21 @@ fn write_text_report<W: Write>(report: &ValidationReport, out: &mut W) -> Result
     if !report.warnings.is_empty() {
         writeln!(out, "warnings: {}", report.warnings.len()).map_err(write_error)?;
     }
+    if let Some(features) = &report.feature_report {
+        writeln!(out, "features: {} objects", features.objects.len()).map_err(write_error)?;
+    }
+    if let Some(policy) = &report.policy_report {
+        writeln!(
+            out,
+            "policy: {}",
+            if policy.is_compliant {
+                "compliant"
+            } else {
+                "non-compliant"
+            }
+        )
+        .map_err(write_error)?;
+    }
     Ok(())
 }
 
@@ -1584,6 +1807,12 @@ fn write_xml_job<W: Write>(report: &ValidationReport, out: &mut W) -> Result<()>
         writeln!(out, "      </validationReport>").map_err(write_error)?;
     }
     write_xml_parse_facts(&report.parse_facts, out)?;
+    if let Some(feature_report) = &report.feature_report {
+        write_xml_feature_report(feature_report, out)?;
+    }
+    if let Some(policy_report) = &report.policy_report {
+        write_xml_policy_report(policy_report, out)?;
+    }
     write_xml_warnings(&report.warnings, out, 6)?;
     writeln!(out, "    </job>").map_err(write_error)?;
     Ok(())
@@ -1727,6 +1956,73 @@ fn write_xml_unsupported_rules<W: Write>(rules: &[UnsupportedRule], out: &mut W)
     Ok(())
 }
 
+fn write_xml_feature_report<W: Write>(report: &FeatureReport, out: &mut W) -> Result<()> {
+    writeln!(
+        out,
+        r#"      <featureReport visitedObjects="{}" extractedObjects="{}" truncated="{}">"#,
+        report.visited_objects,
+        report.objects.len(),
+        report.truncated,
+    )
+    .map_err(write_error)?;
+    for object in &report.objects {
+        writeln!(
+            out,
+            r#"        <featureObject family="{}" location="{}">"#,
+            XmlEscapedAttr::new(object.family.as_str())?,
+            XmlEscapedAttr::new(&location_text(&object.location))?,
+        )
+        .map_err(write_error)?;
+        for (name, value) in &object.properties {
+            writeln!(
+                out,
+                r#"          <property name="{}" value="{}"></property>"#,
+                XmlEscapedAttr::new(name.as_str())?,
+                XmlEscapedAttr::new(&feature_value_text(value))?,
+            )
+            .map_err(write_error)?;
+        }
+        writeln!(out, "        </featureObject>").map_err(write_error)?;
+    }
+    writeln!(out, "      </featureReport>").map_err(write_error)?;
+    Ok(())
+}
+
+fn write_xml_policy_report<W: Write>(report: &PolicyReport, out: &mut W) -> Result<()> {
+    writeln!(
+        out,
+        r#"      <policyReport name="{}" isCompliant="{}">"#,
+        XmlEscapedAttr::new(report.name.as_ref().map_or("", BoundedText::as_str))?,
+        report.is_compliant,
+    )
+    .map_err(write_error)?;
+    for result in &report.results {
+        writeln!(
+            out,
+            r#"        <rule id="{}" passed="{}" matches="{}">"#,
+            XmlEscapedAttr::new(result.id.as_str())?,
+            result.passed,
+            result.matches,
+        )
+        .map_err(write_error)?;
+        writeln!(
+            out,
+            "          <description>{}</description>",
+            XmlEscapedText::new(result.description.as_str())?,
+        )
+        .map_err(write_error)?;
+        writeln!(
+            out,
+            "          <message>{}</message>",
+            XmlEscapedText::new(result.message.as_str())?,
+        )
+        .map_err(write_error)?;
+        writeln!(out, "        </rule>").map_err(write_error)?;
+    }
+    writeln!(out, "      </policyReport>").map_err(write_error)?;
+    Ok(())
+}
+
 fn reference_suffix(references: &[SpecReference]) -> String {
     let Some(reference) = references.first() else {
         return String::new();
@@ -1736,6 +2032,21 @@ fn reference_suffix(references: &[SpecReference]) -> String {
         reference.specification.as_str(),
         reference.clause.as_str()
     )
+}
+
+fn feature_value_text(value: &FeatureValue) -> String {
+    match value {
+        FeatureValue::Null => String::new(),
+        FeatureValue::Bool(value) => value.to_string(),
+        FeatureValue::Number(value) => value.to_string(),
+        FeatureValue::String(value) => value.as_str().to_owned(),
+        FeatureValue::ObjectKey(value) => format!("{} {}", value.number, value.generation),
+        FeatureValue::List(values) => values
+            .iter()
+            .map(feature_value_text)
+            .collect::<Vec<_>>()
+            .join(","),
+    }
 }
 
 fn write_xml_parse_facts<W: Write>(facts: &[ParseFact], out: &mut W) -> Result<()> {

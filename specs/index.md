@@ -79,3 +79,4 @@ Read in this order when implementing:
 - [../docs/research/spike-profile-expression-ir.md](../docs/research/spike-profile-expression-ir.md) — rule-expression risk retirement for generated built-in profile coverage.
 - [../docs/research/spike-pdf-stream-resource-limits.md](../docs/research/spike-pdf-stream-resource-limits.md) — stream decode caps and scan caps for hostile PDFs.
 - [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md) — XML/MRR compatibility naming and report-surface decisions.
+- [../docs/research/spike-policy-language.md](../docs/research/spike-policy-language.md) — bounded FeatureReport-only policy language for Phase 16.
