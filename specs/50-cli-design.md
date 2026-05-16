@@ -13,9 +13,10 @@ pdfv validate <paths>...
     --flavour <auto|pdfa-1b|pdfa-2b|...>
     --default-flavour <flavour>
     --profile <path>
-    --format <json|json-pretty|text|xml|mrr>
+    --format <json|json-pretty|text|xml|mrr|raw|html>
     --output <path>
     --recursive
+    --non-pdf-extension
     --jobs <N>
     --max-failures <N|-1>
     --record-passes
@@ -52,6 +53,7 @@ Runtime-tunable defaults live in YAML via the `config 0.15.23` crate. CLI flags 
 ```yaml
 validation:
   flavour: auto
+  defaultFlavour: pdfa-1b
   maxFailedAssertionsPerRule: 100
   recordPassedAssertions: false
 resources:
@@ -61,7 +63,9 @@ output:
   format: json
 ```
 
-`output.format: xml` selects the XML compatibility report. `mrr` is accepted on the CLI as a deprecated alias for `xml`; configs should use `xml` so machine-readable output names align with current veraPDF documentation.
+`validation.defaultFlavour` selects the built-in fallback used only when `validation.flavour` or `--flavour` is `auto` and XMP metadata detection is inconclusive.
+
+`output.format: xml` selects the XML compatibility report. `mrr` is accepted on the CLI as a deprecated alias for `xml`; configs should use `xml` so machine-readable output names align with current veraPDF documentation. `raw` and `html` select the Phase 17 processor-style raw XML and static HTML writers.
 
 Password config follows [14-password-decryption-design.md](./14-password-decryption-design.md): config may identify a password source (`stdin`, file path, or environment variable name) but must never contain a literal password value.
 

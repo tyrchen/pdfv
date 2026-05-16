@@ -97,6 +97,9 @@ struct ValidateArgs {
     /// Built-in validation flavour or `auto`.
     #[arg(long, value_parser = parse_flavour_selection)]
     flavour: Option<FlavourSelection>,
+    /// Built-in default flavour used when auto-detection is inconclusive.
+    #[arg(long, alias = "defaultflavour", value_parser = parse_flavour, conflicts_with = "profile")]
+    default_flavour: Option<ValidationFlavour>,
     /// Custom profile path. Custom profile loading is not available in M0.
     #[arg(long, value_name = "PATH", conflicts_with = "flavour")]
     profile: Option<PathBuf>,
@@ -104,8 +107,11 @@ struct ValidateArgs {
     #[arg(long, allow_hyphen_values = true, value_parser = parse_max_failures)]
     max_failures: Option<MaxDisplayedFailures>,
     /// Recursively discover PDF files under directories.
-    #[arg(long)]
+    #[arg(long, alias = "recurse")]
     recursive: bool,
+    /// Include recursively discovered files without a `.pdf` extension.
+    #[arg(long, alias = "nonpdfext")]
+    non_pdf_extension: bool,
     /// Maximum concurrent validation jobs.
     #[arg(long, default_value = "1", value_parser = parse_jobs)]
     jobs: NonZeroU32,
@@ -256,7 +262,7 @@ fn run_validate(args: &ValidateArgs) -> Result<CliExit> {
     );
     let options = validation_options(args, &config)?;
     let validator = Validator::new(options).context("failed to initialize validator")?;
-    let paths = discover_inputs(&args.paths, args.recursive)?;
+    let paths = discover_inputs(&args.paths, args.recursive, args.non_pdf_extension)?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(usize::try_from(args.jobs.get()).unwrap_or(usize::MAX))
         .build()
@@ -303,7 +309,7 @@ fn run_repair_metadata(args: &RepairMetadataArgs) -> Result<CliExit> {
         MetadataRepairOptions::new(validation_options, &args.output_dir, args.prefix.clone())?;
     let repairer =
         MetadataRepairer::new(repair_options).context("failed to initialize repair engine")?;
-    let paths = discover_inputs(&args.paths, false)?;
+    let paths = discover_inputs(&args.paths, false, false)?;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(usize::try_from(args.jobs.get()).unwrap_or(usize::MAX))
         .build()
@@ -415,7 +421,11 @@ fn write_repair_reports<W: Write>(
 
 fn validation_options(args: &ValidateArgs, config: &CliConfig) -> Result<ValidationOptions> {
     let flavour = args.profile.as_ref().map_or_else(
-        || config.validation.flavour_selection(args.flavour.clone()),
+        || {
+            config
+                .validation
+                .flavour_selection(args.flavour.clone(), args.default_flavour.clone())
+        },
         |profile_path| {
             Ok(FlavourSelection::CustomProfile {
                 profile_path: profile_path.clone(),
@@ -560,6 +570,18 @@ fn parse_flavour_selection(value: &str) -> std::result::Result<FlavourSelection,
     parse_flavour(value).map(|flavour| FlavourSelection::Explicit { flavour })
 }
 
+fn apply_default_flavour(
+    selection: FlavourSelection,
+    default: Option<ValidationFlavour>,
+) -> FlavourSelection {
+    match (selection, default) {
+        (FlavourSelection::Auto { .. }, Some(default)) => FlavourSelection::Auto {
+            default: Some(default),
+        },
+        (selection, _) => selection,
+    }
+}
+
 fn parse_feature_selection(value: &str) -> Result<FeatureSelection> {
     const MAX_FEATURE_FAMILIES: usize = 64;
     if value == "all" {
@@ -686,11 +708,15 @@ fn load_cli_config(path: &Path) -> Result<CliConfig> {
         .with_context(|| format!("failed to parse config {}", path.display()))
 }
 
-fn discover_inputs(paths: &[PathBuf], recursive: bool) -> Result<Vec<PathBuf>> {
+fn discover_inputs(
+    paths: &[PathBuf],
+    recursive: bool,
+    include_non_pdf_extension: bool,
+) -> Result<Vec<PathBuf>> {
     let mut discovered = Vec::new();
     for path in paths {
         if recursive && path.is_dir() {
-            discover_directory(path, &mut discovered)?;
+            discover_directory(path, include_non_pdf_extension, &mut discovered)?;
         } else {
             discovered.push(path.clone());
         }
@@ -707,7 +733,11 @@ fn discover_inputs(paths: &[PathBuf], recursive: bool) -> Result<Vec<PathBuf>> {
     Ok(discovered)
 }
 
-fn discover_directory(root: &Path, discovered: &mut Vec<PathBuf>) -> Result<()> {
+fn discover_directory(
+    root: &Path,
+    include_non_pdf_extension: bool,
+    discovered: &mut Vec<PathBuf>,
+) -> Result<()> {
     const MAX_DISCOVERED_FILES: usize = 100_000;
     let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
@@ -722,7 +752,8 @@ fn discover_directory(root: &Path, discovered: &mut Vec<PathBuf>) -> Result<()> 
                 .with_context(|| format!("failed to inspect {}", entry_path.display()))?;
             if file_type.is_dir() {
                 stack.push(entry_path);
-            } else if file_type.is_file() && is_pdf_path(&entry_path) {
+            } else if file_type.is_file() && (include_non_pdf_extension || is_pdf_path(&entry_path))
+            {
                 if discovered.len() >= MAX_DISCOVERED_FILES {
                     return Err(
                         PdfvError::Configuration(pdfv_core::ConfigError::InvalidValue {
@@ -975,6 +1006,8 @@ struct ValidationConfig {
     #[serde(default)]
     flavour: Option<String>,
     #[serde(default)]
+    default_flavour: Option<String>,
+    #[serde(default)]
     max_failed_assertions_per_rule: Option<MaxDisplayedFailures>,
     #[serde(default)]
     record_passed_assertions: bool,
@@ -983,16 +1016,28 @@ struct ValidationConfig {
 }
 
 impl ValidationConfig {
-    fn flavour_selection(&self, cli_flavour: Option<FlavourSelection>) -> Result<FlavourSelection> {
-        if let Some(flavour) = cli_flavour {
-            return Ok(flavour);
-        }
-        self.flavour
+    fn flavour_selection(
+        &self,
+        cli_flavour: Option<FlavourSelection>,
+        cli_default_flavour: Option<ValidationFlavour>,
+    ) -> Result<FlavourSelection> {
+        let configured_flavour = self
+            .flavour
             .as_deref()
             .map(parse_flavour_selection)
             .transpose()
-            .map_err(|message| anyhow::anyhow!("invalid config validation.flavour: {message}"))?
-            .map_or_else(|| Ok(FlavourSelection::default()), Ok)
+            .map_err(|message| anyhow::anyhow!("invalid config validation.flavour: {message}"))?;
+        let configured_default = self
+            .default_flavour
+            .as_deref()
+            .map(parse_flavour)
+            .transpose()
+            .map_err(|message| {
+                anyhow::anyhow!("invalid config validation.defaultFlavour: {message}")
+            })?;
+        let flavour = cli_flavour.or(configured_flavour).unwrap_or_default();
+        let default = cli_default_flavour.or(configured_default);
+        Ok(apply_default_flavour(flavour, default))
     }
 
     fn password_source(&self) -> Result<Option<PasswordSource>> {

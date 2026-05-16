@@ -475,6 +475,60 @@ fn test_should_discover_recursive_inputs_with_bounded_jobs() -> Result<(), Box<d
 }
 
 #[test]
+fn test_should_use_default_flavour_when_auto_detection_has_no_claims() -> Result<(), Box<dyn Error>>
+{
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args([
+            "validate",
+            "--format",
+            "json",
+            "--flavour",
+            "auto",
+            "--default-flavour",
+            "pdfa-2b",
+        ])
+        .arg(&path)
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""family":"pdfa""#).eval(&stdout));
+    assert!(contains(r#""part":2"#).eval(&stdout));
+    assert!(contains(r#""conformance":"b""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_discover_non_pdf_extension_inputs_when_requested() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let nested = temp.path().join("nested");
+    std::fs::create_dir(&nested)?;
+    let valid = nested.join("valid.dat");
+    write_fixture(&valid, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args([
+            "validate",
+            "--recursive",
+            "--non-pdf-extension",
+            "--format",
+            "json",
+        ])
+        .arg(temp.path())
+        .output()?;
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""totalFiles":1"#).eval(&stdout));
+    assert!(contains("valid.dat").eval(&stdout));
+    Ok(())
+}
+
+#[test]
 fn test_should_write_output_file_and_redact_paths_from_config() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
@@ -988,6 +1042,32 @@ fn test_should_validate_with_custom_profile_xml() -> Result<(), Box<dyn Error>> 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(contains(r#""id":"verapdf-pdfa-1b""#).eval(&stdout));
+    Ok(())
+}
+
+#[test]
+fn test_should_reject_default_flavour_with_custom_profile() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    let profile = temp.path().join("profile.xml");
+    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(
+        &profile,
+        br#"<?xml version="1.0" encoding="UTF-8"?><profile/>"#,
+    )?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--profile"])
+        .arg(&profile)
+        .args(["--default-flavour", "pdfa-1b"])
+        .arg(&path)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(contains("cannot be used with").eval(&stderr));
+    assert!(contains("--profile").eval(&stderr));
+    assert!(contains("--default-flavour").eval(&stderr));
     Ok(())
 }
 

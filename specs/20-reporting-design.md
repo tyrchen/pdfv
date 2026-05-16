@@ -14,6 +14,8 @@ pub enum ReportFormat {
     JsonPretty,
     Text,
     Xml,
+    RawXml,
+    Html,
 }
 
 pub trait ReportWriter {
@@ -65,7 +67,7 @@ The XML writer streams from `ValidationReport`/`BatchReport` and includes:
 - `<details passedRules failedRules passedChecks failedChecks unsupportedRules>`
 - bounded failed/passed checks, unsupported rules, parse facts, warnings, and batch summary
 
-The XML compatibility surface is intentionally report-only. It does not implement veraPDF raw XML, HTML, feature reports, repair reports, policy reports, or log embedding.
+The XML compatibility surface is intentionally report-only. Raw XML and HTML are separate Phase 17 report formats over the same bounded report data; they include validation, feature, policy, and repair sections where present. Log embedding remains out of scope.
 
 XML may include safe encryption metadata exposed through parse facts, such as handler/revision/decrypted status, but never password material or cryptographic keys.
 
