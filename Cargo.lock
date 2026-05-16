@@ -787,8 +787,10 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 name = "pdfv"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "anyhow",
  "assert_cmd",
+ "cbc",
  "clap",
  "config",
  "md-5",
@@ -797,6 +799,7 @@ dependencies = [
  "rayon",
  "rc4",
  "serde",
+ "sha2",
  "tempfile",
 ]
 

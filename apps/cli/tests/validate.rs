@@ -7,10 +7,18 @@
 
 use std::{error::Error, fs::File, io::Write, path::Path};
 
+use aes::{
+    Aes128, Aes256,
+    cipher::{
+        BlockCipherEncrypt, BlockModeEncrypt, KeyInit as AesKeyInit, KeyIvInit,
+        block_padding::{NoPadding, Pkcs7},
+    },
+};
 use assert_cmd::Command;
 use md5::{Digest, Md5};
 use predicates::{Predicate, str::contains};
-use rc4::{KeyInit, Rc4, StreamCipher};
+use rc4::{Rc4, StreamCipher};
+use sha2::{Sha256, Sha384, Sha512};
 use tempfile::tempdir;
 
 const MINIMAL_VALID: &[u8] = include_bytes!("../../../tests/fixtures/minimal-valid.pdf");
@@ -22,6 +30,9 @@ const PASSWORD_PADDING: [u8; 32] = [
     0x2e, 0x2e, 0x00, 0xb6, 0xd0, 0x68, 0x3e, 0x80, 0x2f, 0x0c, 0xa9, 0xfe, 0x64, 0x53, 0x69, 0x7a,
 ];
 const DOCUMENT_ID: &[u8] = b"pdfv-cli-rc4-doc";
+const REVISION_6_HASH_MAX_ROUNDS: u16 = 288;
+
+type Aes256CbcEnc = cbc::Encryptor<Aes256>;
 
 fn write_fixture(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut file = File::create(path)?;
@@ -315,6 +326,32 @@ fn test_should_exit_encrypted_for_wrong_password_env() -> Result<(), Box<dyn Err
 }
 
 #[test]
+fn test_should_exit_encrypted_for_wrong_aesv3_password_env() -> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("aesv3-encrypted.pdf");
+    write_fixture(&path, &encrypted_aesv3_fixture()?)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .env("PDFV_TEST_PASSWORD", "wrong")
+        .args([
+            "validate",
+            "--format",
+            "json",
+            "--password-env",
+            "PDFV_TEST_PASSWORD",
+        ])
+        .arg(&path)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(3));
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""status":"encrypted""#).eval(&stdout));
+    assert!(contains("incorrect password").eval(&stdout));
+    assert!(!contains("wrong").eval(&stdout));
+    Ok(())
+}
+
+#[test]
 fn test_should_validate_encrypted_pdf_with_password_stdin() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("encrypted.pdf");
@@ -382,6 +419,37 @@ fn encrypted_rc4_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(pdf_bytes(&title, &encrypt_dictionary))
 }
 
+fn encrypted_aesv3_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
+    let file_key: Vec<u8> = (0_u8..32).map(|byte| byte.wrapping_add(0x31)).collect();
+    let user_validation_salt = b"uvsalt01";
+    let user_key_salt = b"uksalt01";
+    let owner_validation_salt = b"ovsalt01";
+    let owner_key_salt = b"oksalt01";
+    let mut user_entry = revision_6_hash(b"user", user_validation_salt, None)?;
+    user_entry.extend_from_slice(user_validation_salt);
+    user_entry.extend_from_slice(user_key_salt);
+    let user_file_key_hash = revision_6_hash(b"user", user_key_salt, None)?;
+    let mut owner_entry = revision_6_hash(b"owner", owner_validation_salt, Some(&user_entry))?;
+    owner_entry.extend_from_slice(owner_validation_salt);
+    owner_entry.extend_from_slice(owner_key_salt);
+    let owner_file_key_hash = revision_6_hash(b"owner", owner_key_salt, Some(&user_entry))?;
+    let user_encryption_key = aes256_cbc_encrypt_no_padding(&user_file_key_hash, &file_key)?;
+    let owner_encryption_key = aes256_cbc_encrypt_no_padding(&owner_file_key_hash, &file_key)?;
+    let perms = aes256_block_encrypt(&file_key, &permissions_plaintext())?;
+    let title = aes256_encrypt(&file_key, b"secret-title")?;
+    let encrypt_dictionary = format!(
+        "<< /Filter /Standard /V 5 /R 6 /Length 256 /O <{}> /U <{}> /OE <{}> /UE <{}> /P -4 \
+         /Perms <{}> /EncryptMetadata true /CF << /StdCF << /CFM /AESV3 /Length 32 /AuthEvent \
+         /DocOpen >> >> /StmF /StdCF /StrF /StdCF >>",
+        hex(&owner_entry),
+        hex(&user_entry),
+        hex(&owner_encryption_key),
+        hex(&user_encryption_key),
+        hex(&perms),
+    );
+    Ok(pdf_bytes(&title, &encrypt_dictionary))
+}
+
 fn pdf_bytes(title: &[u8], encrypt_dictionary: &str) -> Vec<u8> {
     let mut bytes = b"%PDF-1.7\n".to_vec();
     let mut offsets = vec![0_usize];
@@ -444,6 +512,115 @@ fn encrypt_object(file_key: &[u8], number: u32, bytes: &[u8]) -> Result<Vec<u8>,
     let mut key = hasher.finalize().to_vec();
     key.truncate(file_key.len().saturating_add(5).min(16));
     rc4_crypt(&key, bytes)
+}
+
+fn aes256_encrypt(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let iv = [0x24_u8; 16];
+    let mut buffer = vec![0_u8; bytes.len().saturating_add(16)];
+    let ciphertext = Aes256CbcEnc::new_from_slices(key, &iv)
+        .map_err(|_| std::io::Error::other("invalid aes key"))?
+        .encrypt_padded_b2b::<Pkcs7>(bytes, &mut buffer)
+        .map_err(|_| std::io::Error::other("invalid aes padding"))?;
+    let mut output = iv.to_vec();
+    output.extend_from_slice(ciphertext);
+    Ok(output)
+}
+
+fn aes256_cbc_encrypt_no_padding(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut buffer = bytes.to_vec();
+    Aes256CbcEnc::new_from_slices(key, &[0_u8; 16])
+        .map_err(|_| std::io::Error::other("invalid aes256 key"))?
+        .encrypt_padded::<NoPadding>(&mut buffer, bytes.len())
+        .map_err(|_| std::io::Error::other("invalid aes256 plaintext"))?;
+    Ok(buffer)
+}
+
+fn aes256_block_encrypt(key: &[u8], bytes: &[u8; 16]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let cipher =
+        Aes256::new_from_slice(key).map_err(|_| std::io::Error::other("invalid aes256 key"))?;
+    let mut block = aes::Block::from(*bytes);
+    cipher.encrypt_block(&mut block);
+    Ok(block.to_vec())
+}
+
+fn revision_6_hash(
+    password: &[u8],
+    salt: &[u8],
+    owner_context: Option<&[u8]>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let password = password.get(..password.len().min(127)).unwrap_or(password);
+    let mut hasher = Sha256::new();
+    hasher.update(password);
+    hasher.update(salt);
+    if let Some(context) = owner_context {
+        hasher.update(context);
+    }
+    let mut digest = hasher.finalize().to_vec();
+    let mut round = 0_u16;
+    loop {
+        if round >= REVISION_6_HASH_MAX_ROUNDS {
+            return Err(std::io::Error::other("r6 hash exceeded bound").into());
+        }
+        let context_len = owner_context.map_or(0, <[u8]>::len);
+        let mut k1 = Vec::with_capacity(password.len() + digest.len() + context_len);
+        k1.extend_from_slice(password);
+        k1.extend_from_slice(&digest);
+        if let Some(context) = owner_context {
+            k1.extend_from_slice(context);
+        }
+        let mut encrypted = Vec::with_capacity(k1.len().saturating_mul(64));
+        for _ in 0..64 {
+            encrypted.extend_from_slice(&k1);
+        }
+        let key = digest
+            .get(..16)
+            .ok_or_else(|| std::io::Error::other("missing r6 key"))?;
+        let iv = digest
+            .get(16..32)
+            .ok_or_else(|| std::io::Error::other("missing r6 iv"))?;
+        cbc::Encryptor::<Aes128>::new_from_slices(key, iv)
+            .map_err(|_| std::io::Error::other("invalid r6 aes inputs"))?
+            .encrypt_padded::<NoPadding>(&mut encrypted, k1.len().saturating_mul(64))
+            .map_err(|_| std::io::Error::other("invalid r6 aes plaintext"))?;
+        let selector = encrypted
+            .get(..16)
+            .ok_or_else(|| std::io::Error::other("missing r6 selector"))?
+            .iter()
+            .fold(0_u16, |sum, byte| sum + u16::from(*byte))
+            % 3;
+        digest = match selector {
+            0 => Sha256::digest(&encrypted).to_vec(),
+            1 => Sha384::digest(&encrypted).to_vec(),
+            _ => Sha512::digest(&encrypted).to_vec(),
+        };
+        let last = encrypted
+            .last()
+            .copied()
+            .ok_or_else(|| std::io::Error::other("empty r6 block"))?;
+        if round >= 63 && u16::from(last) <= round.saturating_sub(32) {
+            break;
+        }
+        round = round.saturating_add(1);
+    }
+    digest.truncate(32);
+    Ok(digest)
+}
+
+fn permissions_plaintext() -> [u8; 16] {
+    let mut plaintext = [0_u8; 16];
+    if let Some(target) = plaintext.get_mut(..4) {
+        target.copy_from_slice(&(-4_i32).to_le_bytes());
+    }
+    if let Some(target) = plaintext.get_mut(4..8) {
+        target.copy_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+    }
+    if let Some(target) = plaintext.get_mut(8..12) {
+        target.copy_from_slice(b"Tadb");
+    }
+    if let Some(target) = plaintext.get_mut(12..16) {
+        target.copy_from_slice(b"pdfv");
+    }
+    plaintext
 }
 
 fn rc4_crypt(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {

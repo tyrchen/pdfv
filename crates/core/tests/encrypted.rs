@@ -28,6 +28,7 @@ const PASSWORD_PADDING: [u8; 32] = [
 const DOCUMENT_ID: &[u8] = b"pdfv-phase9-doc1";
 const USER_PASSWORD: &[u8] = b"user";
 const OWNER_PASSWORD: &[u8] = b"owner";
+const REVISION_6_HASH_MAX_ROUNDS: u16 = 288;
 
 type Aes128CbcEnc = cbc::Encryptor<Aes128>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
@@ -260,6 +261,33 @@ fn test_should_decrypt_aesv3_strings_and_streams_under_limits() -> Result<(), Bo
 }
 
 #[test]
+fn test_should_accept_aesv3_stream_when_ciphertext_exceeds_decrypted_limit()
+-> Result<(), Box<dyn Error>> {
+    let fixture = encrypted_aesv3_fixture_with(
+        Revision::R6,
+        &AesV3Mutation::StreamPlaintext([b'x'; 32].to_vec()),
+    )?;
+    let password = PasswordSecret::new("user")?;
+    let mut limits = ResourceLimits::default();
+    limits.max_decrypted_string_bytes = 64;
+    limits.max_decrypted_stream_bytes = 32;
+    let mut parse_options = ParseOptions::default();
+    parse_options.password = Some(&password);
+    let document =
+        Parser::new(limits.clone()).parse_with_options(Cursor::new(fixture), parse_options)?;
+    let object_two = document
+        .objects
+        .get(&object_key(2))
+        .ok_or_else(|| std::io::Error::other("missing object 2"))?;
+    let CosObject::Stream(stream) = &object_two.object else {
+        return Err(std::io::Error::other("missing stream").into());
+    };
+
+    assert_eq!(stream.decoded_bytes(&limits)?, [b'x'; 32]);
+    Ok(())
+}
+
+#[test]
 fn test_should_return_encrypted_for_wrong_aesv3_password() -> Result<(), Box<dyn Error>> {
     let fixture = encrypted_aesv3_fixture(Revision::R6)?;
     let report = Validator::new(
@@ -281,7 +309,7 @@ fn test_should_return_encrypted_for_wrong_aesv3_password() -> Result<(), Box<dyn
 
 #[test]
 fn test_should_return_encrypted_for_tampered_aesv3_perms() -> Result<(), Box<dyn Error>> {
-    let fixture = encrypted_aesv3_fixture_with(Revision::R6, AesV3Mutation::TamperPerms)?;
+    let fixture = encrypted_aesv3_fixture_with(Revision::R6, &AesV3Mutation::TamperPerms)?;
     let report = Validator::new(
         ValidationOptions::builder()
             .password(Some(PasswordSecret::new("user")?))
@@ -302,7 +330,7 @@ fn test_should_return_encrypted_for_tampered_aesv3_perms() -> Result<(), Box<dyn
 #[test]
 fn test_should_return_encrypted_for_unsupported_aes_256_crypt_filter() -> Result<(), Box<dyn Error>>
 {
-    let fixture = encrypted_aesv3_fixture_with(Revision::R6, AesV3Mutation::AesV2Filter)?;
+    let fixture = encrypted_aesv3_fixture_with(Revision::R6, &AesV3Mutation::AesV2Filter)?;
     let report = Validator::new(
         ValidationOptions::builder()
             .password(Some(PasswordSecret::new("user")?))
@@ -398,7 +426,7 @@ fn test_should_parse_fail_short_aesv3_key_fields() -> Result<(), Box<dyn Error>>
         AesV3Mutation::ShortUserEncryption,
         AesV3Mutation::ShortPerms,
     ] {
-        let fixture = encrypted_aesv3_fixture_with(Revision::R6, mutation)?;
+        let fixture = encrypted_aesv3_fixture_with(Revision::R6, &mutation)?;
         let report = Validator::new(
             ValidationOptions::builder()
                 .password(Some(PasswordSecret::new("user")?))
@@ -408,6 +436,46 @@ fn test_should_parse_fail_short_aesv3_key_fields() -> Result<(), Box<dyn Error>>
 
         assert_eq!(report.status, ValidationStatus::ParseFailed);
     }
+    Ok(())
+}
+
+#[test]
+fn test_should_parse_fail_invalid_aesv3_crypt_filter_shape() -> Result<(), Box<dyn Error>> {
+    for mutation in [
+        AesV3Mutation::BadFilterLength,
+        AesV3Mutation::BadFilterAuthEvent,
+    ] {
+        let fixture = encrypted_aesv3_fixture_with(Revision::R6, &mutation)?;
+        let report = Validator::new(
+            ValidationOptions::builder()
+                .password(Some(PasswordSecret::new("user")?))
+                .build(),
+        )?
+        .validate_reader(Cursor::new(fixture), InputName::memory())?;
+
+        assert_eq!(report.status, ValidationStatus::ParseFailed);
+    }
+    Ok(())
+}
+
+#[test]
+fn test_should_return_encrypted_for_unsupported_aesv3_crypt_filter_name()
+-> Result<(), Box<dyn Error>> {
+    let fixture = encrypted_aesv3_fixture_with(Revision::R6, &AesV3Mutation::BadFilterName)?;
+    let report = Validator::new(
+        ValidationOptions::builder()
+            .password(Some(PasswordSecret::new("user")?))
+            .build(),
+    )?
+    .validate_reader(Cursor::new(fixture), InputName::memory())?;
+
+    assert_eq!(report.status, ValidationStatus::Encrypted);
+    assert!(report.warnings.iter().any(|warning| {
+        matches!(
+            warning,
+            pdfv_core::ValidationWarning::General { message } if message.as_str() == "unsupported AES-256 crypt filter OtherCF"
+        )
+    }));
     Ok(())
 }
 
@@ -488,12 +556,12 @@ fn encrypted_aesv2_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 fn encrypted_aesv3_fixture(revision: Revision) -> Result<Vec<u8>, Box<dyn Error>> {
-    encrypted_aesv3_fixture_with(revision, AesV3Mutation::None)
+    encrypted_aesv3_fixture_with(revision, &AesV3Mutation::None)
 }
 
 fn encrypted_aesv3_fixture_with(
     revision: Revision,
-    mutation: AesV3Mutation,
+    mutation: &AesV3Mutation,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let file_key: Vec<u8> = (0_u8..32).map(|byte| byte.wrapping_add(0x11)).collect();
     let user_validation_salt = b"uvsalt01";
@@ -520,7 +588,12 @@ fn encrypted_aesv3_fixture_with(
     let mut owner_dictionary_entry = owner_entry;
     let mut user_dictionary_entry = user_entry;
     match mutation {
-        AesV3Mutation::None | AesV3Mutation::AesV2Filter => {}
+        AesV3Mutation::None
+        | AesV3Mutation::AesV2Filter
+        | AesV3Mutation::BadFilterLength
+        | AesV3Mutation::BadFilterAuthEvent
+        | AesV3Mutation::BadFilterName
+        | AesV3Mutation::StreamPlaintext(_) => {}
         AesV3Mutation::TamperPerms => {
             if let Some(first) = perms.first_mut() {
                 *first ^= 0x55;
@@ -539,22 +612,39 @@ fn encrypted_aesv3_fixture_with(
         CipherMethod::AesV3,
         b"secret-title",
     )?;
+    let stream_plaintext = match mutation {
+        AesV3Mutation::StreamPlaintext(bytes) => bytes.as_slice(),
+        _ => b"stream-secret",
+    };
     let stream = encrypt_object(
         revision,
         &file_key,
         object_key(2),
         CipherMethod::AesV3,
-        b"stream-secret",
+        stream_plaintext,
     )?;
     let revision_number = revision.number();
     let crypt_method = match mutation {
         AesV3Mutation::AesV2Filter => "AESV2",
         _ => "AESV3",
     };
+    let crypt_length = match mutation {
+        AesV3Mutation::BadFilterLength => 16,
+        _ => 32,
+    };
+    let auth_event = match mutation {
+        AesV3Mutation::BadFilterAuthEvent => "EFOpen",
+        _ => "DocOpen",
+    };
+    let stream_filter = match mutation {
+        AesV3Mutation::BadFilterName => "OtherCF",
+        _ => "StdCF",
+    };
     let encrypt_dictionary = format!(
         "<< /Filter /Standard /V 5 /R {revision_number} /Length 256 /O <{}> /U <{}> /OE <{}> /UE \
          <{}> /P -4 /Perms <{}> /EncryptMetadata true /CF << /StdCF << /CFM /{crypt_method} \
-         /Length 32 /AuthEvent /DocOpen >> >> /StmF /StdCF /StrF /StdCF >>",
+         /Length {crypt_length} /AuthEvent /{auth_event} >> >> /StmF /{stream_filter} /StrF \
+         /StdCF >>",
         hex(&owner_dictionary_entry),
         hex(&user_dictionary_entry),
         hex(&owner_encryption_key),
@@ -829,7 +919,6 @@ enum CipherMethod {
     AesV3,
 }
 
-#[derive(Clone, Copy)]
 enum AesV3Mutation {
     None,
     TamperPerms,
@@ -839,6 +928,10 @@ enum AesV3Mutation {
     ShortUserEncryption,
     ShortPerms,
     AesV2Filter,
+    BadFilterLength,
+    BadFilterAuthEvent,
+    BadFilterName,
+    StreamPlaintext(Vec<u8>),
 }
 
 fn owner_key(revision: Revision, key_len: usize, password: &[u8]) -> Vec<u8> {
@@ -1001,8 +1094,11 @@ fn revision_6_hash_loop(
     mut digest: Vec<u8>,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let password = password.get(..password.len().min(127)).unwrap_or(password);
-    let mut round = 0_u8;
+    let mut round = 0_u16;
     loop {
+        if round >= REVISION_6_HASH_MAX_ROUNDS {
+            return Err(std::io::Error::other("r6 hash exceeded bound").into());
+        }
         let context_len = owner_context.map_or(0, <[u8]>::len);
         let mut k1 = Vec::with_capacity(password.len() + digest.len() + context_len);
         k1.extend_from_slice(password);
@@ -1040,7 +1136,7 @@ fn revision_6_hash_loop(
             .last()
             .copied()
             .ok_or_else(|| std::io::Error::other("empty r6 block"))?;
-        if round >= 63 && last <= round.saturating_sub(32) {
+        if round >= 63 && u16::from(last) <= round.saturating_sub(32) {
             break;
         }
         round = round.saturating_add(1);

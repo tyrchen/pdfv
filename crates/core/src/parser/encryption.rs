@@ -31,6 +31,7 @@ const REVISION_5_6_PASSWORD_BYTES: usize = 127;
 const REVISION_5_6_HASH_BYTES: usize = 32;
 const REVISION_5_6_ENTRY_BYTES: usize = 48;
 const REVISION_5_6_SALT_BYTES: usize = 8;
+const REVISION_6_HASH_MAX_ROUNDS: u16 = 288;
 const PERMS_BYTES: usize = 16;
 
 type Aes128CbcDec = cbc::Decryptor<Aes128>;
@@ -335,6 +336,7 @@ fn parse_encryption_dictionary(
         Some(CosObject::Boolean(value)) => *value,
         _ => true,
     };
+    validate_aes_256_crypt_filter_shape(revision, dictionary)?;
     let (stream_method, string_method) = crypt_methods(dictionary, version_u8)?;
     validate_aes_256_methods(revision, stream_method, string_method)?;
     Ok(EncryptionDictionary {
@@ -688,8 +690,13 @@ fn revision_6_hash_loop(
     owner_context: Option<&[u8]>,
     mut digest: Vec<u8>,
 ) -> Result<Vec<u8>, DecryptionError> {
-    let mut round = 0_u8;
+    let mut round = 0_u16;
     loop {
+        if round >= REVISION_6_HASH_MAX_ROUNDS {
+            return Err(DecryptionError::Malformed(
+                "revision 6 hash exceeded iteration bound",
+            ));
+        }
         let context_len = owner_context.map_or(0, <[u8]>::len);
         let mut k1 = Vec::with_capacity(password.len() + digest.len() + context_len);
         k1.extend_from_slice(password);
@@ -718,7 +725,7 @@ fn revision_6_hash_loop(
         let Some(last) = encrypted.last().copied() else {
             return Err(DecryptionError::Malformed("revision 6 hash block missing"));
         };
-        if round >= 63 && last <= round.saturating_sub(32) {
+        if round >= 63 && u16::from(last) <= round.saturating_sub(32) {
             break;
         }
         round = round.saturating_add(1);
@@ -852,8 +859,8 @@ fn decrypt_stream(
         .map_err(|error| parse_to_decryption(&error))?;
     let raw_len = u64::try_from(raw.len())
         .map_err(|_| DecryptionError::LimitExceeded("max_decrypted_stream_bytes"))?;
-    if raw_len > limits.max_decrypted_stream_bytes {
-        return Err(DecryptionError::LimitExceeded("max_decrypted_stream_bytes"));
+    if raw_len > limits.max_stream_declared_bytes {
+        return Err(DecryptionError::LimitExceeded("max_stream_declared_bytes"));
     }
     let object_key = object_key(file_key, key, dictionary.stream_method);
     let decrypted = decrypt_bytes(dictionary.stream_method, &object_key, raw)?;
@@ -1050,6 +1057,77 @@ fn validate_aes_256_methods(
         revision: Some(revision.value()),
         algorithm: Some(Identifier::unchecked("aesv3")),
     })
+}
+
+fn validate_aes_256_crypt_filter_shape(
+    revision: SecurityRevision,
+    dictionary: &Dictionary,
+) -> Result<(), DecryptionError> {
+    if !revision.uses_aes_256() {
+        return Ok(());
+    }
+    let stream_filter =
+        optional_name(dictionary, "StmF").unwrap_or_else(|| PdfName::from_static("Identity"));
+    let string_filter =
+        optional_name(dictionary, "StrF").unwrap_or_else(|| PdfName::from_static("Identity"));
+    for filter_name in [&stream_filter, &string_filter] {
+        if filter_name.matches("Identity") {
+            continue;
+        }
+        if !filter_name.matches("StdCF") {
+            return Err(DecryptionError::Unsupported {
+                message: format!(
+                    "unsupported AES-256 crypt filter {}",
+                    String::from_utf8_lossy(filter_name.as_bytes())
+                ),
+                version: Some(5),
+                revision: Some(revision.value()),
+                algorithm: Some(Identifier::unchecked("aesv3")),
+            });
+        }
+        let filter = named_crypt_filter(dictionary, filter_name)?;
+        let cfm = optional_name(filter, "CFM").unwrap_or_else(|| PdfName::from_static("None"));
+        if !cfm.matches("AESV3") {
+            return Err(DecryptionError::Unsupported {
+                message: String::from("unsupported AES-256 crypt filter method"),
+                version: Some(5),
+                revision: Some(revision.value()),
+                algorithm: Identifier::new(String::from_utf8_lossy(cfm.as_bytes()).into_owned())
+                    .ok(),
+            });
+        }
+        if integer_from_dictionary(filter, "Length") != Some(32) {
+            return Err(DecryptionError::Malformed(
+                "invalid AES-256 crypt filter length",
+            ));
+        }
+        match optional_name(filter, "AuthEvent") {
+            Some(auth_event) if auth_event.matches("DocOpen") => {}
+            _ => {
+                return Err(DecryptionError::Malformed(
+                    "invalid AES-256 crypt filter auth event",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn named_crypt_filter<'a>(
+    dictionary: &'a Dictionary,
+    filter_name: &PdfName,
+) -> Result<&'a Dictionary, DecryptionError> {
+    let Some(CosObject::Dictionary(filters)) = dictionary.get("CF") else {
+        return Err(DecryptionError::Malformed(
+            "missing crypt filter dictionary",
+        ));
+    };
+    let Some(CosObject::Dictionary(filter)) =
+        filters.get(&String::from_utf8_lossy(filter_name.as_bytes()))
+    else {
+        return Err(DecryptionError::Malformed("missing named crypt filter"));
+    };
+    Ok(filter)
 }
 
 fn padded_password(password: &[u8]) -> [u8; 32] {

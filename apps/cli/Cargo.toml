@@ -18,8 +18,11 @@ rayon.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+aes.workspace = true
 assert_cmd.workspace = true
+cbc.workspace = true
 md-5.workspace = true
 predicates.workspace = true
 rc4.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
