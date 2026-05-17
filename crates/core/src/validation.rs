@@ -1192,9 +1192,13 @@ impl Validator {
 
         let needs_features =
             self.options.feature_selection.is_enabled() || self.options.policy.is_some();
+        let feature_selection = feature_selection_for_tasks(
+            &self.options.feature_selection,
+            self.options.policy.as_ref(),
+        );
         let feature_started = Instant::now();
         let feature_report = if needs_features {
-            Some(session.extract_features(&self.options.feature_selection)?)
+            Some(session.extract_features(&feature_selection)?)
         } else {
             None
         };
@@ -1410,6 +1414,25 @@ fn selected_feature_families(
                 selected.insert(family.clone());
             }
             Ok(selected)
+        }
+    }
+}
+
+fn feature_selection_for_tasks(
+    selection: &FeatureSelection,
+    policy: Option<&PolicySet>,
+) -> FeatureSelection {
+    let Some(policy) = policy else {
+        return selection.clone();
+    };
+    match selection {
+        FeatureSelection::None | FeatureSelection::All => FeatureSelection::All,
+        FeatureSelection::Families { families } => {
+            let mut selected = families.iter().cloned().collect::<BTreeSet<_>>();
+            selected.extend(policy.rules.iter().map(|rule| rule.family.clone()));
+            FeatureSelection::Families {
+                families: selected.into_iter().collect(),
+            }
         }
     }
 }
@@ -8049,6 +8072,55 @@ trailer
                     subsystem: "policyResult",
                 })?;
         assert!(result.passed);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_add_policy_rule_families_to_narrow_feature_selection() -> crate::Result<()> {
+        let policy = PolicySet {
+            name: Some(BoundedText::unchecked("font-policy")),
+            rules: vec![PolicyRule {
+                id: Identifier::new("font-has-subtype")?,
+                description: BoundedText::unchecked("Font subtype is present"),
+                family: ObjectTypeName::new("font")?,
+                field: PropertyName::new("hasSubtype")?,
+                operator: PolicyOperator::Equals,
+                value: Some(PolicyValue::Bool(true)),
+            }],
+        };
+        let options = ValidationOptions::builder()
+            .feature_selection(FeatureSelection::Families {
+                families: vec![ObjectTypeName::new("catalog")?],
+            })
+            .policy(Some(policy))
+            .build();
+        let validator = Validator::new(options)?;
+        let report = validator.validate_reader(Cursor::new(m1_model_pdf()), InputName::memory())?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+        let policy = report
+            .policy_report
+            .ok_or(crate::ValidationError::SubsystemUnavailable {
+                subsystem: "policy",
+            })?;
+
+        assert!(
+            features
+                .selected_families
+                .iter()
+                .any(|family| family.as_str() == "catalog")
+        );
+        assert!(
+            features
+                .selected_families
+                .iter()
+                .any(|family| family.as_str() == "font")
+        );
+        assert!(policy.is_compliant);
         Ok(())
     }
 
