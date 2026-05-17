@@ -1156,6 +1156,10 @@ pub enum BinaryOp {
     And,
     /// Boolean disjunction.
     Or,
+    /// Integer bitwise conjunction for flag-mask checks.
+    BitAnd,
+    /// Integer right shift for flag diagnostics.
+    Shr,
     /// Numeric addition.
     Add,
     /// Numeric subtraction.
@@ -1187,6 +1191,26 @@ pub enum BuiltinFunction {
     Exists,
     /// Returns true when a bounded regex matches a string.
     Matches,
+    /// Splits a bounded string into a bounded list.
+    Split,
+    /// Filters a string list to values equal to one of the supplied strings.
+    FilterEquals,
+    /// Filters a string list to values different from all supplied strings.
+    FilterNotEquals,
+    /// Filters a string list to values matching the supplied regex.
+    FilterMatches,
+    /// Filters a string list to values not matching the supplied regex.
+    FilterNotMatches,
+    /// Returns a list slice starting at a bounded offset.
+    Slice,
+    /// Returns the first index of a value in a string or list, or -1.
+    IndexOf,
+    /// Returns the first index matching one of the supplied strings, or -1.
+    FindIndexEquals,
+    /// Returns the first regex match index in a string, or -1.
+    Search,
+    /// Returns numeric absolute value.
+    Abs,
 }
 
 /// Model value used by rule evaluation.
@@ -1353,6 +1377,17 @@ impl<'a> DefaultRuleEvaluator<'a> {
             BinaryOp::Lt => expect_number(&left)? < expect_number(&right)?,
             BinaryOp::Gt => expect_number(&left)? > expect_number(&right)?,
             BinaryOp::And | BinaryOp::Or => false,
+            BinaryOp::BitAnd => {
+                return Ok(ModelValue::Number(i64_to_f64(
+                    expect_integral_i64(&left)? & expect_integral_i64(&right)?,
+                )?));
+            }
+            BinaryOp::Shr => {
+                let shift = expect_shift_amount(&right)?;
+                return Ok(ModelValue::Number(i64_to_f64(
+                    expect_integral_i64(&left)? >> shift,
+                )?));
+            }
             BinaryOp::Add => {
                 return Ok(ModelValue::Number(
                     expect_number(&left)? + expect_number(&right)?,
@@ -1394,16 +1429,7 @@ impl<'a> DefaultRuleEvaluator<'a> {
         depth: u32,
     ) -> Result<ModelValue> {
         match function {
-            BuiltinFunction::HasParseFact => {
-                let value = self.eval_single_arg(object, args, depth, "hasParseFact")?;
-                let ModelValue::String(name) = value else {
-                    return Err(type_mismatch("hasParseFact requires string").into());
-                };
-                Ok(ModelValue::Bool(has_parse_fact(
-                    object.document().parse_facts.as_slice(),
-                    name.as_str(),
-                )))
-            }
+            BuiltinFunction::HasParseFact => self.eval_has_parse_fact(object, args, depth),
             BuiltinFunction::Size => {
                 let value = self.eval_single_arg(object, args, depth, "size")?;
                 Ok(ModelValue::Number(usize_to_f64(collection_len(&value)?)?))
@@ -1412,82 +1438,224 @@ impl<'a> DefaultRuleEvaluator<'a> {
                 let value = self.eval_single_arg(object, args, depth, "isEmpty")?;
                 Ok(ModelValue::Bool(collection_len(&value)? == 0))
             }
-            BuiltinFunction::Contains => {
-                if args.len() != 2 {
-                    return Err(type_mismatch("contains requires two arguments").into());
-                }
-                let haystack = self.eval(
-                    object,
-                    args.first()
-                        .ok_or_else(|| type_mismatch("contains requires haystack"))?,
-                    depth.saturating_add(1),
-                )?;
-                let needle = self.eval(
-                    object,
-                    args.get(1)
-                        .ok_or_else(|| type_mismatch("contains requires needle"))?,
-                    depth.saturating_add(1),
-                )?;
-                Ok(ModelValue::Bool(contains_value(&haystack, &needle)?))
-            }
-            BuiltinFunction::All => {
-                let mut result = true;
-                for arg in args {
-                    result &= expect_bool(&self.eval(object, arg, depth.saturating_add(1))?)?;
-                    if !result {
-                        break;
-                    }
-                }
-                Ok(ModelValue::Bool(result))
-            }
-            BuiltinFunction::Exists => {
-                let mut result = false;
-                for arg in args {
-                    result |= expect_bool(&self.eval(object, arg, depth.saturating_add(1))?)?;
-                    if result {
-                        break;
-                    }
-                }
-                Ok(ModelValue::Bool(result))
-            }
-            BuiltinFunction::Matches => {
-                if args.len() != 2 {
-                    return Err(type_mismatch("matches requires pattern and string").into());
-                }
-                let pattern = self.eval(
-                    object,
-                    args.first()
-                        .ok_or_else(|| type_mismatch("matches requires pattern"))?,
-                    depth.saturating_add(1),
-                )?;
-                let haystack = self.eval(
-                    object,
-                    args.get(1)
-                        .ok_or_else(|| type_mismatch("matches requires string"))?,
-                    depth.saturating_add(1),
-                )?;
-                let (ModelValue::String(pattern), ModelValue::String(haystack)) =
-                    (pattern, haystack)
-                else {
-                    return Err(type_mismatch("matches requires string arguments").into());
-                };
-                if pattern.as_str().len() > MAX_REGEX_PATTERN_BYTES
-                    || haystack.as_str().len() > MAX_REGEX_HAYSTACK_BYTES
-                {
-                    return Err(ProfileError::BudgetExceeded { budget: "regex" }.into());
-                }
-                let regex = RegexBuilder::new(pattern.as_str())
-                    .size_limit(1 << 20)
-                    .dfa_size_limit(1 << 20)
-                    .build()
-                    .map_err(|error| ProfileError::InvalidField {
-                        field: "regex",
-                        reason: BoundedText::new(error.to_string(), 512)
-                            .unwrap_or_else(|_| BoundedText::unchecked("invalid regex")),
-                    })?;
-                Ok(ModelValue::Bool(regex.is_match(haystack.as_str())))
+            BuiltinFunction::Contains => self.eval_contains(object, args, depth),
+            BuiltinFunction::All => self.eval_boolean_fold(object, args, depth, true),
+            BuiltinFunction::Exists => self.eval_boolean_fold(object, args, depth, false),
+            BuiltinFunction::Matches => self.eval_matches(object, args, depth),
+            BuiltinFunction::Split => self.eval_split(object, args, depth),
+            BuiltinFunction::FilterEquals
+            | BuiltinFunction::FilterNotEquals
+            | BuiltinFunction::FilterMatches
+            | BuiltinFunction::FilterNotMatches => self.eval_filter(object, function, args, depth),
+            BuiltinFunction::Slice => self.eval_slice(object, args, depth),
+            BuiltinFunction::IndexOf => self.eval_index_of(object, args, depth),
+            BuiltinFunction::FindIndexEquals => self.eval_find_index(object, args, depth),
+            BuiltinFunction::Search => self.eval_search(object, args, depth),
+            BuiltinFunction::Abs => {
+                let value = self.eval_single_arg(object, args, depth, "abs")?;
+                Ok(ModelValue::Number(expect_number(&value)?.abs()))
             }
         }
+    }
+
+    fn eval_has_parse_fact(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let value = self.eval_single_arg(object, args, depth, "hasParseFact")?;
+        let ModelValue::String(name) = value else {
+            return Err(type_mismatch("hasParseFact requires string").into());
+        };
+        Ok(ModelValue::Bool(has_parse_fact(
+            object.document().parse_facts.as_slice(),
+            name.as_str(),
+        )))
+    }
+
+    fn eval_contains(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let (haystack, needle) = self.eval_two_args(object, args, depth, "contains")?;
+        Ok(ModelValue::Bool(contains_value(&haystack, &needle)?))
+    }
+
+    fn eval_boolean_fold(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+        all_required: bool,
+    ) -> Result<ModelValue> {
+        let mut result = all_required;
+        for arg in args {
+            let value = expect_bool(&self.eval(object, arg, depth.saturating_add(1))?)?;
+            if all_required {
+                result &= value;
+                if !result {
+                    break;
+                }
+            } else {
+                result |= value;
+                if result {
+                    break;
+                }
+            }
+        }
+        Ok(ModelValue::Bool(result))
+    }
+
+    fn eval_matches(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let (pattern, haystack) = self.eval_two_string_args(object, args, depth, "matches")?;
+        Ok(ModelValue::Bool(regex_is_match(&pattern, &haystack)?))
+    }
+
+    fn eval_split(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let (value, separator) = self.eval_two_string_args(object, args, depth, "split")?;
+        Ok(ModelValue::List(split_string(
+            &value,
+            &separator,
+            self.limits.max_array_len,
+        )?))
+    }
+
+    fn eval_filter(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        function: BuiltinFunction,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let Some((collection, predicates)) = args.split_first() else {
+            return Err(type_mismatch("filter requires collection").into());
+        };
+        let collection = self.eval(object, collection, depth.saturating_add(1))?;
+        let predicates = self.eval_string_args(object, predicates, depth, "filter")?;
+        Ok(ModelValue::List(filter_values(
+            &collection,
+            function,
+            &predicates,
+        )?))
+    }
+
+    fn eval_slice(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let (collection, start) = self.eval_two_args(object, args, depth, "slice")?;
+        slice_value(&collection, expect_non_negative_usize(&start)?)
+    }
+
+    fn eval_index_of(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let (collection, needle) = self.eval_two_args(object, args, depth, "indexOf")?;
+        Ok(ModelValue::Number(i64_to_f64(index_of_value(
+            &collection,
+            &needle,
+        )?)?))
+    }
+
+    fn eval_find_index(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let Some((collection, predicates)) = args.split_first() else {
+            return Err(type_mismatch("findIndex requires collection").into());
+        };
+        let collection = self.eval(object, collection, depth.saturating_add(1))?;
+        let predicates = self.eval_string_args(object, predicates, depth, "findIndex")?;
+        Ok(ModelValue::Number(i64_to_f64(find_index_equals(
+            &collection,
+            &predicates,
+        )?)?))
+    }
+
+    fn eval_search(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+    ) -> Result<ModelValue> {
+        let (haystack, pattern) = self.eval_two_string_args(object, args, depth, "search")?;
+        Ok(ModelValue::Number(i64_to_f64(regex_find_index(
+            &pattern, &haystack,
+        )?)?))
+    }
+
+    fn eval_two_args(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+        name: &'static str,
+    ) -> Result<(ModelValue, ModelValue)> {
+        if args.len() != 2 {
+            return Err(type_mismatch("built-in requires two arguments").into());
+        }
+        let first = self.eval(
+            object,
+            args.first().ok_or_else(|| type_mismatch(name))?,
+            depth.saturating_add(1),
+        )?;
+        let second = self.eval(
+            object,
+            args.get(1).ok_or_else(|| type_mismatch(name))?,
+            depth.saturating_add(1),
+        )?;
+        Ok((first, second))
+    }
+
+    fn eval_two_string_args(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+        name: &'static str,
+    ) -> Result<(BoundedText, BoundedText)> {
+        let (first, second) = self.eval_two_args(object, args, depth, name)?;
+        let (ModelValue::String(first), ModelValue::String(second)) = (first, second) else {
+            return Err(type_mismatch("built-in requires string arguments").into());
+        };
+        Ok((first, second))
+    }
+
+    fn eval_string_args(
+        &mut self,
+        object: &crate::ModelObjectRef<'_>,
+        args: &[RuleExpr],
+        depth: u32,
+        name: &'static str,
+    ) -> Result<Vec<BoundedText>> {
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+            let ModelValue::String(value) = self.eval(object, arg, depth.saturating_add(1))? else {
+                return Err(type_mismatch(name).into());
+            };
+            values.push(value);
+        }
+        Ok(values)
     }
 
     fn eval_single_arg(
@@ -1627,6 +1795,32 @@ fn expect_number(value: &ModelValue) -> Result<f64> {
     }
 }
 
+fn expect_integral_i64(value: &ModelValue) -> Result<i64> {
+    let value = expect_number(value)?;
+    if !value.is_finite() || value.fract().abs() > f64::EPSILON {
+        return Err(type_mismatch("expected integral number").into());
+    }
+    if value < i32::MIN.into() || value > i32::MAX.into() {
+        return Err(type_mismatch("integer value outside supported range").into());
+    }
+    format!("{value:.0}")
+        .parse::<i64>()
+        .map_err(|_| type_mismatch("invalid integral number").into())
+}
+
+fn expect_shift_amount(value: &ModelValue) -> Result<u32> {
+    let value = expect_integral_i64(value)?;
+    u32::try_from(value)
+        .ok()
+        .filter(|shift| *shift < i64::BITS)
+        .ok_or_else(|| type_mismatch("invalid shift amount").into())
+}
+
+fn expect_non_negative_usize(value: &ModelValue) -> Result<usize> {
+    let value = expect_integral_i64(value)?;
+    usize::try_from(value).map_err(|_| type_mismatch("expected non-negative number").into())
+}
+
 fn values_equal(left: &ModelValue, right: &ModelValue) -> bool {
     match (left, right) {
         (ModelValue::Null, ModelValue::Null) => true,
@@ -1656,6 +1850,13 @@ fn usize_to_f64(value: usize) -> Result<f64> {
     Ok(f64::from(value))
 }
 
+fn i64_to_f64(value: i64) -> Result<f64> {
+    let value = i32::try_from(value).map_err(|_| ProfileError::BudgetExceeded {
+        budget: "integer_value",
+    })?;
+    Ok(f64::from(value))
+}
+
 fn contains_value(haystack: &ModelValue, needle: &ModelValue) -> Result<bool> {
     match (haystack, needle) {
         (ModelValue::String(haystack), ModelValue::String(needle)) => {
@@ -1666,6 +1867,147 @@ fn contains_value(haystack: &ModelValue, needle: &ModelValue) -> Result<bool> {
         }
         _ => Err(type_mismatch("contains requires compatible arguments").into()),
     }
+}
+
+fn split_string(
+    value: &BoundedText,
+    separator: &BoundedText,
+    max_array_len: u64,
+) -> Result<Vec<ModelValue>> {
+    if separator.as_str().is_empty() {
+        return Err(type_mismatch("split separator must not be empty").into());
+    }
+    let max_array_len = usize::try_from(max_array_len).unwrap_or(usize::MAX);
+    let mut values = Vec::new();
+    for part in value.as_str().split(separator.as_str()) {
+        if values.len() >= max_array_len {
+            return Err(ProfileError::BudgetExceeded {
+                budget: "split_parts",
+            }
+            .into());
+        }
+        values.push(ModelValue::String(BoundedText::new(
+            part,
+            MAX_PROFILE_STRING_BYTES,
+        )?));
+    }
+    Ok(values)
+}
+
+fn filter_values(
+    collection: &ModelValue,
+    function: BuiltinFunction,
+    predicates: &[BoundedText],
+) -> Result<Vec<ModelValue>> {
+    let ModelValue::List(values) = collection else {
+        return Err(type_mismatch("filter requires list").into());
+    };
+    let mut filtered = Vec::new();
+    for value in values {
+        let ModelValue::String(text) = value else {
+            return Err(type_mismatch("filter requires string list").into());
+        };
+        let matched = match function {
+            BuiltinFunction::FilterEquals | BuiltinFunction::FilterNotEquals => predicates
+                .iter()
+                .any(|predicate| predicate.as_str() == text.as_str()),
+            BuiltinFunction::FilterMatches | BuiltinFunction::FilterNotMatches => {
+                let Some(pattern) = predicates.first() else {
+                    return Err(type_mismatch("filter requires predicate").into());
+                };
+                regex_is_match(pattern, text)?
+            }
+            _ => return Err(type_mismatch("unsupported filter").into()),
+        };
+        let keep = match function {
+            BuiltinFunction::FilterEquals | BuiltinFunction::FilterMatches => matched,
+            BuiltinFunction::FilterNotEquals | BuiltinFunction::FilterNotMatches => !matched,
+            _ => false,
+        };
+        if keep {
+            filtered.push(value.clone());
+        }
+    }
+    Ok(filtered)
+}
+
+fn slice_value(collection: &ModelValue, start: usize) -> Result<ModelValue> {
+    match collection {
+        ModelValue::List(values) => Ok(ModelValue::List(
+            values.iter().skip(start).cloned().collect::<Vec<_>>(),
+        )),
+        ModelValue::String(value) => Ok(ModelValue::String(BoundedText::new(
+            value.as_str().get(start..).unwrap_or_default(),
+            MAX_PROFILE_STRING_BYTES,
+        )?)),
+        _ => Err(type_mismatch("slice requires collection or string").into()),
+    }
+}
+
+fn index_of_value(collection: &ModelValue, needle: &ModelValue) -> Result<i64> {
+    match (collection, needle) {
+        (ModelValue::String(haystack), ModelValue::String(needle)) => haystack
+            .as_str()
+            .find(needle.as_str())
+            .map(|index| i64::try_from(index).unwrap_or(i64::MAX))
+            .or(Some(-1))
+            .ok_or_else(|| type_mismatch("indexOf failed").into()),
+        (ModelValue::List(values), needle) => values
+            .iter()
+            .position(|value| values_equal(value, needle))
+            .map(|index| i64::try_from(index).unwrap_or(i64::MAX))
+            .or(Some(-1))
+            .ok_or_else(|| type_mismatch("indexOf failed").into()),
+        _ => Err(type_mismatch("indexOf requires compatible arguments").into()),
+    }
+}
+
+fn find_index_equals(collection: &ModelValue, predicates: &[BoundedText]) -> Result<i64> {
+    let ModelValue::List(values) = collection else {
+        return Err(type_mismatch("findIndex requires list").into());
+    };
+    Ok(values
+        .iter()
+        .position(|value| {
+            matches!(
+                value,
+                ModelValue::String(text)
+                    if predicates
+                        .iter()
+                        .any(|predicate| predicate.as_str() == text.as_str())
+            )
+        })
+        .map_or(-1, |index| i64::try_from(index).unwrap_or(i64::MAX)))
+}
+
+fn regex_is_match(pattern: &BoundedText, haystack: &BoundedText) -> Result<bool> {
+    Ok(regex(pattern, haystack)?.is_match(haystack.as_str()))
+}
+
+fn regex_find_index(pattern: &BoundedText, haystack: &BoundedText) -> Result<i64> {
+    Ok(regex(pattern, haystack)?
+        .find(haystack.as_str())
+        .map_or(-1, |match_| {
+            i64::try_from(match_.start()).unwrap_or(i64::MAX)
+        }))
+}
+
+fn regex(pattern: &BoundedText, haystack: &BoundedText) -> Result<regex::Regex> {
+    if pattern.as_str().len() > MAX_REGEX_PATTERN_BYTES
+        || haystack.as_str().len() > MAX_REGEX_HAYSTACK_BYTES
+    {
+        return Err(ProfileError::BudgetExceeded { budget: "regex" }.into());
+    }
+    RegexBuilder::new(pattern.as_str())
+        .size_limit(1 << 20)
+        .dfa_size_limit(1 << 20)
+        .build()
+        .map_err(|error| ProfileError::InvalidField {
+            field: "regex",
+            reason: BoundedText::new(error.to_string(), 512)
+                .unwrap_or_else(|_| BoundedText::unchecked("invalid regex")),
+        })
+        .map_err(Into::into)
 }
 
 fn type_mismatch(message: &'static str) -> ProfileError {
@@ -2170,6 +2512,7 @@ fn import_verapdf_profile_xml_impl(xml: &str) -> Result<ProfileImportSummary> {
     let mut rules = Vec::new();
     let mut current_rule: Option<XmlRuleBuilder> = None;
     let mut current_text = XmlTextTarget::None;
+    let mut current_text_buffer = String::new();
     let mut depth = 0_u32;
 
     loop {
@@ -2213,13 +2556,21 @@ fn import_verapdf_profile_xml_impl(xml: &str) -> Result<ProfileImportSummary> {
                         }
                         current_rule = Some(XmlRuleBuilder::from_rule_start(&element)?);
                     }
-                    b"name" if current_rule.is_none() => current_text = XmlTextTarget::ProfileName,
+                    b"name" if current_rule.is_none() => {
+                        current_text = XmlTextTarget::ProfileName;
+                        current_text_buffer.clear();
+                    }
                     b"description" if current_rule.is_some() => {
                         current_text = XmlTextTarget::RuleDescription;
+                        current_text_buffer.clear();
                     }
-                    b"test" if current_rule.is_some() => current_text = XmlTextTarget::RuleTest,
+                    b"test" if current_rule.is_some() => {
+                        current_text = XmlTextTarget::RuleTest;
+                        current_text_buffer.clear();
+                    }
                     b"message" if current_rule.is_some() => {
                         current_text = XmlTextTarget::RuleMessage;
+                        current_text_buffer.clear();
                     }
                     b"id" if current_rule.is_some() => {
                         if let Some(rule) = current_rule.as_mut() {
@@ -2239,31 +2590,51 @@ fn import_verapdf_profile_xml_impl(xml: &str) -> Result<ProfileImportSummary> {
                     reason: BoundedText::new(error.to_string(), 512)
                         .unwrap_or_else(|_| BoundedText::unchecked("XML text decode error")),
                 })?;
-                let bounded = BoundedText::new(decoded.into_owned(), MAX_PROFILE_STRING_BYTES)?;
-                match current_text {
-                    XmlTextTarget::ProfileName => profile_name = Some(bounded),
-                    XmlTextTarget::RuleDescription => {
-                        if let Some(rule) = current_rule.as_mut() {
-                            rule.description = Some(bounded);
-                        }
-                    }
-                    XmlTextTarget::RuleTest => {
-                        if let Some(rule) = current_rule.as_mut() {
-                            rule.test = Some(bounded);
-                        }
-                    }
-                    XmlTextTarget::RuleMessage => {
-                        if let Some(rule) = current_rule.as_mut() {
-                            rule.message = Some(bounded);
-                        }
-                    }
-                    XmlTextTarget::None => {}
+                if current_text != XmlTextTarget::None {
+                    append_xml_text(&mut current_text_buffer, decoded.as_ref())?;
                 }
+            }
+            Event::CData(text) => {
+                let decoded = text.decode().map_err(|error| ProfileError::InvalidXml {
+                    reason: BoundedText::new(error.to_string(), 512)
+                        .unwrap_or_else(|_| BoundedText::unchecked("XML CDATA decode error")),
+                })?;
+                if current_text != XmlTextTarget::None {
+                    append_xml_text(&mut current_text_buffer, decoded.as_ref())?;
+                }
+            }
+            Event::GeneralRef(reference) if current_text != XmlTextTarget::None => {
+                let decoded = decode_xml_general_ref(&reference)?;
+                append_xml_text(&mut current_text_buffer, &decoded)?;
             }
             Event::End(element) => {
                 match element.name().as_ref() {
                     b"name" | b"description" | b"test" | b"message" => {
+                        let bounded = BoundedText::new(
+                            current_text_buffer.clone(),
+                            MAX_PROFILE_STRING_BYTES,
+                        )?;
+                        match current_text {
+                            XmlTextTarget::ProfileName => profile_name = Some(bounded),
+                            XmlTextTarget::RuleDescription => {
+                                if let Some(rule) = current_rule.as_mut() {
+                                    rule.description = Some(bounded);
+                                }
+                            }
+                            XmlTextTarget::RuleTest => {
+                                if let Some(rule) = current_rule.as_mut() {
+                                    rule.test = Some(bounded);
+                                }
+                            }
+                            XmlTextTarget::RuleMessage => {
+                                if let Some(rule) = current_rule.as_mut() {
+                                    rule.message = Some(bounded);
+                                }
+                            }
+                            XmlTextTarget::None => {}
+                        }
                         current_text = XmlTextTarget::None;
+                        current_text_buffer.clear();
                     }
                     b"rule" => {
                         let Some(builder) = current_rule.take() else {
@@ -2343,6 +2714,56 @@ enum XmlTextTarget {
     RuleDescription,
     RuleTest,
     RuleMessage,
+}
+
+fn append_xml_text(buffer: &mut String, value: &str) -> Result<()> {
+    let new_len = buffer
+        .len()
+        .checked_add(value.len())
+        .ok_or(ProfileError::InvalidXml {
+            reason: BoundedText::unchecked("profile XML text length overflow"),
+        })?;
+    if new_len > MAX_PROFILE_STRING_BYTES {
+        return Err(ProfileError::InvalidXml {
+            reason: BoundedText::unchecked("profile XML text exceeds string limit"),
+        }
+        .into());
+    }
+    buffer.push_str(value);
+    Ok(())
+}
+
+fn decode_xml_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Result<String> {
+    if let Some(character) =
+        reference
+            .resolve_char_ref()
+            .map_err(|error| ProfileError::InvalidXml {
+                reason: BoundedText::new(error.to_string(), 512)
+                    .unwrap_or_else(|_| BoundedText::unchecked("XML reference decode error")),
+            })?
+    {
+        return Ok(character.to_string());
+    }
+    let decoded = reference
+        .decode()
+        .map_err(|error| ProfileError::InvalidXml {
+            reason: BoundedText::new(error.to_string(), 512)
+                .unwrap_or_else(|_| BoundedText::unchecked("XML reference decode error")),
+        })?;
+    let value = match decoded.as_ref() {
+        "amp" => "&",
+        "lt" => "<",
+        "gt" => ">",
+        "apos" => "'",
+        "quot" => "\"",
+        _ => {
+            return Err(ProfileError::InvalidXml {
+                reason: BoundedText::unchecked("unsupported XML general reference"),
+            }
+            .into());
+        }
+    };
+    Ok(String::from(value))
 }
 
 #[derive(Debug, Default)]
@@ -2946,7 +3367,7 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse_comparison(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
-        let left = self.parse_additive()?;
+        let left = self.parse_bitwise_and()?;
         let op = if self.consume("==") {
             Some(BinaryOp::Eq)
         } else if self.consume("!=") {
@@ -2963,7 +3384,7 @@ impl<'a> ExprParser<'a> {
             None
         };
         if let Some(op) = op {
-            let right = self.parse_additive()?;
+            let right = self.parse_bitwise_and()?;
             Ok(RuleExpr::Binary {
                 op,
                 left: Box::new(left),
@@ -2972,6 +3393,34 @@ impl<'a> ExprParser<'a> {
         } else {
             Ok(left)
         }
+    }
+
+    fn parse_bitwise_and(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        let mut expr = self.parse_shift()?;
+        while {
+            self.skip_ws();
+            self.remaining().starts_with('&') && !self.remaining().starts_with("&&")
+        } {
+            self.offset = self.offset.saturating_add(1);
+            expr = RuleExpr::Binary {
+                op: BinaryOp::BitAnd,
+                left: Box::new(expr),
+                right: Box::new(self.parse_shift()?),
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
+        let mut expr = self.parse_additive()?;
+        while self.consume(">>") {
+            expr = RuleExpr::Binary {
+                op: BinaryOp::Shr,
+                left: Box::new(expr),
+                right: Box::new(self.parse_additive()?),
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_additive(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
@@ -3030,34 +3479,24 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse_postfix(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
-        let expr = self.parse_primary()?;
-        self.skip_ws();
-        if self.consume(".") {
-            if self.consume("length") && self.consume("(") && self.consume(")") {
-                return Ok(RuleExpr::Call {
+        let mut expr = self.parse_primary()?;
+        loop {
+            self.skip_ws();
+            if !self.consume(".") {
+                return Ok(expr);
+            }
+            let member = self.parse_identifier()?;
+            expr = if self.consume("(") {
+                self.parse_method_call(expr, &member)?
+            } else if member == "length" {
+                RuleExpr::Call {
                     function: BuiltinFunction::Size,
                     args: vec![expr],
-                });
-            }
-            if self.consume("test") && self.consume("(") {
-                let arg = self.parse_conditional()?;
-                if !self.consume(")") {
-                    return Err(BoundedText::unchecked("missing call closing parenthesis"));
                 }
-                return Ok(RuleExpr::Call {
-                    function: BuiltinFunction::Matches,
-                    args: vec![expr, arg],
-                });
-            }
-            return Ok(RuleExpr::Unsupported {
-                fragment: BoundedText::new(self.input, MAX_PROFILE_STRING_BYTES)
-                    .map_err(|_| BoundedText::unchecked("expression exceeds limit"))?,
-                reason: BoundedText::unchecked(
-                    "nested property path has no bound model link in this phase",
-                ),
-            });
+            } else {
+                append_property_member(expr, &member)?
+            };
         }
-        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
@@ -3144,11 +3583,42 @@ impl<'a> ExprParser<'a> {
 
     fn parse_number(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
         let start = self.offset;
+        if self.remaining().starts_with('-') {
+            self.offset = self.offset.saturating_add(1);
+        }
         while let Some(byte) = self.remaining().as_bytes().first() {
-            if byte.is_ascii_digit() || matches!(*byte, b'-' | b'.') {
+            if byte.is_ascii_digit() || *byte == b'.' {
                 self.offset = self.offset.saturating_add(1);
             } else {
                 break;
+            }
+        }
+        if self
+            .remaining()
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| matches!(*byte, b'e' | b'E'))
+        {
+            self.offset = self.offset.saturating_add(1);
+            if self
+                .remaining()
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| matches!(*byte, b'+' | b'-'))
+            {
+                self.offset = self.offset.saturating_add(1);
+            }
+            let exponent_start = self.offset;
+            while self
+                .remaining()
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_digit)
+            {
+                self.offset = self.offset.saturating_add(1);
+            }
+            if exponent_start == self.offset {
+                return Err(BoundedText::unchecked("invalid exponent literal"));
             }
         }
         let value = self.input[start..self.offset]
@@ -3181,7 +3651,15 @@ impl<'a> ExprParser<'a> {
         }
         let mut parts = vec![property_name_from_source(&first)?];
         while self.consume(".") {
+            let member_start = self.offset;
             let member = self.parse_identifier()?;
+            let after_member = self.offset;
+            self.skip_ws();
+            if self.remaining().starts_with('(') {
+                self.offset = member_start.saturating_sub(1);
+                break;
+            }
+            self.offset = after_member;
             parts.push(property_name_from_source(&member)?);
         }
         Ok(RuleExpr::Property {
@@ -3203,6 +3681,366 @@ impl<'a> ExprParser<'a> {
         }
         Ok(self.input[start..self.offset].to_owned())
     }
+
+    fn parse_method_call(
+        &mut self,
+        receiver: RuleExpr,
+        method: &str,
+    ) -> std::result::Result<RuleExpr, BoundedText> {
+        if method == "filter" {
+            return self.parse_lambda_filter(receiver);
+        }
+        if method == "findIndex" {
+            return self.parse_lambda_find_index(receiver);
+        }
+        let args = self.parse_call_args_after_open()?;
+        method_call_expr(receiver, method, args)
+    }
+
+    fn parse_lambda_filter(
+        &mut self,
+        receiver: RuleExpr,
+    ) -> std::result::Result<RuleExpr, BoundedText> {
+        let content = self.take_call_content_after_open()?;
+        let predicate = LambdaPredicate::parse(&content)?;
+        let (function, mut args) = predicate.into_filter_call_args()?;
+        args.insert(0, receiver);
+        Ok(RuleExpr::Call { function, args })
+    }
+
+    fn parse_lambda_find_index(
+        &mut self,
+        receiver: RuleExpr,
+    ) -> std::result::Result<RuleExpr, BoundedText> {
+        let content = self.take_call_content_after_open()?;
+        let predicate = LambdaPredicate::parse(&content)?;
+        let args = predicate.into_find_index_call_args(receiver)?;
+        Ok(RuleExpr::Call {
+            function: BuiltinFunction::FindIndexEquals,
+            args,
+        })
+    }
+
+    fn parse_call_args_after_open(&mut self) -> std::result::Result<Vec<RuleExpr>, BoundedText> {
+        let mut args = Vec::new();
+        if self.consume(")") {
+            return Ok(args);
+        }
+        loop {
+            args.push(self.parse_conditional()?);
+            if self.consume(")") {
+                return Ok(args);
+            }
+            if !self.consume(",") {
+                return Err(BoundedText::unchecked(
+                    "missing function argument separator",
+                ));
+            }
+        }
+    }
+
+    fn take_call_content_after_open(&mut self) -> std::result::Result<String, BoundedText> {
+        let start = self.offset;
+        let mut depth = 1_u32;
+        let mut quote: Option<u8> = None;
+        let mut regex = false;
+        let mut escaped = false;
+        while let Some(byte) = self.remaining().as_bytes().first().copied() {
+            if let Some(current_quote) = quote {
+                if byte == current_quote && !escaped {
+                    quote = None;
+                }
+                escaped = byte == b'\\' && !escaped;
+                if byte != b'\\' {
+                    escaped = false;
+                }
+                self.offset = self.offset.saturating_add(1);
+                continue;
+            }
+            if regex {
+                if byte == b'/' && !escaped {
+                    regex = false;
+                }
+                escaped = byte == b'\\' && !escaped;
+                if byte != b'\\' {
+                    escaped = false;
+                }
+                self.offset = self.offset.saturating_add(1);
+                continue;
+            }
+            match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'/' => regex = true,
+                b'(' => depth = depth.saturating_add(1),
+                b')' => {
+                    depth = depth.checked_sub(1).ok_or_else(|| {
+                        BoundedText::unchecked("missing call opening parenthesis")
+                    })?;
+                    if depth == 0 {
+                        let content = self.input[start..self.offset].to_owned();
+                        self.offset = self.offset.saturating_add(1);
+                        return Ok(content);
+                    }
+                }
+                _ => {}
+            }
+            self.offset = self.offset.saturating_add(1);
+        }
+        Err(BoundedText::unchecked("missing call closing parenthesis"))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LambdaPredicate {
+    EqAny(Vec<String>),
+    NeAll(Vec<String>),
+    RegexMatches(String),
+    RegexNotMatches(String),
+}
+
+impl LambdaPredicate {
+    fn parse(input: &str) -> std::result::Result<Self, BoundedText> {
+        let (variable, expression) = input
+            .split_once("=>")
+            .ok_or_else(|| BoundedText::unchecked("expected lambda expression"))?;
+        let variable = variable.trim();
+        if variable.is_empty() || !is_identifier(variable) {
+            return Err(BoundedText::unchecked("invalid lambda parameter"));
+        }
+        let expression = expression.trim();
+        if let Some(pattern) = regex_lambda_pattern(expression, variable, true)? {
+            return Ok(Self::RegexMatches(pattern));
+        }
+        if let Some(pattern) = regex_lambda_pattern(expression, variable, false)? {
+            return Ok(Self::RegexNotMatches(pattern));
+        }
+        if let Some(values) = comparison_lambda_values(expression, variable, "==", "||")? {
+            return Ok(Self::EqAny(values));
+        }
+        if let Some(values) = comparison_lambda_values(expression, variable, "!=", "&&")? {
+            return Ok(Self::NeAll(values));
+        }
+        Err(BoundedText::unchecked("unsupported lambda predicate"))
+    }
+
+    fn into_filter_call_args(
+        self,
+    ) -> std::result::Result<(BuiltinFunction, Vec<RuleExpr>), BoundedText> {
+        match self {
+            Self::EqAny(values) => Ok((BuiltinFunction::FilterEquals, string_args(values)?)),
+            Self::NeAll(values) => Ok((BuiltinFunction::FilterNotEquals, string_args(values)?)),
+            Self::RegexMatches(pattern) => Ok((
+                BuiltinFunction::FilterMatches,
+                vec![RuleExpr::String {
+                    value: BoundedText::new(pattern, MAX_REGEX_PATTERN_BYTES)
+                        .map_err(|_| BoundedText::unchecked("regex literal exceeds limit"))?,
+                }],
+            )),
+            Self::RegexNotMatches(pattern) => Ok((
+                BuiltinFunction::FilterNotMatches,
+                vec![RuleExpr::String {
+                    value: BoundedText::new(pattern, MAX_REGEX_PATTERN_BYTES)
+                        .map_err(|_| BoundedText::unchecked("regex literal exceeds limit"))?,
+                }],
+            )),
+        }
+    }
+
+    fn into_find_index_call_args(
+        self,
+        receiver: RuleExpr,
+    ) -> std::result::Result<Vec<RuleExpr>, BoundedText> {
+        let Self::EqAny(values) = self else {
+            return Err(BoundedText::unchecked("unsupported findIndex predicate"));
+        };
+        let mut args = string_args(values)?;
+        args.insert(0, receiver);
+        Ok(args)
+    }
+}
+
+fn append_property_member(
+    expr: RuleExpr,
+    member: &str,
+) -> std::result::Result<RuleExpr, BoundedText> {
+    let RuleExpr::Property { mut path } = expr else {
+        return Err(BoundedText::unchecked(
+            "unsupported postfix property target",
+        ));
+    };
+    let mut parts = path.parts().to_vec();
+    parts.push(property_name_from_source(member)?);
+    path = PropertyPath::new(parts);
+    Ok(RuleExpr::Property { path })
+}
+
+fn method_call_expr(
+    receiver: RuleExpr,
+    method: &str,
+    mut args: Vec<RuleExpr>,
+) -> std::result::Result<RuleExpr, BoundedText> {
+    if is_math_receiver(&receiver) && method == "abs" {
+        if args.len() != 1 {
+            return Err(BoundedText::unchecked("Math.abs requires one argument"));
+        }
+        return Ok(RuleExpr::Call {
+            function: BuiltinFunction::Abs,
+            args,
+        });
+    }
+    match method {
+        "length" => {
+            if !args.is_empty() {
+                return Err(BoundedText::unchecked("length requires no arguments"));
+            }
+            Ok(RuleExpr::Call {
+                function: BuiltinFunction::Size,
+                args: vec![receiver],
+            })
+        }
+        "test" => {
+            if args.len() != 1 {
+                return Err(BoundedText::unchecked("test requires one argument"));
+            }
+            let haystack = args
+                .pop()
+                .ok_or_else(|| BoundedText::unchecked("test requires one argument"))?;
+            Ok(RuleExpr::Call {
+                function: BuiltinFunction::Matches,
+                args: vec![receiver, haystack],
+            })
+        }
+        "contains" => receiver_first_call(BuiltinFunction::Contains, receiver, args, 1),
+        "split" => receiver_first_call(BuiltinFunction::Split, receiver, args, 1),
+        "slice" => receiver_first_call(BuiltinFunction::Slice, receiver, args, 1),
+        "indexOf" => receiver_first_call(BuiltinFunction::IndexOf, receiver, args, 1),
+        "search" => receiver_first_call(BuiltinFunction::Search, receiver, args, 1),
+        _ => Err(BoundedText::unchecked("unsupported method call")),
+    }
+}
+
+fn receiver_first_call(
+    function: BuiltinFunction,
+    receiver: RuleExpr,
+    mut args: Vec<RuleExpr>,
+    expected_args: usize,
+) -> std::result::Result<RuleExpr, BoundedText> {
+    if args.len() != expected_args {
+        return Err(BoundedText::unchecked("wrong method argument count"));
+    }
+    args.insert(0, receiver);
+    Ok(RuleExpr::Call { function, args })
+}
+
+fn is_math_receiver(expr: &RuleExpr) -> bool {
+    matches!(
+        expr,
+        RuleExpr::Property { path }
+            if path.parts().len() == 1
+                && path
+                    .parts()
+                    .first()
+                    .is_some_and(|part| part.as_str() == "Math")
+    )
+}
+
+fn regex_lambda_pattern(
+    expression: &str,
+    variable: &str,
+    positive: bool,
+) -> std::result::Result<Option<String>, BoundedText> {
+    let expression = expression.trim();
+    let expression = if positive {
+        expression
+    } else {
+        let Some(expression) = expression.strip_prefix('!') else {
+            return Ok(None);
+        };
+        expression.trim()
+    };
+    let Some(rest) = expression.strip_prefix('/') else {
+        return Ok(None);
+    };
+    let mut escaped = false;
+    for (index, character) in rest.char_indices() {
+        if character == '/' && !escaped {
+            let pattern = &rest[..index];
+            let suffix = &rest[index + 1..];
+            let expected = format!(".test({variable})");
+            return Ok((suffix.trim() == expected).then(|| pattern.to_owned()));
+        }
+        escaped = character == '\\' && !escaped;
+        if character != '\\' {
+            escaped = false;
+        }
+    }
+    Err(BoundedText::unchecked("unterminated regex lambda"))
+}
+
+fn comparison_lambda_values(
+    expression: &str,
+    variable: &str,
+    operator: &str,
+    separator: &str,
+) -> std::result::Result<Option<Vec<String>>, BoundedText> {
+    let parts = expression.split(separator).collect::<Vec<_>>();
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    let mut values = Vec::with_capacity(parts.len());
+    for part in parts {
+        let Some(value) = comparison_lambda_value(part.trim(), variable, operator)? else {
+            return Ok(None);
+        };
+        values.push(value);
+    }
+    Ok(Some(values))
+}
+
+fn comparison_lambda_value(
+    expression: &str,
+    variable: &str,
+    operator: &str,
+) -> std::result::Result<Option<String>, BoundedText> {
+    let Some((left, right)) = expression.split_once(operator) else {
+        return Ok(None);
+    };
+    if left.trim() != variable {
+        return Ok(None);
+    }
+    parse_static_string(right.trim()).map(Some)
+}
+
+fn parse_static_string(input: &str) -> std::result::Result<String, BoundedText> {
+    let bytes = input.as_bytes();
+    let Some(quote) = bytes.first().copied() else {
+        return Err(BoundedText::unchecked("expected string literal"));
+    };
+    if !matches!(quote, b'\'' | b'"') || bytes.last().copied() != Some(quote) {
+        return Err(BoundedText::unchecked("expected string literal"));
+    }
+    Ok(input[1..input.len().saturating_sub(1)].to_owned())
+}
+
+fn string_args(values: Vec<String>) -> std::result::Result<Vec<RuleExpr>, BoundedText> {
+    values
+        .into_iter()
+        .map(|value| {
+            Ok(RuleExpr::String {
+                value: BoundedText::new(value, MAX_PROFILE_STRING_BYTES)
+                    .map_err(|_| BoundedText::unchecked("string literal exceeds limit"))?,
+            })
+        })
+        .collect()
+}
+
+fn is_identifier(value: &str) -> bool {
+    let mut bytes = value.as_bytes().iter();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || *first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
 }
 
 fn property_name_from_source(value: &str) -> std::result::Result<PropertyName, BoundedText> {
@@ -3323,7 +4161,7 @@ trailer
 
         assert!(import.profile.rules.len() > 100);
         assert!(import.supported_rules > 0);
-        assert!(import.unsupported_rules > 0);
+        assert_eq!(import.unsupported_rules, 0);
         assert_eq!(import.profile.identity.id.as_str(), "verapdf-pdfa-1b");
         assert!(
             import
@@ -3393,10 +4231,12 @@ trailer
                 && cluster.property.is_some()
                 && cluster.release_blocking
         }));
-        assert!(clusters.clusters.iter().any(|cluster| {
-            cluster.primary_reason.as_str() == "unsupportedExpression"
-                && cluster.expected_phase.as_str() == "G1"
-        }));
+        assert!(
+            !clusters
+                .clusters
+                .iter()
+                .any(|cluster| cluster.primary_reason.as_str() == "unsupportedExpression")
+        );
         Ok(())
     }
 
@@ -3901,11 +4741,65 @@ trailer
             .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
         let call = super::parse_imported_expr("contains(entries, 'UR3') == false")
             .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let flag_mask = super::parse_imported_expr("F != null && (F & 4) == 4 && (F & 32) == 0")
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let method_contains =
+            super::parse_imported_expr("parentsTags.contains('Artifact') == false")
+                .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let collection_predicate = super::parse_imported_expr(
+            "kidsStandardTypes.split('&').filter(elem => elem != 'TR' && elem != \
+             'Caption').length == 0 || kidsStandardTypes == ''",
+        )
+        .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let search = super::parse_imported_expr(r"fontName.search(/[A-Z]{6}\+/) != 0")
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let index_of = super::parse_imported_expr(r#"toUnicode.indexOf("\uFEFF") == -1"#)
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let abs =
+            super::parse_imported_expr("Math.abs(widthFromFontProgram - widthFromDictionary) <= 1")
+                .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
+        let exponent = super::parse_imported_expr("realValue <= 3.403e+38")
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
 
         assert!(matches!(modulo, super::RuleExpr::Binary { .. }));
         assert!(matches!(ternary, super::RuleExpr::Conditional { .. }));
         assert!(matches!(regex, super::RuleExpr::Call { .. }));
         assert!(matches!(call, super::RuleExpr::Binary { .. }));
+        assert!(matches!(flag_mask, super::RuleExpr::Binary { .. }));
+        assert!(matches!(method_contains, super::RuleExpr::Binary { .. }));
+        assert!(matches!(
+            collection_predicate,
+            super::RuleExpr::Binary { .. }
+        ));
+        assert!(matches!(search, super::RuleExpr::Binary { .. }));
+        assert!(matches!(index_of, super::RuleExpr::Binary { .. }));
+        assert!(matches!(abs, super::RuleExpr::Binary { .. }));
+        assert!(matches!(exponent, super::RuleExpr::Binary { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_preserve_xml_entity_split_rule_expressions() -> crate::Result<()> {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<profile flavour="PDFA_1_B">
+  <details><name>Entity profile</name></details>
+  <rules>
+    <rule object="CosInteger">
+      <id specification="LOCAL" clause="1" testNumber="1"/>
+      <description>Integer range</description>
+      <test>(intValue &lt;= 2147483647) &amp;&amp; (intValue &gt;= -2147483648)</test>
+      <error><message>Integer out of range</message></error>
+    </rule>
+  </rules>
+</profile>"#;
+        let import = super::import_verapdf_profile_xml(xml)?;
+
+        assert_eq!(import.supported_rules, 1);
+        assert_eq!(import.unsupported_rules, 0);
+        assert!(matches!(
+            import.profile.rules.first().map(|rule| &rule.test),
+            Some(super::RuleExpr::Binary { .. })
+        ));
         Ok(())
     }
 
@@ -3993,6 +4887,55 @@ trailer
             evaluator.evaluate(object, &rule)?,
             super::RuleOutcome::Passed
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_evaluate_flag_mask_and_collection_predicates() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(MINIMAL_PDF))?;
+        let model = crate::validation::DocumentModel::new(&document);
+        let object = crate::ModelObjectRef::Document(model);
+        let mut evaluator = DefaultRuleEvaluator::new(crate::ResourceLimits::default());
+        let rule = super::Rule {
+            id: crate::RuleId(crate::Identifier::new("expr-g1")?),
+            object_type: super::ObjectTypeName::new("document")?,
+            deferred: false,
+            tags: Vec::new(),
+            description: crate::BoundedText::new("expr g1", 32)?,
+            test: super::parse_imported_expr(
+                "(512 & 512) == 512 && (8 >> 2) == 2 && 'TR&Caption'.split('&').filter(elem => \
+                 elem != 'TR' && elem != 'Caption').length == 0 && 'abcdef'.indexOf('cd') == 2 && \
+                 'ABCDE+'.search(/[A-Z]{5}\\+/) == 0 && Math.abs(2 - 5) == 3",
+            )
+            .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?,
+            error: super::ErrorTemplate {
+                message: crate::BoundedText::new("expr g1", 32)?,
+            },
+            references: Vec::new(),
+        };
+
+        assert_eq!(
+            evaluator.evaluate(object, &rule)?,
+            super::RuleOutcome::Passed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_lower_all_generated_profile_expressions() -> crate::Result<()> {
+        let coverage = super::profile_coverage_parity_report()?;
+
+        for profile in coverage.profiles {
+            assert_eq!(
+                profile
+                    .unsupported_by_reason
+                    .get("unsupportedExpression")
+                    .copied(),
+                Some(0),
+                "{} has unsupported expressions",
+                profile.flavour.as_str()
+            );
+        }
         Ok(())
     }
 

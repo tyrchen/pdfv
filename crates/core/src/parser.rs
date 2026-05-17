@@ -15,8 +15,6 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-#[cfg(not(feature = "decrypt"))]
-use crate::Identifier;
 use crate::{
     BoundedText, ConfigError, Identifier, ObjectKey, ObjectLocation, ParseError, ParseFact,
     PasswordSecret, PdfVersion, ResourceLimits, Result, StreamFact, ValidationWarning, XrefFact,
@@ -3194,8 +3192,8 @@ mod tests {
 endobj
 xref
 0 2
-0000000000 65535 f 
-0000000009 00000 n 
+0000000000 65535 f
+0000000009 00000 n
 trailer
 << /Root 1 0 R /Size 2 >>
 startxref
@@ -3469,13 +3467,13 @@ endobj
 endobj
 xref
 0 2
-0000000000 65535 f 
-0000000009 00000 n 
+0000000000 65535 f
+0000000009 00000 n
 trailer
 << /Size 2 /Root 1 0 R >>
 xref
 0 1
-0000000000 65535 f 
+0000000000 65535 f
 trailer
 << /Size 2 /Root 1 0 R /Prev 40 /XRefStm 120 >>
 %%EOF
