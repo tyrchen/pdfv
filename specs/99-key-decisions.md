@@ -118,3 +118,21 @@ Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
 - Why: veraPDF supports validation, feature extraction, and metadata repair, but repair changes files and carries a different safety/security contract. Keeping read-only validation separate from write-capable repair preserves default safety while still providing migration paths.
 - Pinned by: [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md), [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md), [70-security.md](./70-security.md)
 - Date: 2026-05-16
+
+## D14 — Split model parity into operator, resource, and accessibility subsystems
+
+- Context: drift review after comparing `vendors` and `pdfv`.
+- Alternatives considered: keep one broad validation-model phase; hand-code only the currently failing rules; split content streams, resource/font/color semantics, and accessibility into independent subsystems.
+- Decision: the validation model registry remains the spine, but content-stream operator facts, resource/font/color semantics, and structure/accessibility reconstruction are separate specs and phases.
+- Why: veraPDF's drift is concentrated in mature semantic layers, not the CLI. Content operators feed resource usage and accessibility marked-content association; resource/font/color semantics feed PDF/A rule coverage; accessibility reconstruction feeds PDF/UA/WTPDF rule coverage. A single broad phase would hide blockers and make parity metrics meaningless.
+- Pinned by: [17-validation-model-parity-design.md](./17-validation-model-parity-design.md), [21-content-stream-operator-model-design.md](./21-content-stream-operator-model-design.md), [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md), [23-structure-accessibility-design.md](./23-structure-accessibility-design.md), [91-impl-plan.md](./91-impl-plan.md), [../docs/reviews/verapdf-pdfv-core-drift-review.md](../docs/reviews/verapdf-pdfv-core-drift-review.md)
+- Date: 2026-05-16
+
+## D15 — Treat parity as measured coverage, not asserted completeness
+
+- Context: official profile XML volume is close between veraPDF and pdfv, but executable and bound rule coverage are not equivalent to XML line count.
+- Alternatives considered: use LoC as the progress metric; use profile XML import counts only; require full live veraPDF report byte parity; track imported/lowered/bound rules, unsupported reasons, model families, feature families, and semantic corpus agreement.
+- Decision: every parity milestone must emit deterministic coverage metrics with imported, executable, bound, unsupported, and corpus-agreement counts. Byte-identical veraPDF reports are not the general parity metric.
+- Why: generated XML can make the catalog look complete while rules remain unsupported by missing expression features or model semantics. The project needs a reviewable signal that points engineers to the next missing object, property, link, or semantic family.
+- Pinned by: [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md), [72-testing-strategy.md](./72-testing-strategy.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [../docs/reviews/verapdf-pdfv-core-drift-review.md](../docs/reviews/verapdf-pdfv-core-drift-review.md)
+- Date: 2026-05-16

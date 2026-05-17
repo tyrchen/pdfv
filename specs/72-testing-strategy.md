@@ -11,6 +11,7 @@ Status: draft · Owner: pdfv · Depends on: all component specs
 - Snapshot tests: stable JSON reports and human text output.
 - Conformance fixtures: curated PDFs from public suites or generated local fixtures, with license metadata tracked.
 - Encrypted fixtures: generated or licensed PDFs covering supported and unsupported password/decryption paths.
+- Parity metrics: generated coverage reports for imported rules, executable rules, bound rules, unsupported reasons, model families, feature families, and corpus agreement as defined in [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md).
 
 ## 2. Fixture policy
 
@@ -34,10 +35,22 @@ M1 introduces `cargo fuzz` targets:
 - `fuzz_parse_stream_object`
 - `fuzz_parse_encryption_dictionary`
 - `fuzz_rule_expr`
+- `fuzz_parse_content_stream`
+- `fuzz_structure_tree`
 
 Fuzz failures become regression fixtures before fixes are accepted.
 
-## 6. Cross-references
+## 6. Parity gates
+
+The parity phases add Makefile-discoverable checks from [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md):
+
+- `make parity-profile-report` records imported, lowered, bound, and unsupported rules by flavour.
+- `make parity-model-schema` verifies generated profile object/property/link references against the model registry.
+- `make parity-corpus` runs generated and checked-in semantic agreement rows; live veraPDF oracle rows remain ignored unless explicitly enabled.
+
+Coverage decreases require a review note. Placeholder zero-count parity reports are forbidden at milestone exits.
+
+## 7. Cross-references
 
 - ← Depends on: [10-data-model.md](./10-data-model.md), [11-parser-core-design.md](./11-parser-core-design.md), [12-profile-rule-ir-design.md](./12-profile-rule-ir-design.md), [13-validation-engine-design.md](./13-validation-engine-design.md), [14-password-decryption-design.md](./14-password-decryption-design.md), [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md)
 - → Constrains: [91-impl-plan.md](./91-impl-plan.md)

@@ -1,6 +1,6 @@
 # 19-verapdf-product-surface-parity-design: veraPDF Product Surface Parity
 
-Status: draft · Owner: pdfv · Depends on: [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md), [17-validation-model-parity-design.md](./17-validation-model-parity-design.md), [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md), [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md)
+Status: draft · Owner: pdfv · Depends on: [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md), [17-validation-model-parity-design.md](./17-validation-model-parity-design.md), [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md), [20-reporting-design.md](./20-reporting-design.md), [21-content-stream-operator-model-design.md](./21-content-stream-operator-model-design.md), [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md), [23-structure-accessibility-design.md](./23-structure-accessibility-design.md), [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md), [50-cli-design.md](./50-cli-design.md)
 
 ## 1. Purpose
 
@@ -22,7 +22,7 @@ veraPDF's processor executes validation, metadata repair, and feature extraction
 
 ## 3. Feature Extraction
 
-Feature extraction uses the model graph from [17-validation-model-parity-design.md](./17-validation-model-parity-design.md). It produces a `FeatureReport` from selected feature families:
+Feature extraction uses the model graph from [17-validation-model-parity-design.md](./17-validation-model-parity-design.md) plus the semantic subsystems in [21-content-stream-operator-model-design.md](./21-content-stream-operator-model-design.md), [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md), and [23-structure-accessibility-design.md](./23-structure-accessibility-design.md). It produces a `FeatureReport` from selected feature families:
 
 - document metadata
 - pages and page resources
@@ -108,6 +108,6 @@ The existing no-literal-password policy remains. veraPDF accepts `--password <te
 
 ## 10. Cross-references
 
-- ← Depends on: [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md), [17-validation-model-parity-design.md](./17-validation-model-parity-design.md), [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md), [20-reporting-design.md](./20-reporting-design.md), [50-cli-design.md](./50-cli-design.md)
+- ← Depends on: [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md), [17-validation-model-parity-design.md](./17-validation-model-parity-design.md), [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md), [20-reporting-design.md](./20-reporting-design.md), [21-content-stream-operator-model-design.md](./21-content-stream-operator-model-design.md), [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md), [23-structure-accessibility-design.md](./23-structure-accessibility-design.md), [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md), [50-cli-design.md](./50-cli-design.md)
 - → Consumed by: [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md)
 - ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md), [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md)

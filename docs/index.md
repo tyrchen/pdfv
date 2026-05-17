@@ -23,3 +23,7 @@
 - [Spike: MRR/XML Compatibility](research/spike-mrr-compatibility.md)
 - [Spike: AES-256 PDF Decryption Risk Gate](research/spike-aes-256-decryption.md)
 - [Spike: Bounded Feature Policy Language](research/spike-policy-language.md)
+
+## Reviews
+
+- [Review: veraPDF Vendor vs pdfv Core Drift](reviews/verapdf-pdfv-core-drift-review.md)

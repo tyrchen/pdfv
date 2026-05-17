@@ -82,7 +82,17 @@ CI and local verification run:
 - `cargo audit`
 - `cargo deny check`
 
-## 6. Cross-references
+## 6. Makefile automation
+
+Automation added for parity work must be discoverable through `make` targets, not standalone shell scripts. The parity metrics phase adds:
+
+- `make parity-profile-report`
+- `make parity-model-schema`
+- `make parity-corpus`
+
+These targets write transient artifacts under `target/parity/` as defined by [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md). Targets that require external veraPDF binaries or external corpora must fail with a clear message unless the required environment variables are set.
+
+## 7. Cross-references
 
 - ← Depends on: [00-prd.md](./00-prd.md)
 - → Constrains: all implementation specs

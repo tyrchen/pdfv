@@ -15,6 +15,8 @@ Inputs are hostile: PDF bytes, file names, CLI args, YAML config, custom profile
 - Every integer derived from input has range validation and checked arithmetic.
 - Every decompressor is streaming and byte-counted.
 - Every parser recursion is replaced with explicit stacks and depth counters.
+- Content-stream operator parsing has explicit operator, operand-count, operand-byte, graphics-state-depth, and Type 3 charproc limits.
+- Resource inheritance, structure tree traversal, parent tree traversal, and accessibility graph reconstruction have explicit node/depth/edge caps and cycle detection.
 - Every CLI output path is validated and opened with normal Rust APIs; no shelling out.
 - Raw PDF bytes are never logged or included in error messages.
 
@@ -44,6 +46,7 @@ Binding rules:
 - Parser fuzz target for arbitrary byte input.
 - Clippy boundary lint run with `-W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing -W clippy::panic` for parser/profile modules.
 - Corpus tests for truncated files, recursive objects, giant arrays, giant names, bad lengths, decompression bombs, and invalid UTF-8.
+- Operator/resource/accessibility tests for huge operand lists, resource cycles, parent-tree cycles, malformed MCID references, and over-deep structure trees.
 - `cargo audit` and `cargo deny check` required before release.
 - Password-bearing type `Debug` redaction test.
 - Encrypted fixture matrix covering missing password, wrong password, supported user/owner password, unsupported revision, malformed `/Encrypt`, and future R5/R6 AESV3 `/Perms` tampering.
@@ -51,4 +54,4 @@ Binding rules:
 ## 7. Cross-references
 
 - ← Depends on: [10-data-model.md](./10-data-model.md), [11-parser-core-design.md](./11-parser-core-design.md)
-- → Constrains: [14-password-decryption-design.md](./14-password-decryption-design.md), [91-impl-plan.md](./91-impl-plan.md)
+- → Constrains: [14-password-decryption-design.md](./14-password-decryption-design.md), [21-content-stream-operator-model-design.md](./21-content-stream-operator-model-design.md), [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md), [23-structure-accessibility-design.md](./23-structure-accessibility-design.md), [91-impl-plan.md](./91-impl-plan.md)

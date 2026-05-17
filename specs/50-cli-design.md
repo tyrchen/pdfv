@@ -65,7 +65,7 @@ output:
 
 `validation.defaultFlavour` selects the built-in fallback used only when `validation.flavour` or `--flavour` is `auto` and XMP metadata detection is inconclusive.
 
-`output.format: xml` selects the XML compatibility report. `mrr` is accepted on the CLI as a deprecated alias for `xml`; configs should use `xml` so machine-readable output names align with current veraPDF documentation. `raw` and `html` select the Phase 17 processor-style raw XML and static HTML writers.
+`output.format: xml` selects the XML compatibility report. `mrr` is accepted on the CLI as a deprecated alias for `xml`; configs should use `xml` so machine-readable output names align with current veraPDF documentation. `raw` and `html` select the Phase 21 processor-style raw XML and static HTML writers.
 
 Password config follows [14-password-decryption-design.md](./14-password-decryption-design.md): config may identify a password source (`stdin`, file path, or environment variable name) but must never contain a literal password value.
 

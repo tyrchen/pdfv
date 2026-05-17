@@ -191,47 +191,94 @@ Exit criteria: all required M5 text/image-neutral filters decode under byte caps
 
 Exit criteria: `pdfv profiles list` shows every vendored built-in profile with source pin and executable coverage; generated data is deterministic; explicit profile selection loads the matching profile rather than always PDFA-1B; unsupported rules are reported with citations and force incomplete status; standard gates pass.
 
-## 18. Phase 14 — M6 validation model breadth
+## 18. Phase 14 — M6 validation model registry and document/page foundation
 
 | # | Task | Spec | Effort |
 | --- | --- | --- | --- |
-| 14.1 | Add internal model registry and schema checks connecting generated profile property/link references to model families. | 16, 17 | 3-5 days |
-| 14.2 | Implement document/catalog/page/resource families, including AcroForm, structure-tree root, OC properties, language, permissions, outlines, names, and destinations. | 17, 70 | 1-2 weeks |
-| 14.3 | Implement font/CMap and image/content model families with bounded content-stream summaries. | 15, 17, 70, 71 | 2-4 weeks |
-| 14.4 | Implement annotation/action/form, color/transparency, structure/accessibility, and signature/security fact families. | 17, 70, 72 | 3-6 weeks |
-| 14.5 | Add property-schema tests, cycle/cap tests, official-rule coverage tests, and performance benchmarks for broad traversal. | 17, 71, 72 | 1-2 weeks |
+| 14.1 | Add internal model registry, `PropertySpec`, `LinkSpec`, object-family registration, and schema checks connecting generated profile references to model families. | 16, 17, 24 | 3-5 days |
+| 14.2 | Implement document/catalog roots with metadata, page tree, names, outlines, destinations, AcroForm, OC properties, permissions, language, signature/security dictionary links, and deterministic context paths. | 17, 70 | 1-2 weeks |
+| 14.3 | Implement page and annotation/action/form foundation families without deep content semantics: page dictionaries, inherited boxes, annotations, form fields, actions, additional actions, filespec references. | 17, 70, 72 | 1-2 weeks |
+| 14.4 | Add model-schema parity metrics for object/property/link references and group unsupported rules by missing object/property/link. | 17, 24, 72 | 3-5 days |
+| 14.5 | Add cycle/cap tests for page tree, names, outlines, destinations, annotations, forms, and action chains. | 17, 70, 72 | 3-5 days |
 
-Exit criteria: generated built-in rules either bind to a known model property/link or have a tracked unsupported reason; broad model graph traversal remains iterative and bounded; official profile coverage improves measurably over Phase 13; fixtures cover every model family; standard gates and traversal benches pass.
+Exit criteria: generated built-in rules either bind to known registry entries or have a tracked unsupported reason; document/page/action/form traversal remains iterative and bounded; `make parity-model-schema` reports non-placeholder real counts; official profile bound-rule coverage improves measurably over Phase 13; standard gates and traversal benches pass.
 
-## 19. Phase 15 — M6 XMP metadata and flavour detection
+## 19. Phase 15 — M6 content stream operator model
 
 | # | Task | Spec | Effort |
 | --- | --- | --- | --- |
-| 15.1 | Implement bounded XMP packet extraction and namespace-aware RDF/XML parsing for identification schemas. | 18, 70 | 1-2 weeks |
-| 15.2 | Map PDF/A, PDF/UA, and WTPDF claims to generated profiles with structured fallback and incompatibility warnings. | 16, 18, 20 | 3-5 days |
-| 15.3 | Expose XMP facts through the validation model and report formats without dumping full metadata packets. | 17, 18, 20 | 3-5 days |
-| 15.4 | Add auto-selection fixtures for absent, malformed, single-claim, multi-claim, incompatible, and encrypted-metadata cases. | 14, 18, 72 | 3-5 days |
+| 15.1 | Implement bounded content stream tokenizer for operands/operators after stream decoding, with recoverable unknown-operator facts. | 15, 21, 70 | 1-2 weeks |
+| 15.2 | Add operator facts for text object/state/show, marked content, graphics state, color, path, inline image, XObject invocation, compatibility, and unknown operators. | 21, 70, 72 | 2-4 weeks |
+| 15.3 | Build lazy `ContentStreamSummary` caches for page, form XObject, pattern, and Type 3 charproc contexts. | 17, 21, 71 | 1-2 weeks |
+| 15.4 | Register `ContentStream`, `Operator`, `MarkedContent`, and `InlineImage` model families and bind generated profile references to them. | 16, 17, 21, 24 | 3-5 days |
+| 15.5 | Add fixtures and fuzz target for malformed streams, huge operand lists, marked content nesting, Type 3 charprocs, inline images, and unknown operators. | 21, 72 | 1 week |
+
+Exit criteria: content-stream rules bind to registered operator schemas or receive named unsupported reasons; summaries are redacted, deterministic, bounded by `max_content_stream_ops`, and lazy; resource-use facts from `Tf`, color operators, `gs`, `sh`, and `Do` are available to Phase 16; standard gates plus content-stream fuzz smoke pass.
+
+## 20. Phase 16 — M6 resource, font, color, and XObject semantics
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 16.1 | Implement `EffectiveResources` with page-tree inheritance, nested form/pattern/type3 contexts, cycle detection, missing/wrong-type facts, and resource-use resolution. | 17, 21, 22, 70 | 1-2 weeks |
+| 16.2 | Implement font and CMap summaries for Type0, Type1, TrueType, Type3, CIDFont, font descriptors, embedded font-file presence, ToUnicode, Encoding, widths, and CIDSystemInfo facts. | 22, 70, 72 | 2-4 weeks |
+| 16.3 | Implement color/output-intent summaries for Device/Cal/Lab/Indexed/Separation/DeviceN/ICCBased spaces, ICC header facts, transparency groups, soft masks, and extGState references. | 22, 70, 72 | 2-4 weeks |
+| 16.4 | Implement XObject, image, pattern, shading, and function summaries with links to decoded stream metadata and content summaries where applicable. | 21, 22, 71 | 1-3 weeks |
+| 16.5 | Register resource/font/color/XObject model schemas and add parity metrics grouped by missing semantic family. | 16, 17, 22, 24 | 3-5 days |
+
+Exit criteria: resource inheritance resolves content-stream uses deterministically; font/color/output-intent official rules move from missing-property unsupported reasons to bound or expression-unsupported reasons; fixture coverage exists for each resource/font/color family; embedded font/ICC bytes remain capped and report-safe; standard gates and resource traversal benches pass.
+
+## 21. Phase 17 — M7 XMP metadata and flavour detection
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 17.1 | Implement bounded XMP packet extraction and namespace-aware RDF/XML parsing for identification schemas. | 18, 70 | 1-2 weeks |
+| 17.2 | Map PDF/A, PDF/UA, and WTPDF claims to generated profiles with structured fallback and incompatibility warnings. | 16, 18, 20 | 3-5 days |
+| 17.3 | Expose XMP facts through the validation model and report formats without dumping full metadata packets. | 17, 18, 20 | 3-5 days |
+| 17.4 | Add auto-selection fixtures for absent, malformed, single-claim, multi-claim, incompatible, and encrypted-metadata cases. | 14, 18, 72 | 3-5 days |
 
 Exit criteria: auto mode selects profiles from XMP claims when present; missing or malformed XMP yields structured warnings and default/fallback behaviour; reports show evidence for detected flavours; no XML entity/external resource path exists; standard gates plus strict XML hostile-input tests pass.
 
-## 20. Phase 16 — M7 feature extraction and policy reports
+## 22. Phase 18 — M7 structure and accessibility semantics
 
 | # | Task | Spec | Effort |
 | --- | --- | --- | --- |
-| 16.1 | Add `FeatureReport` data contracts and read-only feature extraction over the Phase 14 model families. | 10, 17, 19, 20 | 1-2 weeks |
-| 16.2 | Add `pdfv validate --extract` and feature sections in JSON/XML reports. | 19, 50, 72 | 3-5 days |
-| 16.3 | Complete a policy-language spike and implement a bounded first policy report format. | docs/research, 19, 70 | 1-2 weeks |
-| 16.4 | Add policy report merging into JSON/XML and CLI `--policy-file`. | 19, 20, 50 | 3-5 days |
+| 18.1 | Implement bounded structure tree traversal for `/StructTreeRoot`, `/K`, `/RoleMap`, `/ClassMap`, `/IDTree`, `/ParentTree`, and page associations. | 17, 23, 70 | 2-4 weeks |
+| 18.2 | Associate marked-content `MCID` facts from Phase 15 with structure elements, pages, annotations, images, artifacts, and content chunks. | 21, 22, 23 | 2-4 weeks |
+| 18.3 | Implement accessibility semantic families: tagged document, structure element, text chunk, image chunk, annotation/link, table/list/heading, artifact, and repeated-character candidate facts. | 23, 72 | 3-6 weeks |
+| 18.4 | Register accessibility schemas and group PDF/UA/WTPDF unsupported rules by missing semantic family. | 16, 17, 23, 24 | 3-5 days |
+| 18.5 | Add generated and corpus fixtures for tagged/untagged docs, role maps, parent-tree cycles, artifacts, links, image alt text, lists, tables, and malformed MCID references. | 23, 72 | 1-2 weeks |
+
+Exit criteria: PDF/UA and WTPDF rules that depend on structure/marked-content semantics bind to known schemas or have named semantic-family unsupported reasons; accessibility graph construction is lazy, bounded, and text-redacted by default; profile coverage improves measurably for PDF/UA/WTPDF profiles; standard gates plus structure fuzz smoke pass.
+
+## 23. Phase 19 — M7 parity metrics and corpus agreement
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 19.1 | Add Makefile targets `parity-profile-report`, `parity-model-schema`, and `parity-corpus`. | 24, 61, 72 | 1-2 days |
+| 19.2 | Emit deterministic `target/parity/profile-coverage.json`, `model-schema.json`, `unsupported-rules.json`, and `corpus-agreement.json`. | 16, 17, 24 | 3-5 days |
+| 19.3 | Add review-gated coverage decrease detection and milestone snapshot instructions. | 24, 72, 93 | 2-4 days |
+| 19.4 | Expand checked-in/generated semantic corpus rows for parser, profile, operator, resource/font/color, XMP, and accessibility families. | 21, 22, 23, 24, 72 | 1-2 weeks |
+
+Exit criteria: parity reports contain non-placeholder real counts; unsupported rules have exactly one primary reason; bound-rule and model-family coverage can be compared across phases; normal CI can run generated/checked-in corpus rows without Java; live veraPDF oracle rows remain opt-in; standard gates pass.
+
+## 24. Phase 20 — M8 feature extraction and policy reports
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 20.1 | Add `FeatureReport` data contracts and read-only feature extraction over document/page/operator/resource/font/color/XMP/accessibility model families. | 10, 17, 19, 20, 21, 22, 23 | 1-2 weeks |
+| 20.2 | Add `pdfv validate --extract` and feature sections in JSON/XML reports. | 19, 50, 72 | 3-5 days |
+| 20.3 | Complete a policy-language spike and implement a bounded first policy report format. | docs/research, 19, 70 | 1-2 weeks |
+| 20.4 | Add policy report merging into JSON/XML and CLI `--policy-file`. | 19, 20, 50 | 3-5 days |
 
 Exit criteria: feature extraction is read-only, bounded, and deterministic; policy reports consume feature reports rather than raw PDFs; CLI and library APIs expose feature/policy reports; standard gates pass.
 
-## 21. Phase 17 — M7 metadata repair and report parity
+## 25. Phase 21 — M8 metadata repair and report parity
 
 | # | Task | Spec | Effort |
 | --- | --- | --- | --- |
-| 17.1 | Add `RepairReport` data contracts and explicit repair refusal model. | 10, 19, 20 | 2-4 days |
-| 17.2 | Implement `pdfv repair-metadata` with non-in-place atomic writes, output directory validation, and prefix handling. | 19, 50, 70 | 1-2 weeks |
-| 17.3 | Implement raw XML and static HTML report writers for validation/feature/policy/repair outputs. | 19, 20, 72 | 1-2 weeks |
-| 17.4 | Publish CLI compatibility documentation for supported, intentionally different, and out-of-scope veraPDF flags. | 19, 50, 72 | 2-4 days |
+| 21.1 | Add `RepairReport` data contracts and explicit repair refusal model. | 10, 19, 20 | 2-4 days |
+| 21.2 | Implement `pdfv repair-metadata` with non-in-place atomic writes, output directory validation, and prefix handling. | 19, 50, 70 | 1-2 weeks |
+| 21.3 | Implement raw XML and static HTML report writers for validation/feature/policy/repair outputs. | 19, 20, 72 | 1-2 weeks |
+| 21.4 | Publish CLI compatibility documentation for supported, intentionally different, and out-of-scope veraPDF flags. | 19, 50, 72 | 2-4 days |
 
 Exit criteria: metadata repair never modifies inputs in place and removes failed outputs; raw and HTML reports pass golden tests; CLI docs explain deviations from veraPDF, including no literal password argument; standard gates pass.

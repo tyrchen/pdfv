@@ -85,18 +85,31 @@ Exit criteria:
 - Generated profile coverage reports executable and unsupported rule counts per profile.
 - Auto profile selection no longer silently treats absent metadata as detected PDF/A-1B.
 
-### M6 — Validation model and metadata parity
+### M6 — Validation model and resource semantics parity
 
-User-visible result: official profile rules evaluate against a broad validation model rather than the current small fact subset.
+User-visible result: official profile rules evaluate against a broad validation model with content-stream, resource, font, color, XObject, and output-intent semantics rather than the current small fact subset.
 
 Exit criteria:
 
-- Validation model families cover document/catalog, page/resources, fonts/CMaps, images/content, annotations/actions/forms, color/transparency, structure/accessibility, and signature/security facts.
-- Generated built-in profile rules are schema-checked against model properties and links.
-- XMP metadata parsing detects PDF/A, PDF/UA, and WTPDF flavour claims with structured report evidence.
-- Unsupported official rules are visible in reports with profile/rule citations and do not produce compliant status.
+- Validation model registry covers document/catalog, page tree, names, outlines, destinations, annotations/actions/forms, signatures/security dictionaries, and deterministic context paths.
+- Content-stream operator summaries cover text, marked content, graphics state, color, path, inline image, XObject invocation, and unknown operators under byte and operation caps.
+- Resource semantics cover effective resource inheritance, fonts/CMaps, output intents, ICC headers, color spaces, XObjects, extGState, patterns, shadings, and functions.
+- Generated built-in profile rules are schema-checked against model properties and links, with unsupported reasons grouped by missing expression, object, property, link, or semantic family.
+- Parity metric reports produce real imported/lowered/bound/unsupported counts.
 
-### M7 — veraPDF product-surface parity
+### M7 — Metadata and accessibility parity
+
+User-visible result: PDF/A/PDF/UA/WTPDF auto-selection and accessibility-oriented rules have explicit metadata, structure-tree, and marked-content semantics.
+
+Exit criteria:
+
+- XMP metadata parsing detects PDF/A, PDF/UA, and WTPDF flavour claims with structured report evidence.
+- Structure/accessibility graph covers tagged document facts, role/class maps, parent tree, marked-content association, artifacts, annotations/links, tables, lists, headings, image alt text, and text/image chunks.
+- Unsupported official rules are visible in reports with profile/rule citations and do not produce compliant status.
+- PDF/UA and WTPDF profile coverage improves measurably over M6.
+- Generated/check-in corpus rows report semantic agreement and expected drift.
+
+### M8 — veraPDF product-surface parity
 
 User-visible result: migration workflows can use pdfv for validation reports, feature inventory, policy checks, and safe metadata repair where explicitly supported.
 
@@ -118,8 +131,9 @@ For one focused developer:
 - M3: 2-4 weeks.
 - M4: research-dependent; password/decryption adds approximately 2-4 weeks for revisions 2-4, a separate AES-256 risk gate, and approximately 1 week for the dedicated revisions 5-6 implementation phase.
 - M5: 4-8 weeks, driven by decoder coverage and profile-generator coverage.
-- M6: 8-16 weeks, driven by validation-model breadth and XMP semantics.
-- M7: 6-12 weeks, depending on policy language and metadata repair scope.
+- M6: 10-20 weeks, driven by validation registry, content-stream operators, and resource/font/color semantics.
+- M7: 8-16 weeks, driven by XMP, structure/accessibility reconstruction, and parity metric/corpus gates.
+- M8: 6-12 weeks, depending on policy language and metadata repair scope.
 
 ## 3. Cross-references
 

@@ -4,7 +4,7 @@ Status: draft · Owner: pdfv · Depends on: [13-validation-engine-design.md](./1
 
 ## 1. Purpose
 
-This spec expands the validation model graph from the current page/font/annotation/output-intent facts to the broad object surface required by official veraPDF profiles. It owns model object families, property/link naming, lazy materialization, session caches, and conformance-visible feature facts. It does not own parser byte syntax, profile XML generation, or report writers.
+This spec expands the validation model graph from the current page/font/annotation/output-intent facts to the broad object surface required by official veraPDF profiles. It owns the registry, property/link naming, lazy materialization, session caches, and conformance-visible feature facts. Detailed semantic subsystems live in [21-content-stream-operator-model-design.md](./21-content-stream-operator-model-design.md), [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md), and [23-structure-accessibility-design.md](./23-structure-accessibility-design.md). This spec does not own parser byte syntax, profile XML generation, content operator parsing, deep font/color semantics, accessibility reconstruction, or report writers.
 
 veraPDF's validation-model implementation contains hundreds of wrappers for PD, COS, structure, annotations, actions, colorspaces, images, fonts, functions, signatures, and metadata. The document wrapper alone links pages, metadata, output intents, AcroForm, structure tree root, optional content properties, language, permissions, actions, outlines, and destinations (`vendors/veraPDF-validation/validation-model/src/main/java/org/verapdf/gf/model/impl/pd/GFPDDocument.java:145`). pdfv currently exposes only a narrow subset.
 
@@ -41,6 +41,12 @@ Parity is delivered in layers:
 | Color/transparency | ICCBased, Device*, Cal*, Lab, Indexed, Separation, DeviceN, transparency groups, soft masks | Output-intent and rendering-condition facts. |
 | Structure/accessibility | structure tree, struct elements, role maps, artifacts, table/list/heading/link semantics, PDF/UA objects | Tagged PDF and PDF/UA/WTPDF rules. |
 | Signatures/security | signature fields, signature dictionaries, DocMDP/FieldMDP, permissions, encryption facts | Validation facts only; cryptographic signature validation is separately scoped. |
+
+The registry lands before the family implementations. Each later subsystem registers its own schema:
+
+- [21-content-stream-operator-model-design.md](./21-content-stream-operator-model-design.md): `ContentStream`, `Operator`, `MarkedContent`, `InlineImage`.
+- [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md): `Resources`, `Font`, `FontDescriptor`, `CMap`, `ColorSpace`, `ICCProfile`, `OutputIntent`, `XObject`, `ExtGState`, `Pattern`, `Shading`, `Function`.
+- [23-structure-accessibility-design.md](./23-structure-accessibility-design.md): `AccessibilityDocument`, `StructureElement`, `TextChunk`, `ImageChunk`, `Artifact`, `Table`, `List`, `Heading`, `Link`, accessibility annotations.
 
 ## 4. Property and Link Naming
 
@@ -95,5 +101,5 @@ Caches are per-session and bounded by `ResourceLimits`. No global or thread-loca
 ## 9. Cross-references
 
 - ← Depends on: [13-validation-engine-design.md](./13-validation-engine-design.md), [16-profile-catalog-rule-parity-design.md](./16-profile-catalog-rule-parity-design.md)
-- → Consumed by: [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md), [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md)
-- ↔ Related research: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md)
+- → Consumed by: [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md), [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md), [21-content-stream-operator-model-design.md](./21-content-stream-operator-model-design.md), [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md), [23-structure-accessibility-design.md](./23-structure-accessibility-design.md), [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md)
+- ↔ Related research/review: [../docs/research/study-verapdf-validator-architecture.md](../docs/research/study-verapdf-validator-architecture.md), [../docs/reviews/verapdf-pdfv-core-drift-review.md](../docs/reviews/verapdf-pdfv-core-drift-review.md)
