@@ -759,6 +759,25 @@ fn test_should_reject_multiple_password_sources() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+#[test]
+fn test_should_reject_literal_password_argument_without_echoing_secret()
+-> Result<(), Box<dyn Error>> {
+    let temp = tempdir()?;
+    let path = temp.path().join("valid.pdf");
+    write_fixture(&path, MINIMAL_VALID)?;
+
+    let output = Command::cargo_bin("pdfv")?
+        .args(["validate", "--password", "secret-value"])
+        .arg(&path)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(contains("--password").eval(&stderr));
+    assert!(!contains("secret-value").eval(&stderr));
+    Ok(())
+}
+
 fn encrypted_rc4_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
     let owner_key = owner_key(b"owner");
     let owner_entry = rc4_crypt(&owner_key, &padded_password(b"user"))?;

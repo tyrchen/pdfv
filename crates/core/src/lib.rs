@@ -1146,6 +1146,7 @@ pub struct MetadataRepairer {
     validator: Validator,
     output_dir: PathBuf,
     prefix: String,
+    max_file_bytes: u64,
 }
 
 impl MetadataRepairer {
@@ -1155,10 +1156,12 @@ impl MetadataRepairer {
     ///
     /// Returns [`PdfvError`] if validation setup or repair options are invalid.
     pub fn new(options: MetadataRepairOptions) -> Result<Self> {
+        let max_file_bytes = options.validation_options.resource_limits.max_file_bytes;
         Ok(Self {
             validator: Validator::new(options.validation_options)?,
             output_dir: options.output_dir,
             prefix: options.prefix,
+            max_file_bytes,
         })
     }
 
@@ -1173,6 +1176,7 @@ impl MetadataRepairer {
             path.as_ref(),
             &self.output_dir,
             &self.prefix,
+            self.max_file_bytes,
         )
     }
 }
@@ -1326,6 +1330,7 @@ fn repair_metadata_path(
     path: &Path,
     output_dir: &Path,
     prefix: &str,
+    max_file_bytes: u64,
 ) -> Result<RepairReport> {
     let source = input_summary_for_path(path)?;
     let output_path = repair_output_path(path, output_dir, prefix)?;
@@ -1349,44 +1354,38 @@ fn repair_metadata_path(
     }
 
     let started = std::time::Instant::now();
-    let validation = validator.validate_path(path)?;
-    if matches!(validation.status, ValidationStatus::ParseFailed) {
+    let Some(output_parent) = output_path.parent() else {
         return Ok(refused_repair_report(
             source,
-            RepairRefusal::ParseFailed {
-                reason: validation
-                    .warnings
-                    .first()
-                    .map_or_else(default_parse_failed_text, ValidationWarning::message_text),
+            RepairRefusal::InvalidOutputPath {
+                reason: BoundedText::unchecked("output path has no parent"),
             },
         ));
-    }
-    if matches!(validation.status, ValidationStatus::Encrypted) {
-        return Ok(refused_repair_report(source, RepairRefusal::Encrypted));
-    }
-    let selected_profiles = if validation.flavours.is_empty() {
-        validation.profile_reports.len()
-    } else {
-        validation.flavours.len()
     };
-    if selected_profiles != 1 {
-        return Ok(refused_repair_report(
+    let candidate = match copy_repair_candidate(path, output_parent, max_file_bytes) {
+        Ok(candidate) => candidate,
+        Err(PdfvError::Parse(ParseError::LimitExceeded { limit })) => {
+            return Ok(refused_repair_report(
+                source,
+                RepairRefusal::ParseFailed {
+                    reason: BoundedText::unchecked(format!("resource limit exceeded: {limit}")),
+                },
+            ));
+        }
+        Err(error) => return Ok(failed_repair_report(source, None, &error.to_string())),
+    };
+    let validation = validator.validate_reader(
+        candidate.reopen().map_err(|source| PdfvError::Io {
+            path: Some(path.to_path_buf()),
             source,
-            RepairRefusal::AmbiguousFlavour {
-                selected: u64::try_from(selected_profiles).unwrap_or(u64::MAX),
-            },
-        ));
-    }
-    if !matches!(validation.status, ValidationStatus::Valid) {
-        return Ok(refused_repair_report(
-            source,
-            RepairRefusal::UnsupportedValidationStatus {
-                status: validation.status,
-            },
-        ));
+        })?,
+        InputName::path(path),
+    )?;
+    if let Some(refusal) = repair_refusal_for_validation(&validation) {
+        return Ok(refused_repair_report(source, refusal));
     }
 
-    match atomic_copy(path, &output_path) {
+    match persist_repair_candidate(candidate, &output_path) {
         Ok(()) => Ok(RepairReport::builder()
             .engine_version(ENGINE_VERSION.to_owned())
             .source(source)
@@ -1400,8 +1399,59 @@ fn repair_metadata_path(
                 started.elapsed(),
             )])
             .build()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(refused_repair_report(
+                source,
+                RepairRefusal::InvalidOutputPath {
+                    reason: BoundedText::unchecked("output path already exists"),
+                },
+            ))
+        }
         Err(error) => Ok(failed_repair_report(source, None, &error.to_string())),
     }
+}
+
+fn repair_refusal_for_validation(validation: &ValidationReport) -> Option<RepairRefusal> {
+    if matches!(validation.status, ValidationStatus::ParseFailed) {
+        return Some(RepairRefusal::ParseFailed {
+            reason: validation
+                .warnings
+                .first()
+                .map_or_else(default_parse_failed_text, ValidationWarning::message_text),
+        });
+    }
+    if matches!(validation.status, ValidationStatus::Encrypted) || report_has_encryption(validation)
+    {
+        return Some(RepairRefusal::Encrypted);
+    }
+    let selected_profiles = if validation.flavours.is_empty() {
+        validation.profile_reports.len()
+    } else {
+        validation.flavours.len()
+    };
+    if selected_profiles != 1 {
+        return Some(RepairRefusal::AmbiguousFlavour {
+            selected: u64::try_from(selected_profiles).unwrap_or(u64::MAX),
+        });
+    }
+    if !matches!(validation.status, ValidationStatus::Valid) {
+        return Some(RepairRefusal::UnsupportedValidationStatus {
+            status: validation.status,
+        });
+    }
+    None
+}
+
+fn report_has_encryption(report: &ValidationReport) -> bool {
+    report.parse_facts.iter().any(|fact| {
+        matches!(
+            fact,
+            ParseFact::Encryption {
+                encrypted: true,
+                ..
+            }
+        )
+    })
 }
 
 #[allow(
@@ -1500,36 +1550,52 @@ fn validate_output_filename(name: &str) -> Result<()> {
     clippy::disallowed_types,
     reason = "metadata repair performs synchronous atomic file output by design"
 )]
-fn atomic_copy(input: &Path, output_path: &Path) -> Result<()> {
-    let Some(parent) = output_path.parent() else {
-        return Err(RepairError::InvalidField {
-            field: "outputDir",
-            reason: BoundedText::unchecked("output path has no parent"),
-        }
-        .into());
-    };
+fn copy_repair_candidate(
+    input: &Path,
+    output_parent: &Path,
+    max_file_bytes: u64,
+) -> Result<tempfile::NamedTempFile> {
     let mut source = std::fs::File::open(input).map_err(|source| PdfvError::Io {
         path: Some(input.to_path_buf()),
         source,
     })?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|source| PdfvError::Io {
-        path: Some(parent.to_path_buf()),
+    let bytes = source.metadata().map_err(|source| PdfvError::Io {
+        path: Some(input.to_path_buf()),
         source,
     })?;
+    if bytes.len() > max_file_bytes {
+        return Err(ParseError::LimitExceeded {
+            limit: "maxFileBytes",
+        }
+        .into());
+    }
+    let mut temp =
+        tempfile::NamedTempFile::new_in(output_parent).map_err(|source| PdfvError::Io {
+            path: Some(output_parent.to_path_buf()),
+            source,
+        })?;
     io::copy(&mut source, &mut temp).map_err(|source| PdfvError::Io {
         path: Some(input.to_path_buf()),
         source,
     })?;
-    temp.flush().map_err(|source| PdfvError::Io {
-        path: Some(output_path.to_path_buf()),
-        source,
-    })?;
-    temp.persist_noclobber(output_path)
-        .map_err(|error| PdfvError::Io {
-            path: Some(output_path.to_path_buf()),
-            source: error.error,
-        })?;
-    Ok(())
+    Ok(temp)
+}
+
+#[allow(
+    clippy::disallowed_types,
+    reason = "metadata repair persists a synchronous tempfile as part of the file rewrite API"
+)]
+fn persist_repair_candidate(
+    mut candidate: tempfile::NamedTempFile,
+    output_path: &Path,
+) -> std::result::Result<(), tempfile::PersistError<std::fs::File>> {
+    if let Err(error) = candidate.flush() {
+        return Err(tempfile::PersistError {
+            file: candidate,
+            error,
+        });
+    }
+    candidate.persist_noclobber(output_path).map(|_| ())
 }
 
 fn refused_repair_report(source: InputSummary, refusal: RepairRefusal) -> RepairReport {
@@ -3673,7 +3739,7 @@ mod tests {
         PolicyRuleResult, ProfileIdentity, ProfileReport, PropertyName, RawXmlReportWriter,
         RepairAction, RepairBatchReport, RepairRefusal, RepairReport, RepairStatus, ReportFormat,
         ReportWriter, RuleId, TextReportWriter, ValidationOptions, ValidationReport,
-        ValidationStatus, XmlReportWriter, atomic_copy,
+        ValidationStatus, XmlReportWriter, copy_repair_candidate, persist_repair_candidate,
     };
 
     fn sample_report() -> std::result::Result<ValidationReport, Box<dyn StdError>> {
@@ -4162,7 +4228,8 @@ first failures:
         std::fs::write(&input, b"new bytes")?;
         std::fs::write(&output, b"existing bytes")?;
 
-        let result = atomic_copy(&input, &output);
+        let candidate = copy_repair_candidate(&input, temp.path(), u64::MAX)?;
+        let result = persist_repair_candidate(candidate, &output);
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(&output)?, b"existing bytes");

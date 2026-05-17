@@ -15,8 +15,9 @@ use aes::{
 };
 use md5::{Digest, Md5};
 use pdfv_core::{
-    CosObject, FlavourSelection, InputName, ObjectKey, ParseFact, ParseOptions, Parser,
-    PasswordSecret, ResourceLimits, ValidationOptions, ValidationStatus, Validator, XmpFact,
+    CosObject, FlavourSelection, InputName, MetadataRepairOptions, MetadataRepairer, ObjectKey,
+    ParseFact, ParseOptions, Parser, PasswordSecret, RepairRefusal, RepairStatus, ResourceLimits,
+    ValidationOptions, ValidationStatus, Validator, XmpFact,
 };
 use rc4::{Rc4, StreamCipher};
 use sha2::{Sha256, Sha384, Sha512};
@@ -187,6 +188,27 @@ fn test_should_return_encrypted_for_missing_or_wrong_password() -> Result<(), Bo
             pdfv_core::ValidationWarning::General { message } if message.as_str() == "incorrect password"
         )
     }));
+    Ok(())
+}
+
+#[test]
+fn test_should_refuse_metadata_repair_for_decrypted_encrypted_input() -> Result<(), Box<dyn Error>>
+{
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("encrypted.pdf");
+    let output_dir = temp.path().join("out");
+    std::fs::create_dir(&output_dir)?;
+    std::fs::write(&input, encrypted_rc4_fixture()?)?;
+    let options = ValidationOptions::builder()
+        .password(Some(PasswordSecret::new("user")?))
+        .build();
+    let repairer = MetadataRepairer::new(MetadataRepairOptions::new(options, &output_dir, "")?)?;
+
+    let report = repairer.repair_path(&input)?;
+
+    assert_eq!(report.status, RepairStatus::Refused);
+    assert!(matches!(report.refusal, Some(RepairRefusal::Encrypted)));
+    assert!(!output_dir.join("encrypted.pdf").exists());
     Ok(())
 }
 
