@@ -34,3 +34,10 @@ path = "fuzz_targets/fuzz_rule_expr.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_parse_content_stream"
+path = "fuzz_targets/fuzz_parse_content_stream.rs"
+test = false
+doc = false
+bench = false

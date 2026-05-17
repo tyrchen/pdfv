@@ -5,18 +5,19 @@ use std::{
     io::{Read, Seek, SeekFrom},
     num::NonZeroU64,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Instant,
 };
 
 use crate::{
     Assertion, BoundedText, BuiltinProfileRepository, ENGINE_VERSION, ErrorArgument, FeatureObject,
     FeatureReport, FeatureValue, Identifier, IndirectObject, InputKind, InputSummary, ModelValue,
-    ObjectKey, ObjectLocation, ObjectTypeName, ParsedDocument, Parser, PdfName, PdfvError,
-    PolicyOperator, PolicyReport, PolicyRule, PolicyRuleResult, PolicySet, PolicyValue,
+    ObjectKey, ObjectLocation, ObjectTypeName, ParseError, ParsedDocument, Parser, PdfName,
+    PdfvError, PolicyOperator, PolicyReport, PolicyRule, PolicyRuleResult, PolicySet, PolicyValue,
     ProfileReport, ProfileRepository, PropertyName, ResourceLimits, Result, Rule, RuleEvaluator,
     RuleId, RuleOutcome, TaskDuration, UnsupportedRule, ValidationError, ValidationOptions,
     ValidationReport, ValidationStatus,
+    content::{ContentStreamSummary, MarkedContentSpan, OperatorFact, ResourceUse},
     profile::DefaultRuleEvaluator,
     xmp::{FlavourDetector, parse_document_xmp},
 };
@@ -426,6 +427,12 @@ const CMAP_PROPERTIES: &[&str] = CMAP_DIRECT_PROPERTIES;
 const IMAGE_PROPERTIES: &[&str] = IMAGE_DIRECT_PROPERTIES;
 const XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
 const CONTENT_STREAM_PROPERTIES: &[&str] = &[
+    "nrOperators",
+    "hasText",
+    "hasMarkedContent",
+    "hasInlineImage",
+    "hasUnknownOperators",
+    "truncated",
     "lengthMatches",
     "declaredLength",
     "discoveredLength",
@@ -439,7 +446,25 @@ const CONTENT_STREAM_PROPERTIES: &[&str] = &[
     "FFilter",
     "FDecodeParms",
 ];
-const UNDEFINED_OPERATOR_PROPERTIES: &[&str] = &["name"];
+const OPERATOR_PROPERTIES: &[&str] = &[
+    "op",
+    "family",
+    "operandCount",
+    "location",
+    "isUnknown",
+    "textBytes",
+];
+const MARKED_CONTENT_PROPERTIES: &[&str] = &["tag", "hasProperties", "nestingDepth", "location"];
+const INLINE_IMAGE_PROPERTIES: &[&str] = &[
+    "width",
+    "height",
+    "filters",
+    "colorSpace",
+    "bitsPerComponent",
+    "location",
+];
+const RESOURCE_USE_PROPERTIES: &[&str] = &["family", "name", "operator", "location"];
+const UNDEFINED_OPERATOR_PROPERTIES: &[&str] = &["name", "op", "operandCount", "location"];
 const ANNOTATION_PROPERTIES: &[&str] = &[
     "hasSubtype",
     "Type",
@@ -568,6 +593,16 @@ const PAGE_LINKS: &[(&str, &str)] = &[
     ("annotations", "annotation"),
     ("contentStreams", "contentStream"),
     ("additionalActions", "action"),
+];
+const CONTENT_STREAM_LINKS: &[(&str, &str)] = &[
+    ("operators", "operator"),
+    ("markedContent", "markedContent"),
+    ("inlineImages", "inlineImage"),
+    ("usedResources", "resourceUse"),
+];
+const OPERATOR_LINKS: &[(&str, &str)] = &[
+    ("resource", "resourceUse"),
+    ("markedContentProperties", "object"),
 ];
 const ANNOTATION_LINKS: &[(&str, &str)] = &[
     ("action", "action"),
@@ -1384,7 +1419,15 @@ impl ModelRegistry {
             family("embeddedFontFile", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("image", IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
             family("xObject", XOBJECT_PROPERTIES, EMPTY_LINK_NAMES),
-            family("contentStream", CONTENT_STREAM_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "contentStream",
+                CONTENT_STREAM_PROPERTIES,
+                CONTENT_STREAM_LINKS,
+            ),
+            family("operator", OPERATOR_PROPERTIES, OPERATOR_LINKS),
+            family("markedContent", MARKED_CONTENT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("inlineImage", INLINE_IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("resourceUse", RESOURCE_USE_PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 "undefinedOperator",
                 UNDEFINED_OPERATOR_PROPERTIES,
@@ -1656,6 +1699,14 @@ pub enum ModelObjectRef<'a> {
     OutputIntent(OutputIntentModel<'a>),
     /// Page content stream object.
     ContentStream(ContentStreamModel<'a>),
+    /// Content-stream operator object.
+    Operator(OperatorModel<'a>),
+    /// Marked-content object.
+    MarkedContent(MarkedContentModel<'a>),
+    /// Inline image object.
+    InlineImage(InlineImageModel<'a>),
+    /// Resource-use object.
+    ResourceUse(ResourceUseModel<'a>),
     /// Basic stream object.
     Stream(StreamModel<'a>),
     /// Generic dictionary-backed model family object.
@@ -1675,6 +1726,10 @@ impl<'a> ModelObjectRef<'a> {
             Self::Annotation(model) => model.document,
             Self::OutputIntent(model) => model.document,
             Self::ContentStream(model) => model.document,
+            Self::Operator(model) => model.document,
+            Self::MarkedContent(model) => model.document,
+            Self::InlineImage(model) => model.document,
+            Self::ResourceUse(model) => model.document,
             Self::Stream(model) => model.document,
             Self::Generic(model) => model.document,
         }
@@ -1692,6 +1747,10 @@ impl<'a> ModelObjectRef<'a> {
             Self::Annotation(model) => model.object_type(),
             Self::OutputIntent(model) => model.object_type(),
             Self::ContentStream(model) => model.object_type(),
+            Self::Operator(model) => model.object_type(),
+            Self::MarkedContent(model) => model.object_type(),
+            Self::InlineImage(model) => model.object_type(),
+            Self::ResourceUse(model) => model.object_type(),
             Self::Stream(model) => model.object_type(),
             Self::Generic(model) => model.object_type(),
         }
@@ -1712,6 +1771,10 @@ impl<'a> ModelObjectRef<'a> {
             Self::Annotation(model) => model.property(name),
             Self::OutputIntent(model) => model.property(name),
             Self::ContentStream(model) => model.property(name),
+            Self::Operator(model) => model.property(name),
+            Self::MarkedContent(model) => model.property(name),
+            Self::InlineImage(model) => model.property(name),
+            Self::ResourceUse(model) => model.property(name),
             Self::Stream(model) => model.property(name),
             Self::Generic(model) => model.property(name),
         }
@@ -1775,6 +1838,10 @@ impl<'a> ModelObjectRef<'a> {
                     model.page_ordinal, model.ordinal
                 ))),
             },
+            Self::Operator(model) => model.fact.location().clone(),
+            Self::MarkedContent(model) => model.span.location.clone(),
+            Self::InlineImage(model) => model.fact.location().clone(),
+            Self::ResourceUse(model) => model.use_fact.location.clone(),
             Self::Stream(model) => ObjectLocation {
                 object: Some(model.key),
                 offset: Some(model.offset),
@@ -1812,6 +1879,22 @@ impl<'a> ModelObjectRef<'a> {
             Self::ContentStream(model) => BoundedText::unchecked(format!(
                 "root/page[{}]/contentStream[{}]",
                 model.page_ordinal, model.ordinal
+            )),
+            Self::Operator(model) => BoundedText::unchecked(format!(
+                "root/page[{}]/contentStream[{}]/operator[{}]",
+                model.page_ordinal, model.stream_ordinal, model.ordinal
+            )),
+            Self::MarkedContent(model) => BoundedText::unchecked(format!(
+                "root/page[{}]/contentStream[{}]/markedContent[{}]",
+                model.page_ordinal, model.stream_ordinal, model.ordinal
+            )),
+            Self::InlineImage(model) => BoundedText::unchecked(format!(
+                "root/page[{}]/contentStream[{}]/inlineImage[{}]",
+                model.page_ordinal, model.stream_ordinal, model.ordinal
+            )),
+            Self::ResourceUse(model) => BoundedText::unchecked(format!(
+                "root/page[{}]/contentStream[{}]/resourceUse[{}]",
+                model.page_ordinal, model.stream_ordinal, model.ordinal
             )),
             Self::Stream(model) => {
                 BoundedText::unchecked(format!("root/stream[{}]", model.key.number))
@@ -1851,6 +1934,22 @@ impl<'a> ModelObjectRef<'a> {
                 "contentStream:{}:{}:{}",
                 model.page_ordinal, model.key.number, model.key.generation
             ),
+            Self::Operator(model) => format!(
+                "operator:{}:{}:{}:{}",
+                model.page_ordinal, model.stream_ordinal, model.source.number, model.ordinal
+            ),
+            Self::MarkedContent(model) => format!(
+                "markedContent:{}:{}:{}:{}",
+                model.page_ordinal, model.stream_ordinal, model.source.number, model.ordinal
+            ),
+            Self::InlineImage(model) => format!(
+                "inlineImage:{}:{}:{}:{}",
+                model.page_ordinal, model.stream_ordinal, model.source.number, model.ordinal
+            ),
+            Self::ResourceUse(model) => format!(
+                "resourceUse:{}:{}:{}:{}",
+                model.page_ordinal, model.stream_ordinal, model.source.number, model.ordinal
+            ),
             Self::Stream(model) => format!("stream:{}:{}", model.key.number, model.key.generation),
             Self::Generic(model) => generic_identity_key(
                 model.object_type.as_str(),
@@ -1871,6 +1970,10 @@ impl<'a> ModelObjectRef<'a> {
             Self::Annotation(model) => model.links(),
             Self::OutputIntent(model) => model.links(),
             Self::ContentStream(model) => model.links(),
+            Self::Operator(model) => model.links(),
+            Self::MarkedContent(model) => model.links(),
+            Self::InlineImage(model) => model.links(),
+            Self::ResourceUse(model) => model.links(),
             Self::Stream(model) => model.links(),
             Self::Generic(model) => model.links(),
         }
@@ -1890,6 +1993,10 @@ impl<'a> ModelObjectRef<'a> {
             Self::Annotation(model) => model.linked_objects(graph, max_objects),
             Self::OutputIntent(model) => model.linked_objects(graph, max_objects),
             Self::ContentStream(model) => model.linked_objects(graph, max_objects),
+            Self::Operator(model) => model.linked_objects(graph, max_objects),
+            Self::MarkedContent(model) => model.linked_objects(graph, max_objects),
+            Self::InlineImage(model) => model.linked_objects(graph, max_objects),
+            Self::ResourceUse(model) => model.linked_objects(graph, max_objects),
             Self::Stream(model) => model.linked_objects(graph, max_objects),
             Self::Generic(model) => generic_linked_objects(model, graph, max_objects),
         }
@@ -1966,6 +2073,10 @@ impl<'a> ModelGraph<'a> {
                     | "annotation"
                     | "outputIntent"
                     | "contentStream"
+                    | "operator"
+                    | "markedContent"
+                    | "inlineImage"
+                    | "resourceUse"
                     | "stream"
                     | "object"
             )
@@ -1992,7 +2103,7 @@ impl<'a> ModelGraph<'a> {
 
     fn annotations(
         &self,
-        page: &PageModel<'_>,
+        page: &PageModel<'a>,
         max_objects: usize,
     ) -> Result<Vec<AnnotationModel<'a>>> {
         AnnotationModel::from_page(self.document, page, max_objects)
@@ -2008,7 +2119,7 @@ impl<'a> ModelGraph<'a> {
 
     fn content_streams(
         &self,
-        page: &PageModel<'_>,
+        page: &PageModel<'a>,
         max_objects: usize,
     ) -> Result<Vec<ContentStreamModel<'a>>> {
         ContentStreamModel::from_page(self.document, page, max_objects)
@@ -3015,7 +3126,7 @@ pub struct AnnotationModel<'a> {
 impl<'a> AnnotationModel<'a> {
     fn from_page(
         document: &'a ParsedDocument,
-        page: &PageModel<'_>,
+        page: &PageModel<'a>,
         max_objects: usize,
     ) -> Result<Vec<Self>> {
         let mut annotations = Vec::new();
@@ -3232,11 +3343,13 @@ impl ModelObject for OutputIntentModel<'_> {
 #[derive(Clone, Debug)]
 pub struct ContentStreamModel<'a> {
     document: &'a ParsedDocument,
+    limits: &'a ResourceLimits,
     page_ordinal: usize,
     ordinal: usize,
     key: ObjectKey,
     offset: u64,
     stream: &'a crate::StreamObject,
+    summary_cache: Arc<OnceLock<std::result::Result<ContentStreamSummary, ParseError>>>,
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
@@ -3245,7 +3358,7 @@ pub struct ContentStreamModel<'a> {
 impl<'a> ContentStreamModel<'a> {
     fn from_page(
         document: &'a ParsedDocument,
-        page: &PageModel<'_>,
+        page: &PageModel<'a>,
         max_objects: usize,
     ) -> Result<Vec<Self>> {
         let mut streams = Vec::new();
@@ -3260,6 +3373,25 @@ impl<'a> ContentStreamModel<'a> {
             &mut streams,
         )?;
         Ok(streams)
+    }
+
+    fn summary(&self) -> Result<ContentStreamSummary> {
+        let location_path = format!(
+            "root/page[{}]/contentStream[{}]",
+            self.page_ordinal, self.ordinal
+        );
+        self.summary_cache
+            .get_or_init(|| {
+                let decoded = self.stream.decoded_bytes(self.limits)?;
+                crate::content::summarize_content_stream(
+                    self.key,
+                    &location_path,
+                    &decoded,
+                    self.limits,
+                )
+            })
+            .clone()
+            .map_err(PdfvError::Parse)
     }
 }
 
@@ -3287,6 +3419,17 @@ impl ModelObject for ContentStreamModel<'_> {
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
+            "nrOperators" | "operatorCount" => Ok(ModelValue::Number(u64_to_f64(
+                self.summary()?.operators_seen,
+            )?)),
+            "markedContentCount" => Ok(ModelValue::Number(usize_to_f64(
+                self.summary()?.marked_content.len(),
+            )?)),
+            "hasText" => Ok(ModelValue::Bool(self.summary()?.has_text())),
+            "hasMarkedContent" => Ok(ModelValue::Bool(self.summary()?.has_marked_content())),
+            "hasInlineImage" => Ok(ModelValue::Bool(self.summary()?.has_inline_image())),
+            "hasUnknownOperators" => Ok(ModelValue::Bool(self.summary()?.has_unknown_operators())),
+            "truncated" => Ok(ModelValue::Bool(self.summary()?.truncated)),
             "lengthMatches" => {
                 Ok(ModelValue::Bool(self.stream.declared_length.is_none_or(
                     |declared| declared == self.stream.discovered_length,
@@ -3310,11 +3453,504 @@ impl ModelObject for ContentStreamModel<'_> {
 
     fn linked_objects<'a>(
         &self,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
+        let summary = self.summary()?;
+        let mut objects = Vec::new();
+        if graph.materializes("operator") {
+            for (ordinal, fact) in summary.facts.iter().cloned().enumerate() {
+                push_linked(
+                    &mut objects,
+                    ModelObjectRef::Operator(OperatorModel::new(
+                        graph.document,
+                        self.key,
+                        self.page_ordinal,
+                        self.ordinal,
+                        ordinal,
+                        fact,
+                    )),
+                    max_objects,
+                )?;
+            }
+        }
+        if graph.materializes("markedContent") {
+            for (ordinal, span) in summary.marked_content.iter().cloned().enumerate() {
+                push_linked(
+                    &mut objects,
+                    ModelObjectRef::MarkedContent(MarkedContentModel::new(
+                        graph.document,
+                        self.key,
+                        self.page_ordinal,
+                        self.ordinal,
+                        ordinal,
+                        span,
+                    )),
+                    max_objects,
+                )?;
+            }
+        }
+        if graph.materializes("inlineImage") {
+            let mut ordinal = 0_usize;
+            for fact in summary
+                .facts
+                .iter()
+                .filter(|fact| matches!(fact, OperatorFact::InlineImage { .. }))
+                .cloned()
+            {
+                push_linked(
+                    &mut objects,
+                    ModelObjectRef::InlineImage(InlineImageModel::new(
+                        graph.document,
+                        self.key,
+                        self.page_ordinal,
+                        self.ordinal,
+                        ordinal,
+                        fact,
+                    )),
+                    max_objects,
+                )?;
+                ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or(ValidationError::LimitExceeded {
+                        limit: "max_objects",
+                    })?;
+            }
+        }
+        if graph.materializes("resourceUse") {
+            for (ordinal, use_fact) in summary.resource_uses.iter().cloned().enumerate() {
+                push_linked(
+                    &mut objects,
+                    ModelObjectRef::ResourceUse(ResourceUseModel::new(
+                        graph.document,
+                        self.key,
+                        self.page_ordinal,
+                        self.ordinal,
+                        ordinal,
+                        use_fact,
+                    )),
+                    max_objects,
+                )?;
+            }
+        }
+        Ok(objects)
+    }
+}
+
+/// Content-stream operator model wrapper.
+#[derive(Clone, Debug)]
+pub struct OperatorModel<'a> {
+    document: &'a ParsedDocument,
+    source: ObjectKey,
+    page_ordinal: usize,
+    stream_ordinal: usize,
+    ordinal: usize,
+    fact: OperatorFact,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> OperatorModel<'a> {
+    fn new(
+        document: &'a ParsedDocument,
+        source: ObjectKey,
+        page_ordinal: usize,
+        stream_ordinal: usize,
+        ordinal: usize,
+        fact: OperatorFact,
+    ) -> Self {
+        let supertypes = if fact.is_unknown() {
+            vec![
+                ObjectTypeName::unchecked("undefinedOperator"),
+                ObjectTypeName::unchecked("object"),
+            ]
+        } else {
+            vec![ObjectTypeName::unchecked("object")]
+        };
+        Self {
+            document,
+            source,
+            page_ordinal,
+            stream_ordinal,
+            ordinal,
+            fact,
+            object_type: ObjectTypeName::unchecked("operator"),
+            supertypes,
+            links: OPERATOR_LINKS
+                .iter()
+                .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                .collect(),
+        }
+    }
+}
+
+impl ModelObject for OperatorModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!(
+                "operator:{}:{}:{}:{}",
+                self.page_ordinal, self.stream_ordinal, self.source.number, self.ordinal
+            ),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("operator")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "op" | "name" => Ok(ModelValue::String(BoundedText::unchecked(
+                self.fact.op_name(),
+            ))),
+            "family" => Ok(ModelValue::String(BoundedText::unchecked(
+                self.fact.family(),
+            ))),
+            "operandCount" => Ok(ModelValue::Number(f64::from(self.fact.operand_count()))),
+            "location" => Ok(location_model_value(self.fact.location())),
+            "isUnknown" => Ok(ModelValue::Bool(self.fact.is_unknown())),
+            "textBytes" => Ok(ModelValue::Number(operator_text_bytes(&self.fact)?)),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'a>(
+        &self,
         _graph: &ModelGraph<'a>,
         _max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         Ok(Vec::new())
     }
+}
+
+/// Marked-content model wrapper.
+#[derive(Clone, Debug)]
+pub struct MarkedContentModel<'a> {
+    document: &'a ParsedDocument,
+    source: ObjectKey,
+    page_ordinal: usize,
+    stream_ordinal: usize,
+    ordinal: usize,
+    span: MarkedContentSpan,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> MarkedContentModel<'a> {
+    fn new(
+        document: &'a ParsedDocument,
+        source: ObjectKey,
+        page_ordinal: usize,
+        stream_ordinal: usize,
+        ordinal: usize,
+        span: MarkedContentSpan,
+    ) -> Self {
+        Self {
+            document,
+            source,
+            page_ordinal,
+            stream_ordinal,
+            ordinal,
+            span,
+            object_type: ObjectTypeName::unchecked("markedContent"),
+            supertypes: vec![ObjectTypeName::unchecked("object")],
+            links: Vec::new(),
+        }
+    }
+}
+
+impl ModelObject for MarkedContentModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!(
+                "markedContent:{}:{}:{}:{}",
+                self.page_ordinal, self.stream_ordinal, self.source.number, self.ordinal
+            ),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("markedContent")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "tag" => Ok(ModelValue::String(BoundedText::unchecked(
+                String::from_utf8_lossy(self.span.tag.as_bytes()).into_owned(),
+            ))),
+            "hasProperties" => Ok(ModelValue::Bool(self.span.properties.is_some())),
+            "nestingDepth" => Ok(ModelValue::Number(f64::from(self.span.nesting_depth))),
+            "location" => Ok(location_model_value(&self.span.location)),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Inline-image model wrapper.
+#[derive(Clone, Debug)]
+pub struct InlineImageModel<'a> {
+    document: &'a ParsedDocument,
+    source: ObjectKey,
+    page_ordinal: usize,
+    stream_ordinal: usize,
+    ordinal: usize,
+    fact: OperatorFact,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> InlineImageModel<'a> {
+    fn new(
+        document: &'a ParsedDocument,
+        source: ObjectKey,
+        page_ordinal: usize,
+        stream_ordinal: usize,
+        ordinal: usize,
+        fact: OperatorFact,
+    ) -> Self {
+        Self {
+            document,
+            source,
+            page_ordinal,
+            stream_ordinal,
+            ordinal,
+            fact,
+            object_type: ObjectTypeName::unchecked("inlineImage"),
+            supertypes: vec![ObjectTypeName::unchecked("operator")],
+            links: Vec::new(),
+        }
+    }
+}
+
+impl ModelObject for InlineImageModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!(
+                "inlineImage:{}:{}:{}:{}",
+                self.page_ordinal, self.stream_ordinal, self.source.number, self.ordinal
+            ),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("inlineImage")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        let OperatorFact::InlineImage {
+            width,
+            height,
+            filters,
+            color_space,
+            bits_per_component,
+            location,
+        } = &self.fact
+        else {
+            return Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into());
+        };
+        match name.as_str() {
+            "width" => optional_u64_model_value(*width),
+            "height" => optional_u64_model_value(*height),
+            "filters" => Ok(ModelValue::List(
+                filters
+                    .iter()
+                    .map(|filter| {
+                        ModelValue::String(BoundedText::unchecked(
+                            String::from_utf8_lossy(filter.as_bytes()).into_owned(),
+                        ))
+                    })
+                    .collect(),
+            )),
+            "colorSpace" => Ok(color_space.as_ref().map_or(ModelValue::Null, |name| {
+                ModelValue::String(BoundedText::unchecked(
+                    String::from_utf8_lossy(name.as_bytes()).into_owned(),
+                ))
+            })),
+            "bitsPerComponent" => optional_u64_model_value(*bits_per_component),
+            "location" => Ok(location_model_value(location)),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Content-stream resource-use model wrapper.
+#[derive(Clone, Debug)]
+pub struct ResourceUseModel<'a> {
+    document: &'a ParsedDocument,
+    source: ObjectKey,
+    page_ordinal: usize,
+    stream_ordinal: usize,
+    ordinal: usize,
+    use_fact: ResourceUse,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+impl<'a> ResourceUseModel<'a> {
+    fn new(
+        document: &'a ParsedDocument,
+        source: ObjectKey,
+        page_ordinal: usize,
+        stream_ordinal: usize,
+        ordinal: usize,
+        use_fact: ResourceUse,
+    ) -> Self {
+        Self {
+            document,
+            source,
+            page_ordinal,
+            stream_ordinal,
+            ordinal,
+            use_fact,
+            object_type: ObjectTypeName::unchecked("resourceUse"),
+            supertypes: vec![ObjectTypeName::unchecked("object")],
+            links: Vec::new(),
+        }
+    }
+}
+
+impl ModelObject for ResourceUseModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: format!(
+                "resourceUse:{}:{}:{}:{}",
+                self.page_ordinal, self.stream_ordinal, self.source.number, self.ordinal
+            ),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("resourceUse")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "family" => Ok(ModelValue::String(BoundedText::unchecked(
+                self.use_fact.family.as_str(),
+            ))),
+            "name" => Ok(ModelValue::String(BoundedText::unchecked(
+                String::from_utf8_lossy(self.use_fact.name.as_bytes()).into_owned(),
+            ))),
+            "operator" => Ok(ModelValue::String(BoundedText::unchecked(
+                self.use_fact.operator.as_str(),
+            ))),
+            "location" => Ok(location_model_value(&self.use_fact.location)),
+            _ => Err(crate::ProfileError::UnknownProperty {
+                property: BoundedText::unchecked(name.as_str()),
+            }
+            .into()),
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'a>(
+        &self,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
+        Ok(Vec::new())
+    }
+}
+
+fn operator_text_bytes(fact: &OperatorFact) -> Result<f64> {
+    match fact {
+        OperatorFact::TextShow { bytes, .. } => u64_to_f64(bytes.bytes),
+        _ => Ok(0.0),
+    }
+}
+
+fn optional_u64_model_value(value: Option<u64>) -> Result<ModelValue> {
+    value.map_or(Ok(ModelValue::Null), |value| {
+        Ok(ModelValue::Number(u64_to_f64(value)?))
+    })
+}
+
+fn location_model_value(location: &ObjectLocation) -> ModelValue {
+    ModelValue::String(
+        location
+            .path
+            .clone()
+            .unwrap_or_else(|| BoundedText::unchecked("unknown")),
+    )
 }
 
 fn resolve_dictionary_value<'a>(
@@ -3407,7 +4043,7 @@ fn object_refs_from_array(value: Option<&crate::CosObject>) -> Vec<ObjectKey> {
 
 fn push_content_streams_from_value<'a>(
     document: &'a ParsedDocument,
-    page: &PageModel<'_>,
+    page: &PageModel<'a>,
     value: Option<&crate::CosObject>,
     max_objects: usize,
     streams: &mut Vec<ContentStreamModel<'a>>,
@@ -3437,7 +4073,7 @@ fn push_content_streams_from_value<'a>(
 
 fn push_content_stream<'a>(
     document: &'a ParsedDocument,
-    page: &PageModel<'_>,
+    page: &PageModel<'a>,
     key: ObjectKey,
     ordinal: usize,
     max_objects: usize,
@@ -3457,17 +4093,22 @@ fn push_content_stream<'a>(
     }
     streams.push(ContentStreamModel {
         document,
+        limits: page.limits,
         page_ordinal: page.ordinal,
         ordinal,
         key,
         offset: object.offset,
         stream,
+        summary_cache: Arc::new(OnceLock::new()),
         object_type: ObjectTypeName::unchecked("contentStream"),
         supertypes: vec![
             ObjectTypeName::unchecked("stream"),
             ObjectTypeName::unchecked("object"),
         ],
-        links: Vec::new(),
+        links: CONTENT_STREAM_LINKS
+            .iter()
+            .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+            .collect(),
     });
     Ok(())
 }
@@ -4414,6 +5055,10 @@ impl<'a> RuleIndex<'a> {
             ModelObjectRef::Annotation(model) => model.super_types(),
             ModelObjectRef::OutputIntent(model) => model.super_types(),
             ModelObjectRef::ContentStream(model) => model.super_types(),
+            ModelObjectRef::Operator(model) => model.super_types(),
+            ModelObjectRef::MarkedContent(model) => model.super_types(),
+            ModelObjectRef::InlineImage(model) => model.super_types(),
+            ModelObjectRef::ResourceUse(model) => model.super_types(),
             ModelObjectRef::Stream(model) => model.super_types(),
             ModelObjectRef::Generic(model) => model.super_types(),
         };
@@ -4854,10 +5499,10 @@ mod tests {
         AnnotationModel, CatalogModel, ContentStreamModel, FontModel, OutputIntentModel, PageModel,
     };
     use crate::{
-        BinaryOp, BoundedText, ErrorTemplate, FlavourSelection, Identifier, ModelObject,
-        ModelObjectRef, ModelValue, Parser, PdfvError, ProfileIdentity, ProfileRepository,
-        PropertyName, ResourceLimits, Rule, RuleExpr, RuleId, ValidationFlavour, ValidationOptions,
-        ValidationProfile, Validator,
+        BinaryOp, BoundedText, ErrorTemplate, FeatureSelection, FlavourSelection, Identifier,
+        InputName, ModelObject, ModelObjectRef, ModelValue, Parser, PdfvError, ProfileIdentity,
+        ProfileRepository, PropertyName, ResourceLimits, Rule, RuleExpr, RuleId, ValidationFlavour,
+        ValidationOptions, ValidationProfile, Validator,
     };
 
     #[derive(Debug)]
@@ -5018,6 +5663,49 @@ trailer
 "
     }
 
+    fn content_operator_pdf() -> Vec<u8> {
+        let stream =
+            b"BT /F1 12 Tf (secret text) Tj ET /Cs1 CS /GS1 gs /Sh1 sh /Im1 Do /Span BMC EMC BI /W 1 /H 1 /BPC 8 /CS /RGB ID x EI WeirdOp";
+        let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> /ColorSpace << /Cs1 /DeviceRGB >> /ExtGState << /GS1 << >> >> /Shading << /Sh1 << >> >> /XObject << /Im1 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length "
+            .to_vec();
+        pdf.extend(stream.len().to_string().as_bytes());
+        pdf.extend(
+            br" >>
+stream
+",
+        );
+        pdf.extend(stream);
+        pdf.extend(
+            br"
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 0 >>
+stream
+endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+",
+        );
+        pdf
+    }
+
     #[test]
     fn test_should_materialize_m1_model_wrappers() -> crate::Result<()> {
         let document = Parser::default().parse(Cursor::new(m1_model_pdf()))?;
@@ -5056,6 +5744,106 @@ trailer
                 ModelValue::Number(200.0),
                 ModelValue::Number(200.0),
             ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_materialize_content_stream_operator_families_lazily() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(content_operator_pdf()))?;
+        let limits = ResourceLimits::default();
+        let graph = super::ModelGraph::with_all_families(&document, &limits);
+        let mut stack = vec![ModelObjectRef::Document(super::DocumentModel::new(
+            &document,
+        ))];
+        let mut operator_count = 0_u64;
+        let mut resource_use_count = 0_u64;
+        let mut marked_content_count = 0_u64;
+        let mut inline_image_count = 0_u64;
+        let mut content_streams = 0_u64;
+        let mut unknown_operator_count = 0_u64;
+
+        while let Some(object) = stack.pop() {
+            match object.object_type().as_str() {
+                "contentStream" => {
+                    content_streams = content_streams.saturating_add(1);
+                    assert_eq!(
+                        object.property(&PropertyName::new("hasText")?)?,
+                        ModelValue::Bool(true)
+                    );
+                    assert_eq!(
+                        object.property(&PropertyName::new("hasInlineImage")?)?,
+                        ModelValue::Bool(true)
+                    );
+                    assert_eq!(
+                        object.property(&PropertyName::new("hasUnknownOperators")?)?,
+                        ModelValue::Bool(true)
+                    );
+                }
+                "operator" => {
+                    operator_count = operator_count.saturating_add(1);
+                    if object.property(&PropertyName::new("isUnknown")?)? == ModelValue::Bool(true)
+                    {
+                        unknown_operator_count = unknown_operator_count.saturating_add(1);
+                        assert_eq!(
+                            object.property(&PropertyName::new("name")?)?,
+                            ModelValue::String(BoundedText::unchecked("WeirdOp"))
+                        );
+                    }
+                }
+                "resourceUse" => resource_use_count = resource_use_count.saturating_add(1),
+                "markedContent" => marked_content_count = marked_content_count.saturating_add(1),
+                "inlineImage" => inline_image_count = inline_image_count.saturating_add(1),
+                _ => {}
+            }
+            for linked in object.linked_objects(&graph, 128)? {
+                stack.push(linked);
+            }
+        }
+
+        assert_eq!(content_streams, 1);
+        assert!(operator_count >= 10);
+        assert_eq!(unknown_operator_count, 1);
+        assert_eq!(resource_use_count, 5);
+        assert_eq!(marked_content_count, 1);
+        assert_eq!(inline_image_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_extract_redacted_content_stream_features() -> crate::Result<()> {
+        let options = ValidationOptions::builder()
+            .feature_selection(FeatureSelection::All)
+            .build();
+        let validator = Validator::new(options)?;
+        let report =
+            validator.validate_reader(Cursor::new(content_operator_pdf()), InputName::memory())?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+
+        assert!(
+            features
+                .objects
+                .iter()
+                .any(|object| object.family.as_str() == "operator")
+        );
+        assert!(
+            features
+                .objects
+                .iter()
+                .any(|object| object.family.as_str() == "resourceUse")
+        );
+        let raw_text = PropertyName::new("rawText")?;
+        assert!(
+            features
+                .objects
+                .iter()
+                .filter(|object| object.family.as_str() == "operator")
+                .all(|object| !object.properties.contains_key(&raw_text))
         );
         Ok(())
     }

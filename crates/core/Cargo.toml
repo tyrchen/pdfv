@@ -44,6 +44,10 @@ harness = false
 name = "model_traversal_m6"
 harness = false
 
+[[bench]]
+name = "content_stream_m6"
+harness = false
+
 [features]
 default = ["json", "flate", "decrypt"]
 json = []

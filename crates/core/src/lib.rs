@@ -14,6 +14,7 @@
 //! assert_eq!(source.kind, InputKind::Memory);
 //! ```
 
+mod content;
 mod generated_profiles;
 mod parser;
 mod profile;
@@ -48,9 +49,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use typed_builder::TypedBuilder;
 pub use validation::{
-    AnnotationModel, CatalogModel, ContentStreamModel, FeatureSelection, FontModel, InputName,
-    LinkName, MetadataModel, ModelGraph, ModelObject, ModelObjectRef, ObjectIdentity,
-    OutputIntentModel, PageModel, Validator,
+    AnnotationModel, CatalogModel, ContentStreamModel, FeatureSelection, FontModel,
+    InlineImageModel, InputName, LinkName, MarkedContentModel, MetadataModel, ModelGraph,
+    ModelObject, ModelObjectRef, ObjectIdentity, OperatorModel, OutputIntentModel, PageModel,
+    ResourceUseModel, Validator,
 };
 pub use xmp::{
     DetectedFlavours, FlavourClaim, FlavourDetector, NamespaceBinding, XmpIdentificationKind,
@@ -633,6 +635,38 @@ pub struct ResourceLimits {
     #[builder(default = DEFAULT_MAX_XMP_TEXT_BYTES)]
     #[serde(default = "default_max_xmp_text_bytes")]
     pub max_xmp_text_bytes: usize,
+    /// Maximum content-stream operators parsed per stream.
+    #[builder(default = content::default_max_content_stream_ops())]
+    #[serde(default = "content::default_max_content_stream_ops")]
+    pub max_content_stream_ops: u64,
+    /// Maximum content-stream operands retained for one operator.
+    #[builder(default = content::default_max_content_stream_operand_count())]
+    #[serde(default = "content::default_max_content_stream_operand_count")]
+    pub max_content_stream_operand_count: usize,
+    /// Maximum serialized operand bytes retained for one operator.
+    #[builder(default = content::default_max_content_stream_operand_bytes())]
+    #[serde(default = "content::default_max_content_stream_operand_bytes")]
+    pub max_content_stream_operand_bytes: usize,
+    /// Maximum content-stream operator name bytes.
+    #[builder(default = content::default_max_content_stream_operator_name_bytes())]
+    #[serde(default = "content::default_max_content_stream_operator_name_bytes")]
+    pub max_content_stream_operator_name_bytes: usize,
+    /// Maximum inline image data bytes scanned inside one content stream.
+    #[builder(default = content::default_max_inline_image_bytes())]
+    #[serde(default = "content::default_max_inline_image_bytes")]
+    pub max_inline_image_bytes: u64,
+    /// Maximum tracked graphics-state stack depth.
+    #[builder(default = content::default_max_graphics_state_depth())]
+    #[serde(default = "content::default_max_graphics_state_depth")]
+    pub max_graphics_state_depth: u32,
+    /// Maximum Type 3 charproc streams parsed per validation session.
+    #[builder(default = content::default_max_type3_charproc_streams())]
+    #[serde(default = "content::default_max_type3_charproc_streams")]
+    pub max_type3_charproc_streams: u64,
+    /// Maximum operators parsed from one Type 3 charproc stream.
+    #[builder(default = content::default_max_type3_charproc_ops())]
+    #[serde(default = "content::default_max_type3_charproc_ops")]
+    pub max_type3_charproc_ops: u64,
 }
 
 impl Default for ResourceLimits {
@@ -659,6 +693,15 @@ impl Default for ResourceLimits {
             max_xmp_attributes: DEFAULT_MAX_XMP_ATTRIBUTES,
             max_xmp_namespaces: DEFAULT_MAX_XMP_NAMESPACES,
             max_xmp_text_bytes: DEFAULT_MAX_XMP_TEXT_BYTES,
+            max_content_stream_ops: content::default_max_content_stream_ops(),
+            max_content_stream_operand_count: content::default_max_content_stream_operand_count(),
+            max_content_stream_operand_bytes: content::default_max_content_stream_operand_bytes(),
+            max_content_stream_operator_name_bytes:
+                content::default_max_content_stream_operator_name_bytes(),
+            max_inline_image_bytes: content::default_max_inline_image_bytes(),
+            max_graphics_state_depth: content::default_max_graphics_state_depth(),
+            max_type3_charproc_streams: content::default_max_type3_charproc_streams(),
+            max_type3_charproc_ops: content::default_max_type3_charproc_ops(),
         }
     }
 }
