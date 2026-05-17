@@ -1400,14 +1400,7 @@ fn repair_metadata_path(
                 started.elapsed(),
             )])
             .build()),
-        Err(error) => {
-            remove_failed_output(&output_path)?;
-            Ok(failed_repair_report(
-                source,
-                Some(output_path),
-                &error.to_string(),
-            ))
-        }
+        Err(error) => Ok(failed_repair_report(source, None, &error.to_string())),
     }
 }
 
@@ -1531,26 +1524,12 @@ fn atomic_copy(input: &Path, output_path: &Path) -> Result<()> {
         path: Some(output_path.to_path_buf()),
         source,
     })?;
-    temp.persist(output_path).map_err(|error| PdfvError::Io {
-        path: Some(output_path.to_path_buf()),
-        source: error.error,
-    })?;
-    Ok(())
-}
-
-#[allow(
-    clippy::disallowed_methods,
-    reason = "metadata repair removes failed synchronous output artifacts"
-)]
-fn remove_failed_output(output_path: &Path) -> Result<()> {
-    match std::fs::remove_file(output_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(PdfvError::Io {
+    temp.persist_noclobber(output_path)
+        .map_err(|error| PdfvError::Io {
             path: Some(output_path.to_path_buf()),
-            source,
-        }),
-    }
+            source: error.error,
+        })?;
+    Ok(())
 }
 
 fn refused_repair_report(source: InputSummary, refusal: RepairRefusal) -> RepairReport {
@@ -3694,7 +3673,7 @@ mod tests {
         PolicyRuleResult, ProfileIdentity, ProfileReport, PropertyName, RawXmlReportWriter,
         RepairAction, RepairBatchReport, RepairRefusal, RepairReport, RepairStatus, ReportFormat,
         ReportWriter, RuleId, TextReportWriter, ValidationOptions, ValidationReport,
-        ValidationStatus, XmlReportWriter,
+        ValidationStatus, XmlReportWriter, atomic_copy,
     };
 
     fn sample_report() -> std::result::Result<ValidationReport, Box<dyn StdError>> {
@@ -4167,6 +4146,26 @@ first failures:
             Some(RepairRefusal::InvalidOutputPath { .. })
         ));
         assert_eq!(std::fs::read(&output)?, b"existing output");
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "unit test creates local repair files synchronously"
+    )]
+    fn test_should_not_clobber_existing_output_during_atomic_copy()
+    -> std::result::Result<(), Box<dyn StdError>> {
+        let temp = tempfile::tempdir()?;
+        let input = temp.path().join("input.pdf");
+        let output = temp.path().join("output.pdf");
+        std::fs::write(&input, b"new bytes")?;
+        std::fs::write(&output, b"existing bytes")?;
+
+        let result = atomic_copy(&input, &output);
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&output)?, b"existing bytes");
         Ok(())
     }
 

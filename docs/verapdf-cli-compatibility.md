@@ -1,6 +1,6 @@
 # veraPDF CLI Compatibility
 
-Status: current compatibility inventory. Phase 20 owns validation feature extraction and policy checks; raw/HTML reports and metadata repair are already implemented preview surfaces tracked by Phase 21.
+Status: current compatibility inventory. Phase 20 owns validation feature extraction and policy checks; Phase 21 owns raw/HTML reports and conservative metadata repair.
 
 pdfv exposes migration-oriented veraPDF surfaces where the Rust implementation has a bounded backing model. Unsupported veraPDF options are not accepted as silent no-ops.
 
