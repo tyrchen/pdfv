@@ -1158,12 +1158,15 @@ fn model_schema_profile_report(
             continue;
         }
         lowered_rules = lowered_rules.saturating_add(1);
-        let reason = if registry.has_family(&rule.object_type) {
-            unsupported_property_reason(registry, &rule.object_type, &rule.test)?
-                .map(|reason| unsupported_reason_category(reason.as_str()))
-        } else {
-            Some("missingObjectType")
-        };
+        let reason =
+            if let Some(reason) = missing_semantic_family_reason(&rule.object_type, &rule.test) {
+                Some(reason)
+            } else if registry.has_family(&rule.object_type) {
+                unsupported_property_reason(registry, &rule.object_type, &rule.test)?
+                    .map(|reason| unsupported_reason_category(reason.as_str()))
+            } else {
+                Some("missingObjectType")
+            };
         if let Some(reason) = reason {
             increment_reason(&mut unsupported_by_reason, reason);
         } else {
@@ -1190,6 +1193,59 @@ fn unsupported_reason_category(reason: &str) -> &'static str {
     } else {
         "unsupportedExpression"
     }
+}
+
+fn missing_semantic_family_reason(
+    object_type: &ObjectTypeName,
+    expr: &RuleExpr,
+) -> Option<&'static str> {
+    let mut properties = Vec::new();
+    collect_property_paths(expr, &mut properties);
+    properties
+        .into_iter()
+        .any(|path| {
+            path.parts().iter().any(|property| {
+                matches!(
+                    property.as_str(),
+                    "operatorCount"
+                        | "markedContentCount"
+                        | "parentStandardType"
+                        | "parentStandardTypeNamespaceURL"
+                        | "parentType"
+                        | "parentNamespaceURL"
+                        | "structParentStandardType"
+                        | "structParentType"
+                        | "firstChildStandardTypeNamespaceURL"
+                        | "kidsStandardTypes"
+                        | "hasContentItems"
+                        | "containsLabels"
+                        | "ListNumbering"
+                        | "NoteType"
+                        | "orphanRefs"
+                        | "ghostRefs"
+                        | "isArtifact"
+                        | "isTaggedContent"
+                        | "parentsTags"
+                        | "isNotMappedToStandardType"
+                        | "circularMappingExist"
+                        | "roleMapToSameNamespaceTag"
+                        | "remappedStandardType"
+                        | "hasIntersection"
+                        | "numberOfColumnWithWrongRowSpan"
+                        | "numberOfRowWithWrongColumnSpan"
+                        | "wrongColumnSpan"
+                        | "differentTargetAnnotObjectKey"
+                )
+            })
+        })
+        .then_some("missingSemanticFamily")
+        .or_else(|| {
+            matches!(
+                object_type.as_str(),
+                "undefinedOperator" | "structureElement"
+            )
+            .then_some("missingSemanticFamily")
+        })
 }
 
 fn increment_reason(reasons: &mut BTreeMap<String, u64>, reason: &'static str) {

@@ -3553,7 +3553,7 @@ fn collect_additional_action_models_from_value<'a>(
     max_objects: usize,
     actions: &mut Vec<GenericModel<'a>>,
 ) -> Result<()> {
-    let Some(crate::CosObject::Dictionary(additional_actions)) = value else {
+    let Some(additional_actions) = resolve_dictionary_value(document, value) else {
         return Ok(());
     };
     for (name, action) in additional_actions.iter() {
@@ -3590,7 +3590,7 @@ fn destination_model_from_value<'a>(
     ordinal: usize,
     context: String,
 ) -> Option<GenericModel<'a>> {
-    dictionary_backed_model_from_value(document, value, "destination", ordinal, context)
+    model_from_value(document, value, "destination", ordinal, context)
 }
 
 fn dictionary_backed_model_from_value<'a>(
@@ -3618,6 +3618,29 @@ fn dictionary_backed_model_from_value<'a>(
             ))
         }
         _ => None,
+    }
+}
+
+fn model_from_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&crate::CosObject>,
+    family: &'static str,
+    ordinal: usize,
+    context: String,
+) -> Option<GenericModel<'a>> {
+    match value? {
+        crate::CosObject::Array(values) if family == "destination" => {
+            Some(GenericModel::new_value(
+                document,
+                family,
+                ModelValue::from(crate::CosObject::Array(values.clone())),
+                ordinal,
+                context,
+            ))
+        }
+        value => {
+            dictionary_backed_model_from_value(document, Some(value), family, ordinal, context)
+        }
     }
 }
 
@@ -3653,6 +3676,7 @@ pub struct GenericModel<'a> {
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
     allowed_properties: &'static [&'static str],
+    direct_value: Option<ModelValue>,
     context: String,
     ordinal: usize,
 }
@@ -3679,6 +3703,32 @@ impl<'a> GenericModel<'a> {
                 .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
                 .collect(),
             allowed_properties: family_direct_properties(family),
+            direct_value: None,
+            context: context.into(),
+            ordinal,
+        }
+    }
+
+    fn new_value(
+        document: &'a ParsedDocument,
+        family: &'static str,
+        value: ModelValue,
+        ordinal: usize,
+        context: impl Into<String>,
+    ) -> Self {
+        Self {
+            document,
+            key: None,
+            offset: None,
+            dictionary: crate::Dictionary::default(),
+            object_type: ObjectTypeName::unchecked(family),
+            supertypes: vec![ObjectTypeName::unchecked("object")],
+            links: family_links(family)
+                .iter()
+                .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                .collect(),
+            allowed_properties: family_direct_properties(family),
+            direct_value: Some(value),
             context: context.into(),
             ordinal,
         }
@@ -3711,6 +3761,10 @@ impl ModelObject for GenericModel<'_> {
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match (self.object_type.as_str(), name.as_str()) {
+            ("destination", "D" | "Dest") => Ok(self.direct_value.clone().map_or_else(
+                || dictionary_property(&self.dictionary, name, self.allowed_properties),
+                Ok,
+            )?),
             ("image", "width") => dictionary_property(
                 &self.dictionary,
                 &PropertyName::unchecked("Width"),
@@ -3805,7 +3859,7 @@ fn generic_models_from_dictionary_value<'a>(
         crate::CosObject::Array(values) => {
             for item in values {
                 let ordinal = objects.len();
-                if let Some(model) = dictionary_backed_model_from_value(
+                if let Some(model) = model_from_value(
                     document,
                     Some(item),
                     family,
@@ -3817,7 +3871,7 @@ fn generic_models_from_dictionary_value<'a>(
             }
         }
         _ => {
-            if let Some(model) = dictionary_backed_model_from_value(
+            if let Some(model) = model_from_value(
                 document,
                 Some(value),
                 family,
@@ -3978,33 +4032,115 @@ fn names_linked_objects<'a>(
 ) -> Result<Vec<ModelObjectRef<'a>>> {
     let mut objects = Vec::new();
     for key in ["Dests", "EmbeddedFiles"] {
-        let Some(dictionary) = resolve_dictionary_value(graph.document, model.dictionary.get(key))
-        else {
-            continue;
-        };
-        let names = dictionary.get("Names");
         let family = if key == "EmbeddedFiles" {
             "fileSpec"
         } else {
             "destination"
         };
-        for (ordinal, value) in array_values(names).enumerate() {
+        collect_name_tree_entries(
+            graph.document,
+            model.dictionary.get(key),
+            family,
+            &model.context,
+            max_objects,
+            &mut objects,
+        )?;
+    }
+    Ok(objects)
+}
+
+fn collect_name_tree_entries<'a>(
+    document: &'a ParsedDocument,
+    root: Option<&crate::CosObject>,
+    family: &'static str,
+    context_prefix: &str,
+    max_objects: usize,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+) -> Result<()> {
+    let mut stack = Vec::new();
+    push_name_tree_node(
+        document,
+        root,
+        context_prefix.to_owned(),
+        &mut stack,
+        max_objects,
+    )?;
+    let mut visited = HashSet::new();
+    let mut scanned = 0_usize;
+    while let Some((key, dictionary, context)) = stack.pop() {
+        if let Some(key) = key
+            && !visited.insert(key)
+        {
+            continue;
+        }
+        scanned = scanned
+            .checked_add(1)
+            .ok_or(ValidationError::LimitExceeded {
+                limit: "max_objects",
+            })?;
+        if scanned > max_objects {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_objects",
+            }
+            .into());
+        }
+        for (ordinal, value) in array_values(dictionary.get("Names")).enumerate() {
             if ordinal % 2 == 0 {
                 continue;
             }
-            let linked = generic_models_from_dictionary_value(
-                graph.document,
+            let model_ordinal = objects.len();
+            if let Some(model) = model_from_value(
+                document,
                 Some(value),
                 family,
-                &model.context,
-                max_objects.saturating_sub(objects.len()),
-            )?;
-            for object in linked {
-                push_linked(&mut objects, object, max_objects)?;
+                model_ordinal,
+                format!("{context}/{family}[{model_ordinal}]"),
+            ) {
+                push_linked(objects, ModelObjectRef::Generic(model), max_objects)?;
             }
         }
+        for (ordinal, kid) in array_values(dictionary.get("Kids")).enumerate() {
+            push_name_tree_node(
+                document,
+                Some(kid),
+                format!("{context}/kid[{ordinal}]"),
+                &mut stack,
+                max_objects.saturating_sub(objects.len()),
+            )?;
+        }
     }
-    Ok(objects)
+    Ok(())
+}
+
+fn push_name_tree_node(
+    document: &ParsedDocument,
+    value: Option<&crate::CosObject>,
+    context: String,
+    stack: &mut Vec<(Option<ObjectKey>, crate::Dictionary, String)>,
+    max_objects: usize,
+) -> Result<()> {
+    if stack.len() >= max_objects {
+        return Err(ValidationError::LimitExceeded {
+            limit: "max_objects",
+        }
+        .into());
+    }
+    match value {
+        Some(crate::CosObject::Dictionary(dictionary)) => {
+            stack.push((None, dictionary.clone(), context));
+        }
+        Some(crate::CosObject::Reference(key)) => {
+            let Some(object) = document.objects.get(key) else {
+                return Ok(());
+            };
+            let Some(dictionary) = object.object.as_dictionary() else {
+                return Ok(());
+            };
+            stack.push((Some(*key), dictionary.clone(), context));
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn destination_linked_objects<'a>(
@@ -5199,6 +5335,11 @@ trailer
                     .unsupported_by_reason
                     .contains_key("missingObjectType")
         }));
+        assert!(report.profiles.iter().any(|profile| {
+            profile
+                .unsupported_by_reason
+                .contains_key("missingSemanticFamily")
+        }));
         Ok(())
     }
 
@@ -5220,9 +5361,24 @@ trailer
 
         assert!(!report.truncated);
         assert!(report.visited_objects <= 64);
-        for family in ["names", "outline", "destination", "formField", "action"] {
+        for family in [
+            "names",
+            "outline",
+            "destination",
+            "formField",
+            "action",
+            "fileSpec",
+        ] {
             assert!(families.contains(family), "missing {family}: {families:?}");
         }
+        let destination_property = PropertyName::new("D")?;
+        assert!(report.objects.iter().any(|object| {
+            object.family.as_str() == "destination"
+                && matches!(
+                    object.properties.get(&destination_property),
+                    Some(crate::FeatureValue::List(values)) if !values.is_empty()
+                )
+        }));
         Ok(())
     }
 
@@ -5302,10 +5458,10 @@ endobj
 << /Type /Pages /Kids [2 0 R 3 0 R] /Count 1 /Resources << >> /MediaBox [0 0 100 100] >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>
+<< /Type /Page /Parent 2 0 R /Annots [4 0 R] /AA 16 0 R >>
 endobj
 4 0 obj
-<< /Type /Annot /Subtype /Widget /FT /Btn /A 5 0 R >>
+<< /Type /Annot /Subtype /Widget /FT /Btn /A 5 0 R /AA 16 0 R >>
 endobj
 5 0 obj
 << /Type /Action /S /URI /URI (https://example.invalid) /Next 5 0 R >>
@@ -5314,7 +5470,7 @@ endobj
 << /D [3 0 R /Fit] /A 5 0 R >>
 endobj
 7 0 obj
-<< /Dests << /Names [(home) 6 0 R] >> >>
+<< /Dests 13 0 R /EmbeddedFiles << /Names [(f) 15 0 R] >> >>
 endobj
 8 0 obj
 << /Type /Outlines /First 9 0 R /Last 9 0 R /Count 1 >>
@@ -5326,7 +5482,19 @@ endobj
 << /Fields [12 0 R] >>
 endobj
 12 0 obj
-<< /FT /Tx /Kids [12 0 R] /A 5 0 R >>
+<< /FT /Tx /Kids [12 0 R] /A 5 0 R /AA 16 0 R >>
+endobj
+13 0 obj
+<< /Kids [13 0 R 14 0 R] >>
+endobj
+14 0 obj
+<< /Names [(home) [3 0 R /Fit]] >>
+endobj
+15 0 obj
+<< /Type /Filespec /F (attachment.txt) >>
+endobj
+16 0 obj
+<< /D 5 0 R >>
 endobj
 trailer
 << /Root 1 0 R >>
