@@ -17,6 +17,10 @@ use crate::{
     ProfileReport, ProfileRepository, PropertyName, ResourceLimits, Result, Rule, RuleEvaluator,
     RuleId, RuleOutcome, TaskDuration, UnsupportedRule, ValidationError, ValidationFlavour,
     ValidationOptions, ValidationReport, ValidationStatus,
+    accessibility::{
+        AccessibilityArtifact, AccessibilityGraph, AccessibilityMarkedContent, AccessibilityNode,
+        AccessibilityNodeId, AccessibilityObjectReference,
+    },
     content::{ContentStreamSummary, MarkedContentSpan, OperatorFact, ResourceFamily, ResourceUse},
     profile::DefaultRuleEvaluator,
     xmp::{FlavourDetector, parse_document_xmp},
@@ -670,8 +674,53 @@ const EXT_GSTATE_PROPERTIES: &[&str] = &[
     "op",
     "OPM",
 ];
-const STRUCTURE_PROPERTIES: &[&str] = STRUCTURE_DIRECT_PROPERTIES;
+const ACCESSIBILITY_DOCUMENT_PROPERTIES: &[&str] = &[
+    "isTagged",
+    "language",
+    "hasStructTreeRoot",
+    "roleMapPresent",
+    "classMapPresent",
+    "idTreeEntries",
+    "parentTreeEntries",
+    "parentTreeNextKey",
+    "structureElementCount",
+    "markedContentAssociationCount",
+    "artifactCount",
+    "warningCount",
+    "truncated",
+];
+const STRUCTURE_PROPERTIES: &[&str] = &[
+    "Type",
+    "K",
+    "ParentTree",
+    "ParentTreeNextKey",
+    "RoleMap",
+    "ClassMap",
+    "IDTree",
+    "isTagged",
+    "roleMapPresent",
+    "classMapPresent",
+    "parentTreeEntries",
+    "idTreeEntries",
+    "truncated",
+];
 const STRUCTURE_ELEMENT_PROPERTIES: &[&str] = &[
+    "role",
+    "normalizedRole",
+    "page",
+    "pageIndex",
+    "childCount",
+    "contentItemCount",
+    "associatedMarkedContentCount",
+    "associatedAnnotationCount",
+    "hasAltText",
+    "altTextBytes",
+    "hasActualText",
+    "actualTextBytes",
+    "hasLanguage",
+    "hasAttributes",
+    "hasClass",
+    "hasId",
     "Type",
     "S",
     "P",
@@ -710,6 +759,62 @@ const STRUCTURE_ELEMENT_PROPERTIES: &[&str] = &[
     "numberOfColumnWithWrongRowSpan",
     "numberOfRowWithWrongColumnSpan",
     "wrongColumnSpan",
+    "differentTargetAnnotObjectKey",
+];
+const TEXT_CHUNK_PROPERTIES: &[&str] = &[
+    "tag",
+    "mcid",
+    "pageIndex",
+    "structureRole",
+    "normalizedRole",
+    "textBytes",
+    "rawText",
+    "isArtifact",
+];
+const IMAGE_CHUNK_PROPERTIES: &[&str] = &[
+    "tag",
+    "mcid",
+    "pageIndex",
+    "structureRole",
+    "normalizedRole",
+    "hasAltText",
+    "altTextBytes",
+    "hasActualText",
+    "actualTextBytes",
+    "isArtifact",
+];
+const ACCESSIBILITY_ANNOTATION_PROPERTIES: &[&str] = &[
+    "pageIndex",
+    "structureRole",
+    "normalizedRole",
+    "isLink",
+    "object",
+];
+const ARTIFACT_PROPERTIES: &[&str] = &["tag", "pageIndex", "structureRole"];
+const TABLE_PROPERTIES: &[&str] = &[
+    "role",
+    "normalizedRole",
+    "pageIndex",
+    "childCount",
+    "hasAttributes",
+    "numberOfColumnWithWrongRowSpan",
+    "numberOfRowWithWrongColumnSpan",
+    "wrongColumnSpan",
+];
+const LIST_PROPERTIES: &[&str] = &[
+    "role",
+    "normalizedRole",
+    "pageIndex",
+    "childCount",
+    "ListNumbering",
+    "containsLabels",
+];
+const HEADING_PROPERTIES: &[&str] = &["role", "normalizedRole", "pageIndex", "level"];
+const LINK_PROPERTIES: &[&str] = &[
+    "role",
+    "normalizedRole",
+    "pageIndex",
+    "associatedAnnotationCount",
     "differentTargetAnnotObjectKey",
 ];
 const SIGNATURE_PROPERTIES: &[&str] = SIGNATURE_DIRECT_PROPERTIES;
@@ -763,12 +868,15 @@ const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
     "iccPcs",
     "iccVersion",
     "name",
+    "normalizedRole",
     "operator",
     "pcs",
     "conformance",
     "conformancePrefix",
     "header",
     "partPrefix",
+    "role",
+    "structureRole",
     "resolvedFamily",
     "revPrefix",
     "status",
@@ -779,6 +887,7 @@ const EMPTY_LINK_NAMES: &[(&str, &str)] = &[];
 const DOCUMENT_LINKS: &[(&str, &str)] = &[
     ("catalog", "catalog"),
     ("streams", "stream"),
+    ("accessibility", "accessibilityDocument"),
     ("security", "security"),
     ("signatures", "signature"),
 ];
@@ -841,6 +950,23 @@ const OUTLINE_LINKS: &[(&str, &str)] = &[
 const NAMES_LINKS: &[(&str, &str)] = &[("destinations", "destination"), ("files", "fileSpec")];
 const DESTINATION_LINKS: &[(&str, &str)] = &[("action", "action")];
 const XOBJECT_LINKS: &[(&str, &str)] = &[("contentStreams", "contentStream")];
+const ACCESSIBILITY_DOCUMENT_LINKS: &[(&str, &str)] = &[
+    ("structureElements", "structureElement"),
+    ("textChunks", "textChunk"),
+    ("imageChunks", "imageChunk"),
+    ("annotations", "accessibilityAnnotation"),
+    ("artifacts", "artifact"),
+    ("tables", "table"),
+    ("lists", "list"),
+    ("headings", "heading"),
+    ("links", "link"),
+];
+const STRUCTURE_ELEMENT_LINKS: &[(&str, &str)] = &[
+    ("children", "structureElement"),
+    ("textChunks", "textChunk"),
+    ("imageChunks", "imageChunk"),
+    ("annotations", "accessibilityAnnotation"),
+];
 
 /// Feature extraction selection.
 #[derive(Clone, Debug, Default, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
@@ -1609,6 +1735,11 @@ impl std::fmt::Debug for ModelRegistry {
 impl ModelRegistry {
     /// Builds the default internal registry.
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the registry is a declarative list of model families kept in one place for \
+                  parity checks"
+    )]
     pub(crate) fn default_registry() -> Self {
         let families = [
             family("document", DOCUMENT_PROPERTIES, DOCUMENT_LINKS),
@@ -1668,12 +1799,33 @@ impl ModelRegistry {
             family("pattern", PATTERN_PROPERTIES, EMPTY_LINK_NAMES),
             family("shading", SHADING_PROPERTIES, EMPTY_LINK_NAMES),
             family("function", FUNCTION_PROPERTIES, EMPTY_LINK_NAMES),
-            family("structureTreeRoot", STRUCTURE_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "accessibilityDocument",
+                ACCESSIBILITY_DOCUMENT_PROPERTIES,
+                ACCESSIBILITY_DOCUMENT_LINKS,
+            ),
+            family(
+                "structureTreeRoot",
+                STRUCTURE_PROPERTIES,
+                ACCESSIBILITY_DOCUMENT_LINKS,
+            ),
             family(
                 "structureElement",
                 STRUCTURE_ELEMENT_PROPERTIES,
+                STRUCTURE_ELEMENT_LINKS,
+            ),
+            family("textChunk", TEXT_CHUNK_PROPERTIES, EMPTY_LINK_NAMES),
+            family("imageChunk", IMAGE_CHUNK_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "accessibilityAnnotation",
+                ACCESSIBILITY_ANNOTATION_PROPERTIES,
                 EMPTY_LINK_NAMES,
             ),
+            family("artifact", ARTIFACT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("table", TABLE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("list", LIST_PROPERTIES, EMPTY_LINK_NAMES),
+            family("heading", HEADING_PROPERTIES, EMPTY_LINK_NAMES),
+            family("link", LINK_PROPERTIES, EMPTY_LINK_NAMES),
             family("signature", SIGNATURE_PROPERTIES, EMPTY_LINK_NAMES),
             family("security", SECURITY_PROPERTIES, EMPTY_LINK_NAMES),
             family("outputIntent", OUTPUT_INTENT_PROPERTIES, EMPTY_LINK_NAMES),
@@ -1936,6 +2088,8 @@ pub enum ModelObjectRef<'a> {
     InlineImage(InlineImageModel<'a>),
     /// Resource-use object.
     ResourceUse(ResourceUseModel<'a>),
+    /// Accessibility semantic object.
+    Accessibility(AccessibilityModel<'a>),
     /// Basic stream object.
     Stream(StreamModel<'a>),
     /// Generic dictionary-backed model family object.
@@ -1959,6 +2113,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::MarkedContent(model) => model.document,
             Self::InlineImage(model) => model.document,
             Self::ResourceUse(model) => model.document,
+            Self::Accessibility(model) => model.document,
             Self::Stream(model) => model.document,
             Self::Generic(model) => model.document,
         }
@@ -1980,6 +2135,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::MarkedContent(model) => model.object_type(),
             Self::InlineImage(model) => model.object_type(),
             Self::ResourceUse(model) => model.object_type(),
+            Self::Accessibility(model) => model.object_type(),
             Self::Stream(model) => model.object_type(),
             Self::Generic(model) => model.object_type(),
         }
@@ -2004,6 +2160,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::MarkedContent(model) => model.property(name),
             Self::InlineImage(model) => model.property(name),
             Self::ResourceUse(model) => model.property(name),
+            Self::Accessibility(model) => model.property(name),
             Self::Stream(model) => model.property(name),
             Self::Generic(model) => model.property(name),
         }
@@ -2071,6 +2228,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::MarkedContent(model) => model.span.location.clone(),
             Self::InlineImage(model) => model.fact.location().clone(),
             Self::ResourceUse(model) => model.use_fact.location.clone(),
+            Self::Accessibility(model) => model.location(),
             Self::Stream(model) => ObjectLocation {
                 object: Some(model.key),
                 offset: Some(model.offset),
@@ -2125,6 +2283,7 @@ impl<'a> ModelObjectRef<'a> {
                 "root/page[{}]/contentStream[{}]/resourceUse[{}]",
                 model.page_ordinal, model.stream_ordinal, model.ordinal
             )),
+            Self::Accessibility(model) => model.context(),
             Self::Stream(model) => {
                 BoundedText::unchecked(format!("root/stream[{}]", model.key.number))
             }
@@ -2179,6 +2338,7 @@ impl<'a> ModelObjectRef<'a> {
                 "resourceUse:{}:{}:{}:{}",
                 model.page_ordinal, model.stream_ordinal, model.source.number, model.ordinal
             ),
+            Self::Accessibility(model) => model.identity_key(),
             Self::Stream(model) => format!("stream:{}:{}", model.key.number, model.key.generation),
             Self::Generic(model) => generic_identity_key(
                 model.object_type.as_str(),
@@ -2203,6 +2363,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::MarkedContent(model) => model.links(),
             Self::InlineImage(model) => model.links(),
             Self::ResourceUse(model) => model.links(),
+            Self::Accessibility(model) => model.links(),
             Self::Stream(model) => model.links(),
             Self::Generic(model) => model.links(),
         }
@@ -2226,6 +2387,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::MarkedContent(model) => model.linked_objects(graph, max_objects),
             Self::InlineImage(model) => model.linked_objects(graph, max_objects),
             Self::ResourceUse(model) => model.linked_objects(graph, max_objects),
+            Self::Accessibility(model) => model.linked_objects(graph, max_objects),
             Self::Stream(model) => model.linked_objects(graph, max_objects),
             Self::Generic(model) => generic_linked_objects(model, graph, max_objects),
         }
@@ -2239,6 +2401,7 @@ pub struct ModelGraph<'a> {
     limits: &'a ResourceLimits,
     materialized_families: BTreeSet<ObjectTypeName>,
     active_flavour: Option<ValidationFlavour>,
+    accessibility_cache: OnceLock<Arc<AccessibilityGraph>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2321,6 +2484,7 @@ impl<'a> ModelGraph<'a> {
             limits,
             materialized_families,
             active_flavour: Some(active_flavour.clone()),
+            accessibility_cache: OnceLock::new(),
         }
     }
 
@@ -2333,6 +2497,7 @@ impl<'a> ModelGraph<'a> {
                 .cloned()
                 .collect(),
             active_flavour: None,
+            accessibility_cache: OnceLock::new(),
         }
     }
 
@@ -2358,10 +2523,51 @@ impl<'a> ModelGraph<'a> {
                     | "markedContent"
                     | "inlineImage"
                     | "resourceUse"
+                    | "accessibilityDocument"
+                    | "structureElement"
+                    | "textChunk"
+                    | "imageChunk"
+                    | "accessibilityAnnotation"
+                    | "artifact"
+                    | "table"
+                    | "list"
+                    | "heading"
+                    | "link"
                     | "stream"
                     | "object"
             )
         })
+    }
+
+    fn materializes_accessibility(&self) -> bool {
+        self.materialized_families.iter().any(|family| {
+            matches!(
+                family.as_str(),
+                "accessibilityDocument"
+                    | "structureTreeRoot"
+                    | "structureElement"
+                    | "textChunk"
+                    | "imageChunk"
+                    | "accessibilityAnnotation"
+                    | "artifact"
+                    | "table"
+                    | "list"
+                    | "heading"
+                    | "link"
+            )
+        })
+    }
+
+    fn accessibility_graph(&self) -> Result<Arc<AccessibilityGraph>> {
+        if let Some(graph) = self.accessibility_cache.get() {
+            return Ok(Arc::clone(graph));
+        }
+        let graph = Arc::new(crate::accessibility::build_accessibility_graph(
+            self.document,
+            self.limits,
+        )?);
+        let _ = self.accessibility_cache.set(Arc::clone(&graph));
+        Ok(graph)
     }
 
     fn catalog(&self) -> Option<CatalogModel<'a>> {
@@ -2784,6 +2990,16 @@ impl ModelObject for DocumentModel<'_> {
         let mut objects = Vec::new();
         if let Some(catalog) = graph.catalog() {
             push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
+        }
+        if graph.materializes_accessibility() {
+            push_linked(
+                &mut objects,
+                ModelObjectRef::Accessibility(AccessibilityModel::document(
+                    graph.document,
+                    graph.accessibility_graph()?,
+                )),
+                max_objects,
+            )?;
         }
         if graph.materializes("stream") {
             graph.push_streams(&mut objects, max_objects)?;
@@ -4353,6 +4569,738 @@ impl ModelObject for ResourceUseModel<'_> {
     }
 }
 
+/// Accessibility semantic model wrapper.
+#[derive(Clone, Debug)]
+pub struct AccessibilityModel<'a> {
+    document: &'a ParsedDocument,
+    graph: Arc<AccessibilityGraph>,
+    kind: AccessibilityModelKind,
+    object_type: ObjectTypeName,
+    supertypes: Vec<ObjectTypeName>,
+    links: Vec<LinkName>,
+}
+
+#[derive(Clone, Debug)]
+enum AccessibilityModelKind {
+    Document,
+    StructureElement(AccessibilityNodeId),
+    TextChunk(usize),
+    ImageChunk(usize),
+    Annotation(usize),
+    Artifact(usize),
+    Table(AccessibilityNodeId),
+    List(AccessibilityNodeId),
+    Heading(AccessibilityNodeId),
+    Link(AccessibilityNodeId),
+}
+
+impl<'a> AccessibilityModel<'a> {
+    fn document(document: &'a ParsedDocument, graph: Arc<AccessibilityGraph>) -> Self {
+        Self {
+            document,
+            graph,
+            kind: AccessibilityModelKind::Document,
+            object_type: ObjectTypeName::unchecked("accessibilityDocument"),
+            supertypes: vec![ObjectTypeName::unchecked("structureTreeRoot")],
+            links: ACCESSIBILITY_DOCUMENT_LINKS
+                .iter()
+                .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                .collect(),
+        }
+    }
+
+    fn structure_element(
+        document: &'a ParsedDocument,
+        graph: Arc<AccessibilityGraph>,
+        node: AccessibilityNodeId,
+    ) -> Self {
+        Self {
+            document,
+            graph,
+            kind: AccessibilityModelKind::StructureElement(node),
+            object_type: ObjectTypeName::unchecked("structureElement"),
+            supertypes: vec![ObjectTypeName::unchecked("object")],
+            links: STRUCTURE_ELEMENT_LINKS
+                .iter()
+                .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                .collect(),
+        }
+    }
+
+    fn semantic(
+        document: &'a ParsedDocument,
+        graph: Arc<AccessibilityGraph>,
+        kind: AccessibilityModelKind,
+        family: &'static str,
+    ) -> Self {
+        Self {
+            document,
+            graph,
+            kind,
+            object_type: ObjectTypeName::unchecked(family),
+            supertypes: vec![ObjectTypeName::unchecked("object")],
+            links: Vec::new(),
+        }
+    }
+
+    fn node(&self, id: AccessibilityNodeId) -> Result<&AccessibilityNode> {
+        self.graph.node(id).ok_or(
+            ValidationError::LimitExceeded {
+                limit: "accessibility_node",
+            }
+            .into(),
+        )
+    }
+
+    fn marked(&self, ordinal: usize) -> Result<&AccessibilityMarkedContent> {
+        self.graph.marked_content.get(ordinal).ok_or(
+            ValidationError::LimitExceeded {
+                limit: "accessibility_marked_content",
+            }
+            .into(),
+        )
+    }
+
+    fn annotation(&self, ordinal: usize) -> Result<&AccessibilityObjectReference> {
+        self.graph.object_references.get(ordinal).ok_or(
+            ValidationError::LimitExceeded {
+                limit: "accessibility_annotation",
+            }
+            .into(),
+        )
+    }
+
+    fn artifact(&self, ordinal: usize) -> Result<&AccessibilityArtifact> {
+        self.graph.artifacts.get(ordinal).ok_or(
+            ValidationError::LimitExceeded {
+                limit: "accessibility_artifact",
+            }
+            .into(),
+        )
+    }
+
+    fn location(&self) -> ObjectLocation {
+        match &self.kind {
+            AccessibilityModelKind::Document => ObjectLocation {
+                object: None,
+                offset: None,
+                path: Some(BoundedText::unchecked("root/accessibility")),
+            },
+            AccessibilityModelKind::StructureElement(node)
+            | AccessibilityModelKind::Table(node)
+            | AccessibilityModelKind::List(node)
+            | AccessibilityModelKind::Heading(node)
+            | AccessibilityModelKind::Link(node) => self
+                .graph
+                .node(*node)
+                .map_or_else(unknown_location, |node| node.location.clone()),
+            AccessibilityModelKind::TextChunk(ordinal)
+            | AccessibilityModelKind::ImageChunk(ordinal) => self
+                .graph
+                .marked_content
+                .get(*ordinal)
+                .map_or_else(unknown_location, |marked| marked.location.clone()),
+            AccessibilityModelKind::Annotation(ordinal) => {
+                let context = format!("root/accessibility/annotation[{ordinal}]");
+                ObjectLocation {
+                    object: self
+                        .graph
+                        .object_references
+                        .get(*ordinal)
+                        .and_then(|reference| reference.object),
+                    offset: None,
+                    path: Some(BoundedText::unchecked(context)),
+                }
+            }
+            AccessibilityModelKind::Artifact(ordinal) => self
+                .graph
+                .artifacts
+                .get(*ordinal)
+                .map_or_else(unknown_location, |artifact| artifact.location.clone()),
+        }
+    }
+
+    fn context(&self) -> BoundedText {
+        match &self.kind {
+            AccessibilityModelKind::Document => BoundedText::unchecked("root/accessibility"),
+            AccessibilityModelKind::StructureElement(node) => {
+                BoundedText::unchecked(format!("root/accessibility/structureElement[{}]", node.0))
+            }
+            AccessibilityModelKind::TextChunk(ordinal) => {
+                BoundedText::unchecked(format!("root/accessibility/textChunk[{ordinal}]"))
+            }
+            AccessibilityModelKind::ImageChunk(ordinal) => {
+                BoundedText::unchecked(format!("root/accessibility/imageChunk[{ordinal}]"))
+            }
+            AccessibilityModelKind::Annotation(ordinal) => {
+                BoundedText::unchecked(format!("root/accessibility/annotation[{ordinal}]"))
+            }
+            AccessibilityModelKind::Artifact(ordinal) => {
+                BoundedText::unchecked(format!("root/accessibility/artifact[{ordinal}]"))
+            }
+            AccessibilityModelKind::Table(node) => {
+                BoundedText::unchecked(format!("root/accessibility/table[{}]", node.0))
+            }
+            AccessibilityModelKind::List(node) => {
+                BoundedText::unchecked(format!("root/accessibility/list[{}]", node.0))
+            }
+            AccessibilityModelKind::Heading(node) => {
+                BoundedText::unchecked(format!("root/accessibility/heading[{}]", node.0))
+            }
+            AccessibilityModelKind::Link(node) => {
+                BoundedText::unchecked(format!("root/accessibility/link[{}]", node.0))
+            }
+        }
+    }
+
+    fn identity_key(&self) -> String {
+        match &self.kind {
+            AccessibilityModelKind::Document => String::from("accessibilityDocument"),
+            AccessibilityModelKind::StructureElement(node) => {
+                format!("structureElement:{}", node.0)
+            }
+            AccessibilityModelKind::TextChunk(ordinal) => format!("textChunk:{ordinal}"),
+            AccessibilityModelKind::ImageChunk(ordinal) => format!("imageChunk:{ordinal}"),
+            AccessibilityModelKind::Annotation(ordinal) => {
+                format!("accessibilityAnnotation:{ordinal}")
+            }
+            AccessibilityModelKind::Artifact(ordinal) => format!("artifact:{ordinal}"),
+            AccessibilityModelKind::Table(node) => format!("table:{}", node.0),
+            AccessibilityModelKind::List(node) => format!("list:{}", node.0),
+            AccessibilityModelKind::Heading(node) => format!("heading:{}", node.0),
+            AccessibilityModelKind::Link(node) => format!("link:{}", node.0),
+        }
+    }
+}
+
+impl ModelObject for AccessibilityModel<'_> {
+    fn id(&self) -> Option<ObjectIdentity> {
+        Some(ObjectIdentity {
+            key: self.identity_key(),
+        })
+    }
+
+    fn object_type(&self) -> ObjectTypeName {
+        self.object_type.clone()
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        &self.supertypes
+    }
+
+    fn extra_context(&self) -> Option<&str> {
+        Some("accessibility")
+    }
+
+    fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        match &self.kind {
+            AccessibilityModelKind::Document => accessibility_document_property(&self.graph, name),
+            AccessibilityModelKind::StructureElement(node) => {
+                structure_element_property(&self.graph, self.node(*node)?, name)
+            }
+            AccessibilityModelKind::TextChunk(ordinal) => {
+                text_chunk_property(&self.graph, self.marked(*ordinal)?, name)
+            }
+            AccessibilityModelKind::ImageChunk(ordinal) => {
+                image_chunk_property(&self.graph, self.marked(*ordinal)?, name)
+            }
+            AccessibilityModelKind::Annotation(ordinal) => {
+                annotation_property(&self.graph, self.annotation(*ordinal)?, name)
+            }
+            AccessibilityModelKind::Artifact(ordinal) => {
+                artifact_property(&self.graph, self.artifact(*ordinal)?, name)
+            }
+            AccessibilityModelKind::Table(node) => table_property(self.node(*node)?, name),
+            AccessibilityModelKind::List(node) => list_property(self.node(*node)?, name),
+            AccessibilityModelKind::Heading(node) => heading_property(self.node(*node)?, name),
+            AccessibilityModelKind::Link(node) => {
+                link_property(&self.graph, self.node(*node)?, name)
+            }
+        }
+    }
+
+    fn links(&self) -> &[LinkName] {
+        &self.links
+    }
+
+    fn linked_objects<'a>(
+        &self,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
+        let mut objects = Vec::new();
+        match self.kind {
+            AccessibilityModelKind::Document => {
+                for node in &self.graph.nodes {
+                    push_linked(
+                        &mut objects,
+                        ModelObjectRef::Accessibility(AccessibilityModel::structure_element(
+                            graph.document,
+                            Arc::clone(&self.graph),
+                            node.id,
+                        )),
+                        max_objects,
+                    )?;
+                }
+                push_accessibility_semantics(
+                    graph.document,
+                    &self.graph,
+                    &mut objects,
+                    max_objects,
+                )?;
+            }
+            AccessibilityModelKind::StructureElement(node_id) => {
+                let node = self.node(node_id)?;
+                for child in &node.children {
+                    push_linked(
+                        &mut objects,
+                        ModelObjectRef::Accessibility(AccessibilityModel::structure_element(
+                            graph.document,
+                            Arc::clone(&self.graph),
+                            *child,
+                        )),
+                        max_objects,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+        Ok(objects)
+    }
+}
+
+fn push_accessibility_semantics<'a>(
+    document: &'a ParsedDocument,
+    graph: &Arc<AccessibilityGraph>,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max_objects: usize,
+) -> Result<()> {
+    for (ordinal, marked) in graph.marked_content.iter().enumerate() {
+        if marked.has_text {
+            push_linked(
+                objects,
+                ModelObjectRef::Accessibility(AccessibilityModel::semantic(
+                    document,
+                    Arc::clone(graph),
+                    AccessibilityModelKind::TextChunk(ordinal),
+                    "textChunk",
+                )),
+                max_objects,
+            )?;
+        }
+        if marked.has_image {
+            push_linked(
+                objects,
+                ModelObjectRef::Accessibility(AccessibilityModel::semantic(
+                    document,
+                    Arc::clone(graph),
+                    AccessibilityModelKind::ImageChunk(ordinal),
+                    "imageChunk",
+                )),
+                max_objects,
+            )?;
+        }
+    }
+    for ordinal in 0..graph.object_references.len() {
+        push_linked(
+            objects,
+            ModelObjectRef::Accessibility(AccessibilityModel::semantic(
+                document,
+                Arc::clone(graph),
+                AccessibilityModelKind::Annotation(ordinal),
+                "accessibilityAnnotation",
+            )),
+            max_objects,
+        )?;
+    }
+    for ordinal in 0..graph.artifacts.len() {
+        push_linked(
+            objects,
+            ModelObjectRef::Accessibility(AccessibilityModel::semantic(
+                document,
+                Arc::clone(graph),
+                AccessibilityModelKind::Artifact(ordinal),
+                "artifact",
+            )),
+            max_objects,
+        )?;
+    }
+    for node in &graph.nodes {
+        let Some(family) = semantic_node_family(&node.normalized_role) else {
+            continue;
+        };
+        let kind = match family {
+            "table" => AccessibilityModelKind::Table(node.id),
+            "list" => AccessibilityModelKind::List(node.id),
+            "heading" => AccessibilityModelKind::Heading(node.id),
+            "link" => AccessibilityModelKind::Link(node.id),
+            _ => continue,
+        };
+        push_linked(
+            objects,
+            ModelObjectRef::Accessibility(AccessibilityModel::semantic(
+                document,
+                Arc::clone(graph),
+                kind,
+                family,
+            )),
+            max_objects,
+        )?;
+    }
+    Ok(())
+}
+
+fn accessibility_document_property(
+    graph: &AccessibilityGraph,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    match name.as_str() {
+        "isTagged" => Ok(ModelValue::Bool(graph.tagged)),
+        "language" => Ok(graph.language.as_ref().map_or(ModelValue::Null, |value| {
+            ModelValue::String(BoundedText::unchecked(value.clone()))
+        })),
+        "hasStructTreeRoot" => Ok(ModelValue::Bool(graph.has_structure_tree_root)),
+        "roleMapPresent" | "RoleMap" => Ok(ModelValue::Bool(graph.role_map_present)),
+        "classMapPresent" | "ClassMap" => Ok(ModelValue::Bool(graph.class_map_present)),
+        "idTreeEntries" | "IDTree" => Ok(ModelValue::Number(u64_to_f64(graph.id_tree_entries)?)),
+        "parentTreeEntries" | "ParentTree" => {
+            Ok(ModelValue::Number(u64_to_f64(graph.parent_tree_entries)?))
+        }
+        "parentTreeNextKey" | "ParentTreeNextKey" => {
+            optional_i64_model_value(graph.parent_tree_next_key)
+        }
+        "structureElementCount" | "K" => Ok(ModelValue::Number(usize_to_f64(graph.nodes.len())?)),
+        "markedContentAssociationCount" => Ok(ModelValue::Number(usize_to_f64(
+            graph.marked_content.len(),
+        )?)),
+        "artifactCount" => Ok(ModelValue::Number(usize_to_f64(graph.artifacts.len())?)),
+        "warningCount" => Ok(ModelValue::Number(usize_to_f64(graph.warnings.len())?)),
+        "truncated" => Ok(ModelValue::Bool(graph.truncated)),
+        "Type" => Ok(ModelValue::String(BoundedText::unchecked("StructTreeRoot"))),
+        _ => unknown_property(name),
+    }
+}
+
+fn structure_element_property(
+    graph: &AccessibilityGraph,
+    node: &AccessibilityNode,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    match name.as_str() {
+        "role" | "S" | "parentType" | "structParentType" => Ok(ModelValue::String(
+            BoundedText::unchecked(node.role.clone()),
+        )),
+        "normalizedRole" | "parentStandardType" | "structParentStandardType" => Ok(
+            ModelValue::String(BoundedText::unchecked(node.normalized_role.clone())),
+        ),
+        "page" | "Pg" => Ok(node.page.map_or(ModelValue::Null, ModelValue::ObjectKey)),
+        "pageIndex" => optional_usize_model_value(node.page_ordinal),
+        "childCount" => Ok(ModelValue::Number(usize_to_f64(node.children.len())?)),
+        "contentItemCount" | "K" => Ok(ModelValue::Number(usize_to_f64(node.content_items.len())?)),
+        "associatedMarkedContentCount" => Ok(ModelValue::Number(usize_to_f64(
+            graph
+                .marked_content
+                .iter()
+                .filter(|marked| marked.node == Some(node.id))
+                .count(),
+        )?)),
+        "associatedAnnotationCount" => Ok(ModelValue::Number(usize_to_f64(
+            graph
+                .object_references
+                .iter()
+                .filter(|reference| reference.node == node.id)
+                .count(),
+        )?)),
+        "hasAltText" => Ok(ModelValue::Bool(node.has_alt_text)),
+        "altTextBytes" => Ok(ModelValue::Number(u64_to_f64(node.alt_text_bytes)?)),
+        "hasActualText" => Ok(ModelValue::Bool(node.has_actual_text)),
+        "actualTextBytes" => Ok(ModelValue::Number(u64_to_f64(node.actual_text_bytes)?)),
+        "hasLanguage" => Ok(ModelValue::Bool(node.has_language)),
+        "hasAttributes" => Ok(ModelValue::Bool(node.has_attributes)),
+        "hasClass" => Ok(ModelValue::Bool(node.has_class)),
+        "hasId" => Ok(ModelValue::Bool(node.has_id)),
+        "Alt" | "ActualText" | "Lang" | "A" | "C" | "ID" => {
+            Ok(ModelValue::Bool(match name.as_str() {
+                "Alt" => node.has_alt_text,
+                "ActualText" => node.has_actual_text,
+                "Lang" => node.has_language,
+                "A" => node.has_attributes,
+                "C" => node.has_class,
+                "ID" => node.has_id,
+                _ => false,
+            }))
+        }
+        "P" | "containsParent" => Ok(ModelValue::Bool(node.contains_parent)),
+        "containsRef" => Ok(ModelValue::Bool(node.contains_ref)),
+        "parentStandardTypeNamespaceURL"
+        | "parentNamespaceURL"
+        | "firstChildStandardTypeNamespaceURL"
+        | "ListNumbering"
+        | "NoteType" => Ok(ModelValue::Null),
+        "kidsStandardTypes" => Ok(ModelValue::List(
+            node.children
+                .iter()
+                .filter_map(|child| graph.node(*child))
+                .map(|child| {
+                    ModelValue::String(BoundedText::unchecked(child.normalized_role.clone()))
+                })
+                .collect(),
+        )),
+        "hasContentItems" | "isTaggedContent" => {
+            Ok(ModelValue::Bool(!node.content_items.is_empty()))
+        }
+        "containsLabels" => Ok(ModelValue::Bool(node.children.iter().any(|child| {
+            graph
+                .node(*child)
+                .is_some_and(|child| child.normalized_role == "Lbl")
+        }))),
+        "orphanRefs"
+        | "ghostRefs"
+        | "hasIntersection"
+        | "wrongColumnSpan"
+        | "differentTargetAnnotObjectKey" => Ok(ModelValue::Bool(false)),
+        "isArtifact" => Ok(ModelValue::Bool(node.normalized_role == "Artifact")),
+        "parentsTags" => Ok(parent_tags(graph, node)),
+        "isNotMappedToStandardType" => Ok(ModelValue::Bool(node.non_standard_role)),
+        "circularMappingExist" => Ok(ModelValue::Bool(node.circular_role_mapping)),
+        "roleMapToSameNamespaceTag" => Ok(ModelValue::Bool(node.role == node.normalized_role)),
+        "remappedStandardType" => Ok(ModelValue::Bool(node.role != node.normalized_role)),
+        "numberOfColumnWithWrongRowSpan" | "numberOfRowWithWrongColumnSpan" => {
+            Ok(ModelValue::Number(0.0))
+        }
+        "Type" => Ok(ModelValue::String(BoundedText::unchecked("StructElem"))),
+        _ => unknown_property(name),
+    }
+}
+
+fn text_chunk_property(
+    graph: &AccessibilityGraph,
+    marked: &AccessibilityMarkedContent,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    match name.as_str() {
+        "tag" => Ok(ModelValue::String(BoundedText::unchecked(
+            marked.tag.clone(),
+        ))),
+        "mcid" => optional_i64_model_value(marked.mcid),
+        "pageIndex" => Ok(ModelValue::Number(usize_to_f64(marked.page_ordinal)?)),
+        "structureRole" => Ok(associated_node_string(graph, marked.node, false)),
+        "normalizedRole" => Ok(associated_node_string(graph, marked.node, true)),
+        "textBytes" => Ok(ModelValue::Number(0.0)),
+        "rawText" => Ok(ModelValue::String(BoundedText::unchecked(""))),
+        "isArtifact" => Ok(ModelValue::Bool(marked.tag == "Artifact")),
+        _ => unknown_property(name),
+    }
+}
+
+fn image_chunk_property(
+    graph: &AccessibilityGraph,
+    marked: &AccessibilityMarkedContent,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    let node = marked.node.and_then(|node| graph.node(node));
+    match name.as_str() {
+        "tag" => Ok(ModelValue::String(BoundedText::unchecked(
+            marked.tag.clone(),
+        ))),
+        "mcid" => optional_i64_model_value(marked.mcid),
+        "pageIndex" => Ok(ModelValue::Number(usize_to_f64(marked.page_ordinal)?)),
+        "structureRole" => Ok(associated_node_string(graph, marked.node, false)),
+        "normalizedRole" => Ok(associated_node_string(graph, marked.node, true)),
+        "hasAltText" => Ok(ModelValue::Bool(node.is_some_and(|node| node.has_alt_text))),
+        "altTextBytes" => Ok(ModelValue::Number(u64_to_f64(
+            node.map_or(0, |node| node.alt_text_bytes),
+        )?)),
+        "hasActualText" => Ok(ModelValue::Bool(
+            node.is_some_and(|node| node.has_actual_text),
+        )),
+        "actualTextBytes" => Ok(ModelValue::Number(u64_to_f64(
+            node.map_or(0, |node| node.actual_text_bytes),
+        )?)),
+        "isArtifact" => Ok(ModelValue::Bool(marked.tag == "Artifact")),
+        _ => unknown_property(name),
+    }
+}
+
+fn annotation_property(
+    graph: &AccessibilityGraph,
+    reference: &AccessibilityObjectReference,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    match name.as_str() {
+        "pageIndex" => optional_usize_model_value(reference.page_ordinal),
+        "structureRole" => Ok(associated_node_string(graph, Some(reference.node), false)),
+        "normalizedRole" => Ok(associated_node_string(graph, Some(reference.node), true)),
+        "isLink" => Ok(ModelValue::Bool(reference.is_link_annotation)),
+        "object" => Ok(reference
+            .object
+            .map_or(ModelValue::Null, ModelValue::ObjectKey)),
+        _ => unknown_property(name),
+    }
+}
+
+fn artifact_property(
+    graph: &AccessibilityGraph,
+    artifact: &AccessibilityArtifact,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    match name.as_str() {
+        "tag" => Ok(ModelValue::String(BoundedText::unchecked(
+            artifact.tag.clone(),
+        ))),
+        "pageIndex" => optional_usize_model_value(artifact.page_ordinal),
+        "structureRole" => Ok(associated_node_string(graph, artifact.node, true)),
+        _ => unknown_property(name),
+    }
+}
+
+fn table_property(node: &AccessibilityNode, name: &PropertyName) -> Result<ModelValue> {
+    match name.as_str() {
+        "role" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.role.clone(),
+        ))),
+        "normalizedRole" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.normalized_role.clone(),
+        ))),
+        "pageIndex" => optional_usize_model_value(node.page_ordinal),
+        "childCount" => Ok(ModelValue::Number(usize_to_f64(node.children.len())?)),
+        "hasAttributes" => Ok(ModelValue::Bool(node.has_attributes)),
+        "numberOfColumnWithWrongRowSpan" | "numberOfRowWithWrongColumnSpan" => {
+            Ok(ModelValue::Number(0.0))
+        }
+        "wrongColumnSpan" => Ok(ModelValue::Bool(false)),
+        _ => unknown_property(name),
+    }
+}
+
+fn list_property(node: &AccessibilityNode, name: &PropertyName) -> Result<ModelValue> {
+    match name.as_str() {
+        "role" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.role.clone(),
+        ))),
+        "normalizedRole" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.normalized_role.clone(),
+        ))),
+        "pageIndex" => optional_usize_model_value(node.page_ordinal),
+        "childCount" => Ok(ModelValue::Number(usize_to_f64(node.children.len())?)),
+        "ListNumbering" => Ok(ModelValue::Null),
+        "containsLabels" => Ok(ModelValue::Bool(false)),
+        _ => unknown_property(name),
+    }
+}
+
+fn heading_property(node: &AccessibilityNode, name: &PropertyName) -> Result<ModelValue> {
+    match name.as_str() {
+        "role" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.role.clone(),
+        ))),
+        "normalizedRole" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.normalized_role.clone(),
+        ))),
+        "pageIndex" => optional_usize_model_value(node.page_ordinal),
+        "level" => Ok(ModelValue::Number(heading_level(&node.normalized_role))),
+        _ => unknown_property(name),
+    }
+}
+
+fn link_property(
+    graph: &AccessibilityGraph,
+    node: &AccessibilityNode,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    match name.as_str() {
+        "role" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.role.clone(),
+        ))),
+        "normalizedRole" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.normalized_role.clone(),
+        ))),
+        "pageIndex" => optional_usize_model_value(node.page_ordinal),
+        "associatedAnnotationCount" => Ok(ModelValue::Number(usize_to_f64(
+            graph
+                .object_references
+                .iter()
+                .filter(|reference| reference.node == node.id)
+                .count(),
+        )?)),
+        "differentTargetAnnotObjectKey" => Ok(ModelValue::Bool(false)),
+        _ => unknown_property(name),
+    }
+}
+
+fn associated_node_string(
+    graph: &AccessibilityGraph,
+    node: Option<AccessibilityNodeId>,
+    normalized: bool,
+) -> ModelValue {
+    node.and_then(|node| graph.node(node))
+        .map_or(ModelValue::Null, |node| {
+            let value = if normalized {
+                node.normalized_role.clone()
+            } else {
+                node.role.clone()
+            };
+            ModelValue::String(BoundedText::unchecked(value))
+        })
+}
+
+fn parent_tags(graph: &AccessibilityGraph, node: &AccessibilityNode) -> ModelValue {
+    let mut tags = Vec::new();
+    let mut current = node.parent;
+    while let Some(parent) = current {
+        let Some(parent_node) = graph.node(parent) else {
+            break;
+        };
+        tags.push(ModelValue::String(BoundedText::unchecked(
+            parent_node.normalized_role.clone(),
+        )));
+        current = parent_node.parent;
+    }
+    ModelValue::List(tags)
+}
+
+fn semantic_node_family(role: &str) -> Option<&'static str> {
+    match role {
+        "Table" | "TR" | "TH" | "TD" | "THead" | "TBody" | "TFoot" => Some("table"),
+        "L" | "LI" | "Lbl" | "LBody" => Some("list"),
+        "H" | "H1" | "H2" | "H3" | "H4" | "H5" | "H6" => Some("heading"),
+        "Link" => Some("link"),
+        _ => None,
+    }
+}
+
+fn heading_level(role: &str) -> f64 {
+    match role {
+        "H1" => 1.0,
+        "H2" => 2.0,
+        "H3" => 3.0,
+        "H4" => 4.0,
+        "H5" => 5.0,
+        "H6" => 6.0,
+        _ => 0.0,
+    }
+}
+
+fn optional_i64_model_value(value: Option<i64>) -> Result<ModelValue> {
+    value.map_or(Ok(ModelValue::Null), |value| {
+        Ok(ModelValue::Number(i64_to_f64(value)?))
+    })
+}
+
+fn optional_usize_model_value(value: Option<usize>) -> Result<ModelValue> {
+    value.map_or(Ok(ModelValue::Null), |value| {
+        Ok(ModelValue::Number(usize_to_f64(value)?))
+    })
+}
+
+fn unknown_location() -> ObjectLocation {
+    ObjectLocation {
+        object: None,
+        offset: None,
+        path: Some(BoundedText::unchecked("root/accessibility/unknown")),
+    }
+}
+
 fn operator_text_bytes(fact: &OperatorFact) -> Result<f64> {
     match fact {
         OperatorFact::TextShow { bytes, .. } => u64_to_f64(bytes.bytes),
@@ -5860,6 +6808,7 @@ impl<'a> RuleIndex<'a> {
             ModelObjectRef::MarkedContent(model) => model.super_types(),
             ModelObjectRef::InlineImage(model) => model.super_types(),
             ModelObjectRef::ResourceUse(model) => model.super_types(),
+            ModelObjectRef::Accessibility(model) => model.super_types(),
             ModelObjectRef::Stream(model) => model.super_types(),
             ModelObjectRef::Generic(model) => model.super_types(),
         };
@@ -6264,6 +7213,13 @@ fn u64_to_f64(value: u64) -> Result<f64> {
     Ok(f64::from(bounded))
 }
 
+fn i64_to_f64(value: i64) -> Result<f64> {
+    let bounded = i32::try_from(value).map_err(|_| ValidationError::LimitExceeded {
+        limit: "numeric_property",
+    })?;
+    Ok(f64::from(bounded))
+}
+
 fn usize_to_f64(value: usize) -> Result<f64> {
     let bounded = u32::try_from(value).map_err(|_| ValidationError::LimitExceeded {
         limit: "numeric_property",
@@ -6326,9 +7282,9 @@ mod tests {
     };
     use crate::{
         BinaryOp, BoundedText, ErrorTemplate, FeatureSelection, FlavourSelection, Identifier,
-        InputName, ModelObject, ModelObjectRef, ModelValue, Parser, PdfvError, ProfileIdentity,
-        ProfileRepository, PropertyName, ResourceLimits, Rule, RuleExpr, RuleId, ValidationFlavour,
-        ValidationOptions, ValidationProfile, Validator,
+        InputName, ModelObject, ModelObjectRef, ModelValue, ObjectTypeName, Parser, PdfvError,
+        ProfileIdentity, ProfileRepository, PropertyName, ResourceLimits, Rule, RuleExpr, RuleId,
+        ValidationFlavour, ValidationOptions, ValidationProfile, Validator,
     };
 
     #[derive(Debug)]
@@ -6617,6 +7573,66 @@ trailer
         pdf
     }
 
+    fn phase18_accessibility_pdf() -> Vec<u8> {
+        let stream = b"/P <</MCID 0>> BDC BT (secret text) Tj ET EMC /Figure <</MCID 1>> BDC /Im1 Do EMC /Artifact BMC EMC";
+        let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 8 0 R /Lang (en-US) /MarkInfo << /Marked true >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /StructParents 0 /Resources << /XObject << /Im1 5 0 R >> >> /Annots [6 0 R] /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length "
+            .to_vec();
+        pdf.extend(stream.len().to_string().as_bytes());
+        pdf.extend(
+            br" >>
+stream
+",
+        );
+        pdf.extend(stream);
+        pdf.extend(
+            br"
+endstream
+endobj
+5 0 obj
+<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 0 >>
+stream
+endstream
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Link >>
+endobj
+8 0 obj
+<< /Type /StructTreeRoot /K [9 0 R 10 0 R 11 0 R 12 0 R] /RoleMap << /CustomH /H1 >> /ClassMap << /Important << >> >> /IDTree << /Names [(heading) 9 0 R] >> /ParentTree << /Nums [0 [9 0 R 10 0 R]] >> /ParentTreeNextKey 1 >>
+endobj
+9 0 obj
+<< /Type /StructElem /S /CustomH /Pg 3 0 R /K 0 /ID (heading) >>
+endobj
+10 0 obj
+<< /Type /StructElem /S /Figure /Pg 3 0 R /K << /Type /MCR /Pg 3 0 R /MCID 1 >> /Alt (chart alternative text) >>
+endobj
+11 0 obj
+<< /Type /StructElem /S /Link /Pg 3 0 R /K << /Type /OBJR /Obj 6 0 R /Pg 3 0 R >> >>
+endobj
+12 0 obj
+<< /Type /StructElem /S /L /Pg 3 0 R /K [13 0 R] >>
+endobj
+13 0 obj
+<< /Type /StructElem /S /LI /Pg 3 0 R /K [] >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+",
+        );
+        pdf
+    }
+
     fn write_fixture_bytes(target: &mut [u8], start: usize, bytes: &[u8]) {
         let end = start.saturating_add(bytes.len());
         if let Some(slot) = target.get_mut(start..end) {
@@ -6882,6 +7898,110 @@ trailer
                 .iter()
                 .any(|object| object.family.as_str() == "function")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_extract_accessibility_semantic_families_redacted() -> crate::Result<()> {
+        let options = ValidationOptions::builder()
+            .feature_selection(FeatureSelection::All)
+            .build();
+        let validator = Validator::new(options)?;
+        let report = validator.validate_reader(
+            Cursor::new(phase18_accessibility_pdf()),
+            InputName::memory(),
+        )?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+        let families = features
+            .objects
+            .iter()
+            .map(|object| object.family.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for family in [
+            "accessibilityDocument",
+            "structureElement",
+            "textChunk",
+            "imageChunk",
+            "accessibilityAnnotation",
+            "artifact",
+            "heading",
+            "list",
+            "link",
+        ] {
+            assert!(families.contains(family), "missing {family}: {families:?}");
+        }
+
+        let normalized_role = PropertyName::new("normalizedRole")?;
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "structureElement"
+                && matches!(
+                    object.properties.get(&normalized_role),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "H1"
+                )
+        }));
+        let has_alt_text = PropertyName::new("hasAltText")?;
+        let alt_text = PropertyName::new("Alt")?;
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "imageChunk"
+                && matches!(
+                    object.properties.get(&has_alt_text),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+        }));
+        assert!(features.objects.iter().all(|object| {
+            !matches!(
+                object.properties.get(&alt_text),
+                Some(crate::FeatureValue::String(value)) if value.as_str().contains("chart")
+            )
+        }));
+        let raw_text = PropertyName::new("rawText")?;
+        assert!(features.objects.iter().all(|object| {
+            !matches!(
+                object.properties.get(&raw_text),
+                Some(crate::FeatureValue::String(value)) if value.as_str().contains("secret")
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_cap_accessibility_graph_without_panicking() -> crate::Result<()> {
+        let limits = ResourceLimits {
+            max_structure_nodes: 1,
+            ..ResourceLimits::default()
+        };
+        let options = ValidationOptions::builder()
+            .resource_limits(limits)
+            .feature_selection(FeatureSelection::Families {
+                families: vec![ObjectTypeName::new("accessibilityDocument")?],
+            })
+            .build();
+        let validator = Validator::new(options)?;
+        let report = validator.validate_reader(
+            Cursor::new(phase18_accessibility_pdf()),
+            InputName::memory(),
+        )?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+        let truncated = PropertyName::new("truncated")?;
+
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "accessibilityDocument"
+                && matches!(
+                    object.properties.get(&truncated),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+        }));
         Ok(())
     }
 

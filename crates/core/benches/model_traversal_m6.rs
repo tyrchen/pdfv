@@ -177,9 +177,77 @@ fn bench_resource_traversal_1k_pages(c: &mut Criterion) {
     });
 }
 
+fn structure_tree_pdf(node_count: usize) -> Vec<u8> {
+    let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R /MarkInfo << /Marked true >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R >>
+endobj
+4 0 obj
+<< /Type /StructTreeRoot /K ["
+        .to_vec();
+    for node in 0..node_count {
+        let object = node.saturating_add(5);
+        pdf.extend(object.to_string().as_bytes());
+        pdf.extend_from_slice(b" 0 R ");
+    }
+    pdf.extend(
+        br"] /RoleMap << /CustomP /P >> /ParentTree << /Nums [] >> >>
+endobj
+",
+    );
+    for node in 0..node_count {
+        let object = node.saturating_add(5);
+        pdf.extend(object.to_string().as_bytes());
+        pdf.extend(
+            br" 0 obj
+<< /Type /StructElem /S /CustomP /Pg 3 0 R /K [] >>
+endobj
+",
+        );
+    }
+    pdf.extend(
+        br"trailer
+<< /Root 1 0 R >>
+%%EOF
+",
+    );
+    pdf
+}
+
+fn bench_structure_tree_10k_nodes(c: &mut Criterion) {
+    let fixture = structure_tree_pdf(10_000);
+    let mut limits = ResourceLimits::default();
+    limits.max_objects = 40_000;
+    limits.max_structure_nodes = 20_000;
+    let options = ValidationOptions::builder()
+        .resource_limits(limits)
+        .feature_selection(FeatureSelection::All)
+        .build();
+    let Ok(validator) = Validator::new(options) else {
+        return;
+    };
+    c.bench_function("m7_structure_tree_10k_nodes", |bench| {
+        bench.iter(|| {
+            if validator
+                .validate_reader(Cursor::new(fixture.as_slice()), InputName::memory())
+                .is_err()
+            {
+                std::process::abort();
+            }
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_model_traversal,
-    bench_resource_traversal_1k_pages
+    bench_resource_traversal_1k_pages,
+    bench_structure_tree_10k_nodes
 );
 criterion_main!(benches);

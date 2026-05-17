@@ -14,6 +14,7 @@
 //! assert_eq!(source.kind, InputKind::Memory);
 //! ```
 
+mod accessibility;
 mod content;
 mod generated_profiles;
 mod parser;
@@ -49,10 +50,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use typed_builder::TypedBuilder;
 pub use validation::{
-    AnnotationModel, CatalogModel, ContentStreamModel, FeatureSelection, FontModel,
-    InlineImageModel, InputName, LinkName, MarkedContentModel, MetadataModel, ModelGraph,
-    ModelObject, ModelObjectRef, ObjectIdentity, OperatorModel, OutputIntentModel, PageModel,
-    ResourceUseModel, Validator,
+    AccessibilityModel, AnnotationModel, CatalogModel, ContentStreamModel, FeatureSelection,
+    FontModel, InlineImageModel, InputName, LinkName, MarkedContentModel, MetadataModel,
+    ModelGraph, ModelObject, ModelObjectRef, ObjectIdentity, OperatorModel, OutputIntentModel,
+    PageModel, ResourceUseModel, Validator,
 };
 pub use xmp::{
     DetectedFlavours, FlavourClaim, FlavourDetector, NamespaceBinding, XmpIdentificationKind,
@@ -692,6 +693,18 @@ pub struct ResourceLimits {
     #[builder(default = DEFAULT_MAX_ICC_PROFILE_BYTES)]
     #[serde(default = "default_max_icc_profile_bytes")]
     pub max_icc_profile_bytes: u64,
+    /// Maximum structure elements retained in one accessibility graph.
+    #[builder(default = accessibility::default_max_structure_nodes())]
+    #[serde(default = "accessibility::default_max_structure_nodes")]
+    pub max_structure_nodes: u64,
+    /// Maximum structure-tree nesting depth.
+    #[builder(default = accessibility::default_max_structure_depth())]
+    #[serde(default = "accessibility::default_max_structure_depth")]
+    pub max_structure_depth: u32,
+    /// Maximum parent-tree or ID-tree entries traversed for accessibility facts.
+    #[builder(default = accessibility::default_max_parent_tree_entries())]
+    #[serde(default = "accessibility::default_max_parent_tree_entries")]
+    pub max_parent_tree_entries: u64,
 }
 
 impl Default for ResourceLimits {
@@ -732,6 +745,9 @@ impl Default for ResourceLimits {
             max_resource_contexts: DEFAULT_MAX_RESOURCE_CONTEXTS,
             max_embedded_font_bytes: DEFAULT_MAX_EMBEDDED_FONT_BYTES,
             max_icc_profile_bytes: DEFAULT_MAX_ICC_PROFILE_BYTES,
+            max_structure_nodes: accessibility::default_max_structure_nodes(),
+            max_structure_depth: accessibility::default_max_structure_depth(),
+            max_parent_tree_entries: accessibility::default_max_parent_tree_entries(),
         }
     }
 }

@@ -336,8 +336,12 @@ pub(crate) struct MarkedContentSpan {
     pub tag: PdfName,
     /// Nesting depth at the start operator.
     pub nesting_depth: u32,
+    /// Inline marked-content id from a property dictionary.
+    pub mcid: Option<i64>,
     /// Optional properties object.
     pub properties: Option<ObjectKey>,
+    /// Optional named property-list resource.
+    pub properties_name: Option<PdfName>,
     /// Deterministic location.
     pub location: ObjectLocation,
 }
@@ -389,6 +393,7 @@ enum Operand {
     Name(PdfName),
     Integer(i64),
     Bytes(u64),
+    Composite(Vec<u8>),
     Keyword(Vec<u8>),
 }
 
@@ -398,7 +403,9 @@ impl Operand {
             Self::Name(name) => u64::try_from(name.as_bytes().len()).unwrap_or(u64::MAX),
             Self::Integer(value) => u64::try_from(value.to_string().len()).unwrap_or(u64::MAX),
             Self::Bytes(bytes) => *bytes,
-            Self::Keyword(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            Self::Composite(bytes) | Self::Keyword(bytes) => {
+                u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+            }
         }
     }
 }
@@ -571,12 +578,16 @@ fn classify_operator(
                 None => unknown_pdf_name(limits)?,
             };
             let properties = properties_reference(operands);
+            let properties_name = properties_name(operands);
+            let mcid = inline_mcid(operands);
             if matches!(op_name, "BMC" | "BDC") {
                 *marked_depth = marked_depth.saturating_add(1);
                 summary.marked_content.push(MarkedContentSpan {
                     tag: tag.clone(),
                     nesting_depth: *marked_depth,
+                    mcid,
                     properties,
+                    properties_name,
                     location: location.clone(),
                 });
             }
@@ -727,6 +738,48 @@ fn first_name_operand(operands: &[Operand]) -> Option<PdfName> {
     })
 }
 
+fn properties_name(operands: &[Operand]) -> Option<PdfName> {
+    operands
+        .iter()
+        .filter_map(|operand| match operand {
+            Operand::Name(name) => Some(name.clone()),
+            _ => None,
+        })
+        .nth(1)
+}
+
+fn inline_mcid(operands: &[Operand]) -> Option<i64> {
+    operands.iter().find_map(|operand| match operand {
+        Operand::Composite(bytes) => parse_mcid_from_dictionary(bytes),
+        _ => None,
+    })
+}
+
+fn parse_mcid_from_dictionary(bytes: &[u8]) -> Option<i64> {
+    let needle = b"/MCID";
+    let start = bytes
+        .windows(needle.len())
+        .position(|window| window == needle)?;
+    let mut pos = start.saturating_add(needle.len());
+    while bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
+        pos = pos.saturating_add(1);
+    }
+    let number_start = pos;
+    if bytes.get(pos) == Some(&b'-') {
+        pos = pos.saturating_add(1);
+    }
+    while bytes.get(pos).is_some_and(u8::is_ascii_digit) {
+        pos = pos.saturating_add(1);
+    }
+    if pos == number_start || bytes.get(number_start..pos) == Some(&b"-"[..]) {
+        return None;
+    }
+    std::str::from_utf8(bytes.get(number_start..pos)?)
+        .ok()?
+        .parse::<i64>()
+        .ok()
+}
+
 fn properties_reference(operands: &[Operand]) -> Option<ObjectKey> {
     let [
         ..,
@@ -816,7 +869,7 @@ impl<'a> ContentTokenizer<'a> {
             }
             Some(b'[') => Token::Operand(Operand::Bytes(self.consume_composite()?)),
             Some(b'<') if self.peek_byte(1) == Some(b'<') => {
-                Token::Operand(Operand::Bytes(self.consume_composite()?))
+                Token::Operand(Operand::Composite(self.consume_composite_bytes()?))
             }
             _ => self.consume_regular_token(start)?,
         };
@@ -972,6 +1025,30 @@ impl<'a> ContentTokenizer<'a> {
 
     fn consume_composite(&mut self) -> Result<u64, ParseError> {
         let start = self.pos;
+        self.consume_composite_range()?;
+        checked_slice_len(start, self.pos, "composite operand length")
+    }
+
+    fn consume_composite_bytes(&mut self) -> Result<Vec<u8>, ParseError> {
+        let start = self.pos;
+        self.consume_composite_range()?;
+        let end = self.pos;
+        let len = checked_slice_len(start, end, "dictionary operand length")?;
+        if usize::try_from(len).unwrap_or(usize::MAX) > self.limits.max_content_stream_operand_bytes
+        {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_content_stream_operand_bytes",
+            });
+        }
+        self.bytes
+            .get(start..end)
+            .map(<[u8]>::to_vec)
+            .ok_or(ParseError::ArithmeticOverflow {
+                context: "dictionary operand bounds",
+            })
+    }
+
+    fn consume_composite_range(&mut self) -> Result<(), ParseError> {
         let mut stack = Vec::new();
         loop {
             match self.current_byte() {
@@ -989,7 +1066,7 @@ impl<'a> ContentTokenizer<'a> {
                     }
                     self.pos = self.pos.saturating_add(1);
                     if stack.is_empty() {
-                        return checked_slice_len(start, self.pos, "array operand length");
+                        return Ok(());
                     }
                 }
                 Some(b'>') if self.peek_byte(1) == Some(b'>') => {
@@ -998,7 +1075,7 @@ impl<'a> ContentTokenizer<'a> {
                     }
                     self.pos = self.pos.saturating_add(2);
                     if stack.is_empty() {
-                        return checked_slice_len(start, self.pos, "dictionary operand length");
+                        return Ok(());
                     }
                 }
                 Some(b'(') => {

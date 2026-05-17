@@ -1207,44 +1207,15 @@ fn missing_semantic_family_reason(
             path.parts().iter().any(|property| {
                 matches!(
                     property.as_str(),
-                    "operatorCount"
-                        | "markedContentCount"
-                        | "parentStandardType"
-                        | "parentStandardTypeNamespaceURL"
-                        | "parentType"
-                        | "parentNamespaceURL"
-                        | "structParentStandardType"
-                        | "structParentType"
-                        | "firstChildStandardTypeNamespaceURL"
-                        | "kidsStandardTypes"
-                        | "hasContentItems"
-                        | "containsLabels"
-                        | "ListNumbering"
-                        | "NoteType"
-                        | "orphanRefs"
-                        | "ghostRefs"
-                        | "isArtifact"
-                        | "isTaggedContent"
-                        | "parentsTags"
-                        | "isNotMappedToStandardType"
-                        | "circularMappingExist"
-                        | "roleMapToSameNamespaceTag"
-                        | "remappedStandardType"
-                        | "hasIntersection"
-                        | "numberOfColumnWithWrongRowSpan"
+                    "numberOfColumnWithWrongRowSpan"
                         | "numberOfRowWithWrongColumnSpan"
                         | "wrongColumnSpan"
-                        | "differentTargetAnnotObjectKey"
                 )
             })
         })
         .then_some("missingSemanticFamily")
         .or_else(|| {
-            matches!(
-                object_type.as_str(),
-                "undefinedOperator" | "structureElement"
-            )
-            .then_some("missingSemanticFamily")
+            matches!(object_type.as_str(), "undefinedOperator").then_some("missingSemanticFamily")
         })
 }
 

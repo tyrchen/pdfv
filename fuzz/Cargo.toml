@@ -41,3 +41,10 @@ path = "fuzz_targets/fuzz_parse_content_stream.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_structure_tree"
+path = "fuzz_targets/fuzz_structure_tree.rs"
+test = false
+doc = false
+bench = false
