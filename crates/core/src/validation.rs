@@ -15,8 +15,8 @@ use crate::{
     ObjectKey, ObjectLocation, ObjectTypeName, ParseError, ParsedDocument, Parser, PdfName,
     PdfvError, PolicyOperator, PolicyReport, PolicyRule, PolicyRuleResult, PolicySet, PolicyValue,
     ProfileReport, ProfileRepository, PropertyName, ResourceLimits, Result, Rule, RuleEvaluator,
-    RuleId, RuleOutcome, TaskDuration, UnsupportedRule, ValidationError, ValidationOptions,
-    ValidationReport, ValidationStatus,
+    RuleId, RuleOutcome, TaskDuration, UnsupportedRule, ValidationError, ValidationFlavour,
+    ValidationOptions, ValidationReport, ValidationStatus,
     content::{ContentStreamSummary, MarkedContentSpan, OperatorFact, ResourceFamily, ResourceUse},
     profile::DefaultRuleEvaluator,
     xmp::{FlavourDetector, parse_document_xmp},
@@ -1162,7 +1162,12 @@ impl ValidationSession {
 
     fn validate_profile(&mut self, profile: &crate::ValidationProfile) -> Result<ProfileReport> {
         let index = RuleIndex::new(&profile.rules);
-        let graph = ModelGraph::for_rules(&self.document, &self.limits, &profile.rules);
+        let graph = ModelGraph::for_rules(
+            &self.document,
+            &self.limits,
+            &profile.rules,
+            &profile.flavour,
+        );
         let mut evaluator = DefaultRuleEvaluator::with_graph(self.limits.clone(), &graph);
         let mut state = ProfileState::new(
             profile.identity.clone(),
@@ -2233,6 +2238,7 @@ pub struct ModelGraph<'a> {
     document: &'a ParsedDocument,
     limits: &'a ResourceLimits,
     materialized_families: BTreeSet<ObjectTypeName>,
+    active_flavour: Option<ValidationFlavour>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2290,7 +2296,12 @@ struct IccHeader {
 }
 
 impl<'a> ModelGraph<'a> {
-    fn for_rules(document: &'a ParsedDocument, limits: &'a ResourceLimits, rules: &[Rule]) -> Self {
+    fn for_rules(
+        document: &'a ParsedDocument,
+        limits: &'a ResourceLimits,
+        rules: &[Rule],
+        active_flavour: &ValidationFlavour,
+    ) -> Self {
         let registry = ModelRegistry::default_registry();
         let mut materialized_families = BTreeSet::new();
         for rule in rules
@@ -2309,6 +2320,7 @@ impl<'a> ModelGraph<'a> {
             document,
             limits,
             materialized_families,
+            active_flavour: Some(active_flavour.clone()),
         }
     }
 
@@ -2320,6 +2332,7 @@ impl<'a> ModelGraph<'a> {
                 .family_names()
                 .cloned()
                 .collect(),
+            active_flavour: None,
         }
     }
 
@@ -2358,7 +2371,11 @@ impl<'a> ModelGraph<'a> {
     }
 
     fn metadata(&self, catalog: &CatalogModel<'_>) -> Option<MetadataModel<'a>> {
-        MetadataModel::new(self.document, catalog.metadata)
+        MetadataModel::new(
+            self.document,
+            catalog.metadata,
+            self.active_flavour.as_ref(),
+        )
     }
 
     fn pages(&self, catalog: &CatalogModel<'_>, max_objects: usize) -> Result<Vec<PageModel<'a>>> {
@@ -2993,13 +3010,18 @@ pub struct MetadataModel<'a> {
     document: &'a ParsedDocument,
     key: ObjectKey,
     offset: u64,
+    active_family: Option<Identifier>,
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
 }
 
 impl<'a> MetadataModel<'a> {
-    fn new(document: &'a ParsedDocument, key: Option<ObjectKey>) -> Option<Self> {
+    fn new(
+        document: &'a ParsedDocument,
+        key: Option<ObjectKey>,
+        active_flavour: Option<&ValidationFlavour>,
+    ) -> Option<Self> {
         let key = key?;
         let object = document.objects.get(&key)?;
         if !matches!(object.object, crate::CosObject::Stream(_)) {
@@ -3009,6 +3031,7 @@ impl<'a> MetadataModel<'a> {
             document,
             key,
             offset: object.offset,
+            active_family: active_flavour.map(|flavour| flavour.family.clone()),
             object_type: ObjectTypeName::unchecked("metadata"),
             supertypes: vec![
                 ObjectTypeName::unchecked("stream"),
@@ -3039,6 +3062,7 @@ impl ModelObject for MetadataModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        let family = self.active_family.as_ref().map(Identifier::as_str);
         match name.as_str() {
             "present" | "catalogMetadata" => Ok(ModelValue::Bool(true)),
             "containsPDFAIdentification" => {
@@ -3048,19 +3072,42 @@ impl ModelObject for MetadataModel<'_> {
                 self.document,
                 "pdfua",
             ))),
-            "part" => Ok(ModelValue::Number(xmp_part(self.document).unwrap_or(0.0))),
-            "partPrefix" => Ok(ModelValue::String(BoundedText::unchecked(
-                xmp_prefix_for_claim(self.document).unwrap_or("pdfaid"),
-            ))),
-            "conformance" => Ok(
-                xmp_conformance(self.document).map_or(ModelValue::Null, |value| {
+            "part" => Ok(ModelValue::Number(
+                xmp_part(self.document, family).unwrap_or(0.0),
+            )),
+            "partPrefix" => Ok(xmp_prefix(self.document, family, XmpPrefixProperty::Part)
+                .map_or(ModelValue::Null, |prefix| {
+                    ModelValue::String(BoundedText::unchecked(prefix))
+                })),
+            "conformance" => Ok(xmp_conformance(self.document, family)
+                .map_or(ModelValue::Null, |value| {
                     ModelValue::String(BoundedText::unchecked(value))
+                })),
+            "conformancePrefix" => {
+                Ok(
+                    xmp_prefix(self.document, family, XmpPrefixProperty::Conformance)
+                        .map_or(ModelValue::Null, |prefix| {
+                            ModelValue::String(BoundedText::unchecked(prefix))
+                        }),
+                )
+            }
+            "revPrefix" => Ok(xmp_prefix(self.document, family, XmpPrefixProperty::Rev)
+                .map_or(ModelValue::Null, |prefix| {
+                    ModelValue::String(BoundedText::unchecked(prefix))
+                })),
+            "amdPrefix" | "corrPrefix" => Ok(xmp_identification_claim(self.document, family)
+                .map_or(ModelValue::Null, |claim| {
+                    let prefix = match claim.family.as_str() {
+                        "pdfua" => "pdfuaid",
+                        _ => "pdfaid",
+                    };
+                    ModelValue::String(BoundedText::unchecked(prefix))
+                })),
+            "rev" => Ok(
+                xmp_rev(self.document, family).map_or(ModelValue::Null, |rev| {
+                    ModelValue::String(BoundedText::unchecked(rev))
                 }),
             ),
-            "conformancePrefix" | "revPrefix" | "amdPrefix" | "corrPrefix" => {
-                Ok(ModelValue::String(BoundedText::unchecked("pdfaid")))
-            }
-            "rev" => Ok(ModelValue::Null),
             "declarations" => Ok(ModelValue::List(xmp_declarations(self.document))),
             _ => self.document.objects.get(&self.key).map_or_else(
                 || unknown_property(name),
@@ -6084,13 +6131,40 @@ fn contains_xmp_family(document: &ParsedDocument, family: &str) -> bool {
     })
 }
 
-fn xmp_part(document: &ParsedDocument) -> Option<f64> {
+#[derive(Clone, Copy, Debug)]
+enum XmpPrefixProperty {
+    Part,
+    Conformance,
+    Rev,
+}
+
+#[derive(Clone, Debug)]
+struct XmpClaimView<'a> {
+    family: &'a Identifier,
+    part: u32,
+    conformance: Option<&'a Identifier>,
+    part_prefix: &'a Identifier,
+    rev: Option<&'a BoundedText>,
+    rev_prefix: Option<&'a Identifier>,
+    conformance_prefix: Option<&'a Identifier>,
+}
+
+fn xmp_identification_claim<'a>(
+    document: &'a ParsedDocument,
+    expected_family: Option<&str>,
+) -> Option<XmpClaimView<'a>> {
     document.parse_facts.iter().find_map(|fact| {
         let crate::ParseFact::Xmp {
             fact:
                 crate::XmpFact::FlavourClaim {
                     family,
-                    display_flavour,
+                    part,
+                    conformance,
+                    part_prefix,
+                    display_flavour: _,
+                    rev,
+                    rev_prefix,
+                    conformance_prefix,
                     ..
                 },
             ..
@@ -6098,61 +6172,59 @@ fn xmp_part(document: &ParsedDocument) -> Option<f64> {
         else {
             return None;
         };
-        if family.as_str() == "pdfa" || family.as_str() == "pdfua" {
-            display_flavour
-                .as_str()
-                .split('-')
-                .nth(1)
-                .and_then(|value| value.chars().next())
-                .and_then(|character| character.to_digit(10))
-                .map(f64::from)
+        if family.as_str() == "wtpdf" {
+            return None;
+        }
+        if let Some(expected_family) = expected_family
+            && family.as_str() != expected_family
+        {
+            return None;
+        }
+        Some(XmpClaimView {
+            family,
+            part: *part,
+            conformance: conformance.as_ref(),
+            part_prefix,
+            rev: rev.as_ref(),
+            rev_prefix: rev_prefix.as_ref(),
+            conformance_prefix: conformance_prefix.as_ref(),
+        })
+    })
+}
+
+fn xmp_part(document: &ParsedDocument, family: Option<&str>) -> Option<f64> {
+    xmp_identification_claim(document, family).map(|claim| f64::from(claim.part))
+}
+
+fn xmp_prefix(
+    document: &ParsedDocument,
+    family: Option<&str>,
+    property: XmpPrefixProperty,
+) -> Option<String> {
+    xmp_identification_claim(document, family).and_then(|claim| match property {
+        XmpPrefixProperty::Part => Some(claim.part_prefix.as_str().to_owned()),
+        XmpPrefixProperty::Conformance => claim
+            .conformance_prefix
+            .map(|prefix| prefix.as_str().to_owned()),
+        XmpPrefixProperty::Rev => claim.rev_prefix.map(|prefix| prefix.as_str().to_owned()),
+    })
+}
+
+fn xmp_conformance(document: &ParsedDocument, family: Option<&str>) -> Option<String> {
+    xmp_identification_claim(document, family).and_then(|claim| {
+        if claim.family.as_str() == "pdfa" {
+            claim
+                .conformance
+                .map(|conformance| conformance.as_str().to_owned())
         } else {
             None
         }
     })
 }
 
-fn xmp_prefix_for_claim(document: &ParsedDocument) -> Option<&'static str> {
-    document.parse_facts.iter().find_map(|fact| {
-        let crate::ParseFact::Xmp {
-            fact: crate::XmpFact::FlavourClaim { family, .. },
-            ..
-        } = fact
-        else {
-            return None;
-        };
-        match family.as_str() {
-            "pdfa" => Some("pdfaid"),
-            "pdfua" => Some("pdfuaid"),
-            _ => None,
-        }
-    })
-}
-
-fn xmp_conformance(document: &ParsedDocument) -> Option<String> {
-    document.parse_facts.iter().find_map(|fact| {
-        let crate::ParseFact::Xmp {
-            fact:
-                crate::XmpFact::FlavourClaim {
-                    family,
-                    display_flavour,
-                    ..
-                },
-            ..
-        } = fact
-        else {
-            return None;
-        };
-        if family.as_str() != "pdfa" {
-            return None;
-        }
-        display_flavour
-            .as_str()
-            .chars()
-            .last()
-            .filter(char::is_ascii_alphabetic)
-            .map(|character| character.to_ascii_uppercase().to_string())
-    })
+fn xmp_rev(document: &ParsedDocument, family: Option<&str>) -> Option<String> {
+    xmp_identification_claim(document, family)
+        .and_then(|claim| claim.rev.map(|rev| rev.as_str().to_owned()))
 }
 
 fn xmp_declarations(document: &ParsedDocument) -> Vec<ModelValue> {

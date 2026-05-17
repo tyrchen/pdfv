@@ -54,12 +54,28 @@ pub struct FlavourClaim {
     pub kind: XmpIdentificationKind,
     /// Validation flavour represented by the claim.
     pub flavour: ValidationFlavour,
+    /// Claimed identification part.
+    pub part: NonZeroU32,
+    /// Claimed conformance level when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conformance: Option<Identifier>,
+    /// Namespace prefix used by the part property.
+    pub part_prefix: Identifier,
     /// Report-safe display spelling.
     pub display_flavour: BoundedText,
     /// Source namespace URI.
     pub namespace_uri: BoundedText,
     /// Source property name.
     pub property: Identifier,
+    /// Claimed revision value when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<BoundedText>,
+    /// Namespace prefix used by the revision property when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev_prefix: Option<Identifier>,
+    /// Namespace prefix used by the conformance property when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conformance_prefix: Option<Identifier>,
 }
 
 /// Parsed XMP packet summary.
@@ -339,11 +355,14 @@ impl<'a> PacketBuilder<'a> {
         let previous_namespaces = self.current_namespaces.clone();
         self.read_namespaces(element)?;
         let namespace = self.resolve_prefix(&prefix)?;
+        let in_pdfd_declarations = is_pdfd_declarations_context(&self.stack, &namespace, &local);
         let frame = ElementFrame {
             namespace,
+            prefix,
             local,
             text: String::new(),
             previous_namespaces,
+            in_pdfd_declarations,
         };
         self.capture_attr_properties(element)?;
         self.stack.push(frame);
@@ -403,8 +422,14 @@ impl<'a> PacketBuilder<'a> {
         for claim in &identification {
             self.facts.push(XmpFact::FlavourClaim {
                 family: claim.flavour.family.clone(),
+                part: claim.part.get(),
+                conformance: claim.conformance.clone(),
+                part_prefix: claim.part_prefix.clone(),
                 display_flavour: claim.display_flavour.clone(),
                 namespace_uri: claim.namespace_uri.clone(),
+                rev: claim.rev.clone(),
+                rev_prefix: claim.rev_prefix.clone(),
+                conformance_prefix: claim.conformance_prefix.clone(),
             });
         }
         let namespaces = self
@@ -478,9 +503,14 @@ impl<'a> PacketBuilder<'a> {
                 let value = String::from_utf8_lossy(attr.value.as_ref()).into_owned();
                 let frame = ElementFrame {
                     namespace,
+                    prefix,
                     local,
                     text: String::new(),
                     previous_namespaces: BTreeMap::new(),
+                    in_pdfd_declarations: self
+                        .stack
+                        .last()
+                        .is_some_and(|frame| frame.in_pdfd_declarations),
                 };
                 self.insert_property(&frame, value.trim())?;
             }
@@ -489,12 +519,18 @@ impl<'a> PacketBuilder<'a> {
     }
 
     fn insert_property(&mut self, frame: &ElementFrame, value: &str) -> Result<()> {
+        if self.properties.len() >= self.limits.max_xmp_properties {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_xmp_properties",
+            }
+            .into());
+        }
         let text = BoundedText::new(value.to_owned(), self.limits.max_xmp_text_bytes)?;
-        if self.properties.iter().any(|property| {
-            property.namespace == frame.namespace
-                && property.local == frame.local
-                && property.value == text
-        }) {
+        if self
+            .properties
+            .iter()
+            .any(|property| property.namespace == frame.namespace && property.local == frame.local)
+        {
             self.facts.push(XmpFact::DuplicateClaim {
                 namespace_uri: frame.namespace.clone(),
                 property: frame.local.clone(),
@@ -502,8 +538,10 @@ impl<'a> PacketBuilder<'a> {
         }
         self.properties.push(XmpProperty {
             namespace: frame.namespace.clone(),
+            prefix: frame.prefix.clone(),
             local: frame.local.clone(),
             value: text,
+            in_pdfd_declarations: frame.in_pdfd_declarations,
         });
         Ok(())
     }
@@ -584,15 +622,18 @@ impl<'a> PacketBuilder<'a> {
             return Ok(None);
         };
         let part_number = parse_nonzero_part(part.value.as_str(), "PDF/A part")?;
-        let conformance = self
-            .property(PDF_A_ID_NS, "conformance")
-            .map_or("none", |property| property.value.as_str())
-            .to_ascii_lowercase();
-        let flavour = ValidationFlavour::new("pdfa", part_number, conformance)?;
+        let conformance = self.property(PDF_A_ID_NS, "conformance");
+        let flavour_conformance = conformance.map_or_else(
+            || String::from("none"),
+            |property| property.value.as_str().to_ascii_lowercase(),
+        );
+        let flavour = ValidationFlavour::new("pdfa", part_number, flavour_conformance)?;
         Ok(Some(claim_from_property(
             XmpIdentificationKind::PdfA,
             &flavour,
             part,
+            conformance,
+            self.property(PDF_A_ID_NS, "rev"),
         )?))
     }
 
@@ -611,16 +652,16 @@ impl<'a> PacketBuilder<'a> {
             XmpIdentificationKind::PdfUa,
             &flavour,
             part,
+            None,
+            self.property(PDF_UA_ID_NS, "rev"),
         )?))
     }
 
     fn wtpdf_claims(&self) -> Result<Vec<FlavourClaim>> {
         let mut claims = Vec::new();
-        for property in self
-            .properties
-            .iter()
-            .filter(|property| property.namespace.as_str() == PDF_D_NS)
-        {
+        for property in self.properties.iter().filter(|property| {
+            property.namespace.as_str() == PDF_D_NS && property.in_pdfd_declarations
+        }) {
             let conformance = match property.value.as_str() {
                 WTPDF_ACCESSIBILITY_DECLARATION => Some("accessibility"),
                 WTPDF_REUSE_DECLARATION => Some("reuse"),
@@ -632,6 +673,8 @@ impl<'a> PacketBuilder<'a> {
                     XmpIdentificationKind::Wtpdf,
                     &flavour,
                     property,
+                    None,
+                    None,
                 )?);
             }
         }
@@ -642,16 +685,20 @@ impl<'a> PacketBuilder<'a> {
 #[derive(Clone, Debug)]
 struct ElementFrame {
     namespace: BoundedText,
+    prefix: Identifier,
     local: Identifier,
     text: String,
     previous_namespaces: BTreeMap<String, BoundedText>,
+    in_pdfd_declarations: bool,
 }
 
 #[derive(Clone, Debug)]
 struct XmpProperty {
     namespace: BoundedText,
+    prefix: Identifier,
     local: Identifier,
     value: BoundedText,
+    in_pdfd_declarations: bool,
 }
 
 fn catalog_xmp_bytes(
@@ -721,7 +768,7 @@ pub(crate) fn parse_document_xmp(
     match parser.parse_packet(object, &bytes, limits) {
         Ok(packet) => {
             warnings.extend(packet_warnings(&packet)?);
-            let parse_facts = xmp_parse_facts(&packet)?;
+            let parse_facts = xmp_parse_facts(&packet, limits.max_parse_facts, &mut warnings)?;
             Ok(XmpParseResult {
                 packet: Some(packet),
                 parse_facts,
@@ -800,10 +847,21 @@ fn compatibility_group(flavour: &ValidationFlavour) -> &'static str {
     }
 }
 
-fn xmp_parse_facts(packet: &XmpPacket) -> Result<Vec<ParseFact>> {
+fn xmp_parse_facts(
+    packet: &XmpPacket,
+    max_parse_facts: usize,
+    warnings: &mut Vec<ValidationWarning>,
+) -> Result<Vec<ParseFact>> {
+    let retained = packet.facts.len().min(max_parse_facts);
+    if packet.facts.len() > retained {
+        warnings.push(ValidationWarning::ParseFactCapReached {
+            cap: max_parse_facts,
+        });
+    }
     packet
         .facts
         .iter()
+        .take(retained)
         .cloned()
         .map(|fact| {
             Ok(ParseFact::Xmp {
@@ -840,14 +898,35 @@ fn claim_from_property(
     kind: XmpIdentificationKind,
     flavour: &ValidationFlavour,
     property: &XmpProperty,
+    conformance: Option<&XmpProperty>,
+    rev: Option<&XmpProperty>,
 ) -> Result<FlavourClaim> {
     Ok(FlavourClaim {
         kind,
         flavour: flavour.clone(),
+        part: flavour.part,
+        conformance: conformance
+            .map(|property| Identifier::new(property.value.as_str().to_ascii_uppercase()))
+            .transpose()?,
+        part_prefix: property.prefix.clone(),
         display_flavour: display_flavour(flavour)?,
         namespace_uri: property.namespace.clone(),
         property: property.local.clone(),
+        rev: rev.map(|property| property.value.clone()),
+        rev_prefix: rev.map(|property| property.prefix.clone()),
+        conformance_prefix: conformance.map(|property| property.prefix.clone()),
     })
+}
+
+fn is_pdfd_declarations_context(
+    stack: &[ElementFrame],
+    namespace: &BoundedText,
+    local: &Identifier,
+) -> bool {
+    (namespace.as_str() == PDF_D_NS && local.as_str() == "declarations")
+        || stack.iter().any(|frame| {
+            frame.namespace.as_str() == PDF_D_NS && frame.local.as_str() == "declarations"
+        })
 }
 
 fn namespace_decl_prefix(key: &[u8]) -> Option<String> {
@@ -981,7 +1060,9 @@ mod tests {
     <rdf:Description xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"
                      xmlns:pdfd="http://pdfa.org/declarations/"
                      pdfuaid:part="2">
-      <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#reuse1.0</pdfd:conformsTo>
+      <pdfd:declarations>
+        <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#reuse1.0</pdfd:conformsTo>
+      </pdfd:declarations>
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>"#;
@@ -1003,8 +1084,10 @@ mod tests {
         let xml = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description xmlns:pdfd="http://pdfa.org/declarations/">
-      <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#reuse1.0</pdfd:conformsTo>
-      <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#accessibility1.0</pdfd:conformsTo>
+      <pdfd:declarations>
+        <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#reuse1.0</pdfd:conformsTo>
+        <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#accessibility1.0</pdfd:conformsTo>
+      </pdfd:declarations>
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>"#;
@@ -1037,6 +1120,26 @@ mod tests {
         let packet = XmpParser.parse_packet(key(), xml, &ResourceLimits::default())?;
 
         assert_eq!(packet.identification.len(), 1);
+        assert!(packet.facts.iter().any(|fact| matches!(
+            fact,
+            XmpFact::DuplicateClaim { property, .. } if property.as_str() == "part"
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_report_conflicting_duplicate_identification_claims() -> crate::Result<()> {
+        let xml = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+                     pdfaid:part="1"/>
+    <rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+                     pdfaid:part="2"/>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+
+        let packet = XmpParser.parse_packet(key(), xml, &ResourceLimits::default())?;
+
         assert!(packet.facts.iter().any(|fact| matches!(
             fact,
             XmpFact::DuplicateClaim { property, .. } if property.as_str() == "part"
@@ -1110,6 +1213,30 @@ mod tests {
             result,
             Err(crate::PdfvError::Parse(crate::ParseError::LimitExceeded {
                 limit: "max_xmp_processing_instructions"
+            }))
+        ));
+    }
+
+    #[test]
+    fn test_should_enforce_xmp_property_cap() {
+        let limits = ResourceLimits {
+            max_xmp_properties: 1,
+            ..ResourceLimits::default()
+        };
+        let xml = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+                     pdfaid:part="1"
+                     pdfaid:conformance="B"/>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+
+        let result = XmpParser.parse_packet(key(), xml, &limits);
+
+        assert!(matches!(
+            result,
+            Err(crate::PdfvError::Parse(crate::ParseError::LimitExceeded {
+                limit: "max_xmp_properties"
             }))
         ));
     }
