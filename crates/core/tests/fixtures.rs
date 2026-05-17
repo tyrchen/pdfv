@@ -143,6 +143,37 @@ fn test_should_auto_select_multiple_profiles_from_xmp_claims() -> Result<(), Box
 }
 
 #[test]
+fn test_should_auto_select_multiple_wtpdf_declaration_profiles() -> Result<(), Box<dyn Error>> {
+    let report = Validator::new(
+        ValidationOptions::builder()
+            .flavour(FlavourSelection::Auto { default: None })
+            .build(),
+    )?
+    .validate_reader(
+        Cursor::new(pdf_with_metadata(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdfd="http://pdfa.org/declarations/">
+      <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#reuse1.0</pdfd:conformsTo>
+      <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#accessibility1.0</pdfd:conformsTo>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>"#,
+        )),
+        InputName::memory(),
+    )?;
+    let profile_ids = report
+        .profile_reports
+        .iter()
+        .map(|profile| profile.profile.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(profile_ids.contains(&"verapdf-wtpdf-1-0-reuse"));
+    assert!(profile_ids.contains(&"verapdf-wtpdf-1-0-accessibility"));
+    Ok(())
+}
+
+#[test]
 fn test_should_warn_and_fallback_for_malformed_xmp() -> Result<(), Box<dyn Error>> {
     let report = Validator::new(
         ValidationOptions::builder()

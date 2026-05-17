@@ -79,6 +79,7 @@ const DEFAULT_MAX_XMP_DEPTH: u32 = 32;
 const DEFAULT_MAX_XMP_ATTRIBUTES: usize = 64;
 const DEFAULT_MAX_XMP_NAMESPACES: usize = 256;
 const DEFAULT_MAX_XMP_TEXT_BYTES: usize = 4096;
+const DEFAULT_MAX_XMP_PROCESSING_INSTRUCTIONS: u64 = 16;
 
 /// Result alias for pdfv library operations.
 pub type Result<T> = std::result::Result<T, PdfvError>;
@@ -638,6 +639,10 @@ pub struct ResourceLimits {
     #[builder(default = DEFAULT_MAX_XMP_TEXT_BYTES)]
     #[serde(default = "default_max_xmp_text_bytes")]
     pub max_xmp_text_bytes: usize,
+    /// Maximum processing instructions accepted in one XMP packet.
+    #[builder(default = DEFAULT_MAX_XMP_PROCESSING_INSTRUCTIONS)]
+    #[serde(default = "default_max_xmp_processing_instructions")]
+    pub max_xmp_processing_instructions: u64,
     /// Maximum content-stream operators parsed per stream.
     #[builder(default = content::default_max_content_stream_ops())]
     #[serde(default = "content::default_max_content_stream_ops")]
@@ -708,6 +713,7 @@ impl Default for ResourceLimits {
             max_xmp_attributes: DEFAULT_MAX_XMP_ATTRIBUTES,
             max_xmp_namespaces: DEFAULT_MAX_XMP_NAMESPACES,
             max_xmp_text_bytes: DEFAULT_MAX_XMP_TEXT_BYTES,
+            max_xmp_processing_instructions: DEFAULT_MAX_XMP_PROCESSING_INSTRUCTIONS,
             max_content_stream_ops: content::default_max_content_stream_ops(),
             max_content_stream_operand_count: content::default_max_content_stream_operand_count(),
             max_content_stream_operand_bytes: content::default_max_content_stream_operand_bytes(),
@@ -778,6 +784,10 @@ fn default_max_xmp_namespaces() -> usize {
 
 fn default_max_xmp_text_bytes() -> usize {
     DEFAULT_MAX_XMP_TEXT_BYTES
+}
+
+fn default_max_xmp_processing_instructions() -> u64 {
+    DEFAULT_MAX_XMP_PROCESSING_INSTRUCTIONS
 }
 
 /// Maximum displayed assertion failures per rule.
@@ -1924,6 +1934,13 @@ pub enum XmpFact {
         display_flavour: BoundedText,
         /// Namespace URI that supplied the claim.
         namespace_uri: BoundedText,
+    },
+    /// Duplicate identification property was encountered.
+    DuplicateClaim {
+        /// Source namespace URI.
+        namespace_uri: BoundedText,
+        /// Duplicate property name.
+        property: Identifier,
     },
     /// XMP XML was malformed or unsupported.
     Malformed {
@@ -3489,6 +3506,14 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
             family.as_str(),
             display_flavour.as_str(),
             namespace_uri.as_str()
+        ),
+        XmpFact::DuplicateClaim {
+            namespace_uri,
+            property,
+        } => format!(
+            "duplicateClaim namespaceUri={} property={}",
+            namespace_uri.as_str(),
+            property.as_str()
         ),
         XmpFact::Malformed { reason } => format!("malformed reason={}", reason.as_str()),
         XmpFact::HostileXmlRejected { reason } => {

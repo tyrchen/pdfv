@@ -1,6 +1,10 @@
 //! Bounded XMP packet extraction, identification parsing, and flavour detection.
 
-use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU32,
+    sync::Arc,
+};
 
 use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
@@ -239,9 +243,10 @@ struct PacketBuilder<'a> {
     limits: &'a ResourceLimits,
     depth: u32,
     elements: u64,
+    processing_instructions: u64,
     namespaces: BTreeMap<String, BoundedText>,
     current_namespaces: BTreeMap<String, BoundedText>,
-    properties: BTreeMap<(String, String), XmpProperty>,
+    properties: Vec<XmpProperty>,
     stack: Vec<ElementFrame>,
     facts: Vec<XmpFact>,
     saw_packet_wrapper: bool,
@@ -255,9 +260,10 @@ impl<'a> PacketBuilder<'a> {
             limits,
             depth: 0,
             elements: 0,
+            processing_instructions: 0,
             namespaces: BTreeMap::new(),
             current_namespaces: BTreeMap::new(),
-            properties: BTreeMap::new(),
+            properties: Vec::new(),
             stack: Vec::with_capacity(usize::try_from(limits.max_xmp_depth).unwrap_or(0)),
             facts: Vec::new(),
             saw_packet_wrapper: false,
@@ -283,7 +289,16 @@ impl<'a> PacketBuilder<'a> {
                     self.text(decoded.as_ref())?;
                 }
                 Event::End(_) => self.end()?,
-                Event::Decl(_) | Event::PI(_) | Event::Comment(_) | Event::CData(_) => {}
+                Event::PI(instruction) => self.processing_instruction(&instruction)?,
+                Event::CData(text) => {
+                    let decoded =
+                        text.decode()
+                            .map_err(|error| crate::ProfileError::InvalidXml {
+                                reason: bounded_reason(error.to_string()),
+                            })?;
+                    self.text(decoded.as_ref())?;
+                }
+                Event::Decl(_) | Event::Comment(_) => {}
                 Event::DocType(_) | Event::GeneralRef(_) => {
                     return Err(crate::ProfileError::InvalidXml {
                         reason: BoundedText::unchecked(
@@ -321,9 +336,6 @@ impl<'a> PacketBuilder<'a> {
             .into());
         }
         let (prefix, local) = split_xml_name(element.name().as_ref())?;
-        if local.as_str() == "xmpmeta" || local.as_str() == "RDF" {
-            self.saw_packet_wrapper = true;
-        }
         let previous_namespaces = self.current_namespaces.clone();
         self.read_namespaces(element)?;
         let namespace = self.resolve_prefix(&prefix)?;
@@ -478,17 +490,49 @@ impl<'a> PacketBuilder<'a> {
 
     fn insert_property(&mut self, frame: &ElementFrame, value: &str) -> Result<()> {
         let text = BoundedText::new(value.to_owned(), self.limits.max_xmp_text_bytes)?;
-        self.properties.insert(
-            (
-                frame.namespace.as_str().to_owned(),
-                frame.local.as_str().to_owned(),
-            ),
-            XmpProperty {
-                namespace: frame.namespace.clone(),
-                local: frame.local.clone(),
-                value: text,
-            },
-        );
+        if self.properties.iter().any(|property| {
+            property.namespace == frame.namespace
+                && property.local == frame.local
+                && property.value == text
+        }) {
+            self.facts.push(XmpFact::DuplicateClaim {
+                namespace_uri: frame.namespace.clone(),
+                property: frame.local.clone(),
+            });
+        }
+        self.properties.push(XmpProperty {
+            namespace: frame.namespace.clone(),
+            local: frame.local.clone(),
+            value: text,
+        });
+        Ok(())
+    }
+
+    fn processing_instruction(
+        &mut self,
+        instruction: &quick_xml::events::BytesPI<'_>,
+    ) -> Result<()> {
+        self.processing_instructions =
+            self.processing_instructions
+                .checked_add(1)
+                .ok_or(ParseError::LimitExceeded {
+                    limit: "max_xmp_processing_instructions",
+                })?;
+        if self.processing_instructions > self.limits.max_xmp_processing_instructions {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_xmp_processing_instructions",
+            }
+            .into());
+        }
+        if instruction.content().len() > self.limits.max_xmp_text_bytes {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_xmp_text_bytes",
+            }
+            .into());
+        }
+        if instruction.target() == b"xpacket" {
+            self.saw_packet_wrapper = true;
+        }
         Ok(())
     }
 
@@ -516,8 +560,9 @@ impl<'a> PacketBuilder<'a> {
     }
 
     fn property(&self, namespace: &str, local: &str) -> Option<&XmpProperty> {
-        self.properties
-            .get(&(namespace.to_owned(), local.to_owned()))
+        self.properties.iter().find(|property| {
+            property.namespace.as_str() == namespace && property.local.as_str() == local
+        })
     }
 
     fn claims(&self) -> Result<Vec<FlavourClaim>> {
@@ -529,6 +574,8 @@ impl<'a> PacketBuilder<'a> {
             claims.push(claim);
         }
         claims.extend(self.wtpdf_claims()?);
+        let mut seen = BTreeSet::new();
+        claims.retain(|claim| seen.insert(claim.display_flavour.as_str().to_owned()));
         Ok(claims)
     }
 
@@ -571,7 +618,7 @@ impl<'a> PacketBuilder<'a> {
         let mut claims = Vec::new();
         for property in self
             .properties
-            .values()
+            .iter()
             .filter(|property| property.namespace.as_str() == PDF_D_NS)
         {
             let conformance = match property.value.as_str() {
@@ -776,6 +823,9 @@ fn packet_warnings(packet: &XmpPacket) -> Result<Vec<ValidationWarning>> {
             XmpFact::Malformed { .. } | XmpFact::HostileXmlRejected { .. } => {
                 Some("XMP metadata has parser warnings")
             }
+            XmpFact::DuplicateClaim { .. } => {
+                Some("XMP metadata contains duplicate identification claims")
+            }
             XmpFact::PacketParsed { .. } | XmpFact::FlavourClaim { .. } => None,
         })
         .map(|message| {
@@ -949,6 +999,52 @@ mod tests {
     }
 
     #[test]
+    fn test_should_preserve_multiple_wtpdf_declarations() -> crate::Result<()> {
+        let xml = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdfd="http://pdfa.org/declarations/">
+      <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#reuse1.0</pdfd:conformsTo>
+      <pdfd:conformsTo>http://pdfa.org/declarations/wtpdf#accessibility1.0</pdfd:conformsTo>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+
+        let packet = XmpParser.parse_packet(key(), xml, &ResourceLimits::default())?;
+        let flavours = packet
+            .identification
+            .iter()
+            .map(|claim| claim.display_flavour.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(flavours.contains(&"wtpdf-1-0-reuse"));
+        assert!(flavours.contains(&"wtpdf-1-0-accessibility"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_report_duplicate_identification_claims() -> crate::Result<()> {
+        let xml = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+                     pdfaid:part="1"
+                     pdfaid:conformance="B"/>
+    <rdf:Description xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+                     pdfaid:part="1"
+                     pdfaid:conformance="B"/>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+
+        let packet = XmpParser.parse_packet(key(), xml, &ResourceLimits::default())?;
+
+        assert_eq!(packet.identification.len(), 1);
+        assert!(packet.facts.iter().any(|fact| matches!(
+            fact,
+            XmpFact::DuplicateClaim { property, .. } if property.as_str() == "part"
+        )));
+        Ok(())
+    }
+
+    #[test]
     fn test_should_restore_scoped_namespace_bindings() -> crate::Result<()> {
         let xml = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -994,6 +1090,26 @@ mod tests {
             result,
             Err(crate::PdfvError::Parse(crate::ParseError::LimitExceeded {
                 limit: "max_xmp_bytes"
+            }))
+        ));
+    }
+
+    #[test]
+    fn test_should_enforce_processing_instruction_cap() {
+        let limits = ResourceLimits {
+            max_xmp_processing_instructions: 1,
+            ..ResourceLimits::default()
+        };
+        let xml = br#"<?xpacket begin=""?>
+<?xpacket end="w"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"/>"#;
+
+        let result = XmpParser.parse_packet(key(), xml, &limits);
+
+        assert!(matches!(
+            result,
+            Err(crate::PdfvError::Parse(crate::ParseError::LimitExceeded {
+                limit: "max_xmp_processing_instructions"
             }))
         ));
     }
