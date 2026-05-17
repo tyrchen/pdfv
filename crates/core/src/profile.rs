@@ -558,18 +558,34 @@ impl RuleOutcome {
 
 /// Default bounded rule evaluator.
 #[derive(Clone, Debug)]
-pub struct DefaultRuleEvaluator {
+pub struct DefaultRuleEvaluator<'a> {
     limits: ResourceLimits,
     instructions: u64,
+    graph: Option<&'a crate::validation::ModelGraph<'a>>,
 }
 
-impl DefaultRuleEvaluator {
+impl<'a> DefaultRuleEvaluator<'a> {
     /// Creates an evaluator.
     #[must_use]
+    #[cfg(test)]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {
             limits,
             instructions: 0,
+            graph: None,
+        }
+    }
+
+    /// Creates an evaluator that can follow validation model links.
+    #[must_use]
+    pub(crate) fn with_graph(
+        limits: ResourceLimits,
+        graph: &'a crate::validation::ModelGraph<'a>,
+    ) -> Self {
+        Self {
+            limits,
+            instructions: 0,
+            graph: Some(graph),
         }
     }
 
@@ -600,7 +616,7 @@ impl DefaultRuleEvaluator {
             RuleExpr::Number { value } => Ok(ModelValue::Number(*value)),
             RuleExpr::String { value } => Ok(ModelValue::String(value.clone())),
             RuleExpr::Null => Ok(ModelValue::Null),
-            RuleExpr::Property { path } => property(object, path),
+            RuleExpr::Property { path } => self.property(object, path),
             RuleExpr::Unary { op, expr } => {
                 let value = self.eval(object, expr, depth.saturating_add(1))?;
                 match (op, value) {
@@ -817,9 +833,103 @@ impl DefaultRuleEvaluator {
         };
         self.eval(object, first, depth.saturating_add(1))
     }
+    fn property(
+        &self,
+        object: &crate::ModelObjectRef<'a>,
+        path: &PropertyPath,
+    ) -> Result<ModelValue> {
+        if path.parts().is_empty() {
+            return Err(ProfileError::UnknownProperty {
+                property: BoundedText::unchecked("empty"),
+            }
+            .into());
+        }
+        let Some((terminal, links)) = path.parts().split_last() else {
+            return Err(ProfileError::UnknownProperty {
+                property: BoundedText::unchecked("empty"),
+            }
+            .into());
+        };
+        if links.is_empty() {
+            return object.property(terminal);
+        }
+        let Some(graph) = self.graph else {
+            return Err(ProfileError::UnsupportedRule {
+                reason: BoundedText::unchecked("nested property path requires validation graph"),
+            }
+            .into());
+        };
+        let mut current = vec![object.clone()];
+        let registry = crate::validation::ModelRegistry::default_registry();
+        let max_objects = usize::try_from(self.limits.max_objects).unwrap_or(usize::MAX);
+        for link in links {
+            let mut next = Vec::new();
+            for candidate in &current {
+                let Some(target) = registry.link_target(&candidate.object_type(), link) else {
+                    return Err(ProfileError::UnsupportedRule {
+                        reason: BoundedText::new(
+                            format!(
+                                "unknown validation model link {} on {}",
+                                link.as_str(),
+                                candidate.object_type().as_str()
+                            ),
+                            512,
+                        )?,
+                    }
+                    .into());
+                };
+                if !candidate
+                    .links()
+                    .iter()
+                    .any(|name| name.as_str() == link.as_str())
+                {
+                    return Err(ProfileError::UnsupportedRule {
+                        reason: BoundedText::new(
+                            format!(
+                                "unmaterialized validation model link {} on {}",
+                                link.as_str(),
+                                candidate.object_type().as_str()
+                            ),
+                            512,
+                        )?,
+                    }
+                    .into());
+                }
+                for linked in candidate.linked_objects(graph, max_objects)? {
+                    if linked.object_type() == target {
+                        next.push(linked);
+                    }
+                }
+            }
+            if next.len() > max_objects {
+                return Err(ProfileError::BudgetExceeded {
+                    budget: "linked_objects",
+                }
+                .into());
+            }
+            current = next;
+        }
+        if current.is_empty() {
+            return Ok(ModelValue::Null);
+        }
+        let mut values = Vec::with_capacity(current.len());
+        for candidate in current {
+            values.push(candidate.property(terminal)?);
+        }
+        if values.len() == 1 {
+            values.into_iter().next().ok_or_else(|| {
+                ProfileError::BudgetExceeded {
+                    budget: "linked_objects",
+                }
+                .into()
+            })
+        } else {
+            Ok(ModelValue::List(values))
+        }
+    }
 }
 
-impl RuleEvaluator for DefaultRuleEvaluator {
+impl RuleEvaluator for DefaultRuleEvaluator<'_> {
     fn evaluate(&mut self, object: crate::ModelObjectRef<'_>, rule: &Rule) -> Result<RuleOutcome> {
         self.instructions = 0;
         let value = self.eval(&object, &rule.test, 0)?;
@@ -829,28 +939,6 @@ impl RuleEvaluator for DefaultRuleEvaluator {
             Ok(RuleOutcome::Failed)
         }
     }
-}
-
-fn property(object: &crate::ModelObjectRef<'_>, path: &PropertyPath) -> Result<ModelValue> {
-    if path.parts().is_empty() {
-        return Err(ProfileError::UnknownProperty {
-            property: BoundedText::unchecked("empty"),
-        }
-        .into());
-    }
-    if path.parts().len() > 1 {
-        return Err(ProfileError::UnsupportedRule {
-            reason: BoundedText::unchecked("nested property path has no bound model link"),
-        }
-        .into());
-    }
-    let name = path
-        .parts()
-        .first()
-        .ok_or_else(|| ProfileError::UnknownProperty {
-            property: BoundedText::unchecked("empty"),
-        })?;
-    object.property(name)
 }
 
 fn expect_bool(value: &ModelValue) -> Result<bool> {
@@ -997,23 +1085,8 @@ fn unsupported_property_reason(
     let mut properties = Vec::new();
     collect_property_paths(expr, &mut properties);
     for property in properties {
-        let Some(first) = property.parts().first() else {
-            return Ok(Some(BoundedText::unchecked("empty model property path")));
-        };
-        if property.parts().len() > 1 {
-            return Ok(Some(BoundedText::unchecked(
-                "nested property path has no bound model link",
-            )));
-        }
-        if !registry.has_family_property(object_type, first) {
-            return Ok(Some(BoundedText::new(
-                format!(
-                    "unknown validation model property {} on {}",
-                    first.as_str(),
-                    object_type.as_str()
-                ),
-                512,
-            )?));
+        if let Some(reason) = registry.unsupported_property_path_reason(object_type, property)? {
+            return Ok(Some(reason));
         }
     }
     Ok(None)
@@ -2324,16 +2397,10 @@ impl<'a> ExprParser<'a> {
                 args,
             });
         }
-        let parts = vec![property_name_from_source(&first)?];
-        if self.consume(".") {
-            let _member = self.parse_identifier()?;
-            return Ok(RuleExpr::Unsupported {
-                fragment: BoundedText::new(self.input, MAX_PROFILE_STRING_BYTES)
-                    .map_err(|_| BoundedText::unchecked("expression exceeds limit"))?,
-                reason: BoundedText::unchecked(
-                    "nested property path has no bound model link in this phase",
-                ),
-            });
+        let mut parts = vec![property_name_from_source(&first)?];
+        while self.consume(".") {
+            let member = self.parse_identifier()?;
+            parts.push(property_name_from_source(&member)?);
         }
         Ok(RuleExpr::Property {
             path: PropertyPath::new(parts),
@@ -2389,6 +2456,9 @@ impl From<CosObject> for ModelValue {
     fn from(value: CosObject) -> Self {
         match value {
             CosObject::Boolean(value) => Self::Bool(value),
+            CosObject::Integer(value) => {
+                i32::try_from(value).map_or(Self::Null, |bounded| Self::Number(f64::from(bounded)))
+            }
             CosObject::Real(value) => Self::Number(value),
             CosObject::Name(name) => Self::String(BoundedText::unchecked(
                 String::from_utf8_lossy(name.as_bytes()).into_owned(),
@@ -2397,11 +2467,10 @@ impl From<CosObject> for ModelValue {
                 String::from_utf8_lossy(value.as_bytes()).into_owned(),
             )),
             CosObject::Reference(value) => Self::ObjectKey(value),
-            CosObject::Null
-            | CosObject::Integer(_)
-            | CosObject::Array(_)
-            | CosObject::Dictionary(_)
-            | CosObject::Stream(_) => Self::Null,
+            CosObject::Array(values) => {
+                Self::List(values.into_iter().map(ModelValue::from).collect())
+            }
+            CosObject::Null | CosObject::Dictionary(_) | CosObject::Stream(_) => Self::Null,
         }
     }
 }
@@ -2978,11 +3047,45 @@ trailer
     }
 
     #[test]
-    fn test_should_import_nested_property_paths_as_static_unsupported() -> crate::Result<()> {
+    fn test_should_parse_nested_property_paths() -> crate::Result<()> {
         let expr = super::parse_imported_expr("metadata.schema.part == 1")
             .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?;
 
-        assert!(matches!(expr, super::RuleExpr::Unsupported { .. }));
+        assert!(matches!(expr, super::RuleExpr::Binary { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_evaluate_nested_property_path_through_model_link() -> crate::Result<()> {
+        let profile = super::ValidationProfile {
+            identity: crate::ProfileIdentity {
+                id: crate::Identifier::new("nested-path")?,
+                name: crate::BoundedText::new("nested path", 64)?,
+                version: None,
+            },
+            flavour: super::pdfa_1b_flavour()?,
+            rules: vec![super::Rule {
+                id: crate::RuleId(crate::Identifier::new("catalog-no-metadata")?),
+                object_type: super::ObjectTypeName::new("document")?,
+                deferred: false,
+                tags: Vec::new(),
+                description: crate::BoundedText::new("catalog has no metadata", 64)?,
+                test: super::parse_imported_expr("catalog.hasMetadata == false")
+                    .map_err(|reason| crate::ProfileError::UnsupportedRule { reason })?,
+                error: super::ErrorTemplate {
+                    message: crate::BoundedText::new("catalog has metadata", 64)?,
+                },
+                references: Vec::new(),
+            }],
+        };
+        let validator = Validator::with_profiles(
+            crate::ValidationOptions::default(),
+            Arc::new(StaticRepo(profile)),
+        )?;
+        let report =
+            validator.validate_reader(Cursor::new(MINIMAL_PDF), crate::InputName::memory())?;
+
+        assert_eq!(report.status, crate::ValidationStatus::Valid);
         Ok(())
     }
 

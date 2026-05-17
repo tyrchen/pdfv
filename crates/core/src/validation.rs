@@ -21,7 +21,20 @@ use crate::{
     xmp::{FlavourDetector, parse_document_xmp},
 };
 
-const CATALOG_DIRECT_PROPERTIES: &[&str] = &["Type", "Metadata", "Pages", "OutputIntents"];
+const CATALOG_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Metadata",
+    "Pages",
+    "OutputIntents",
+    "AcroForm",
+    "StructTreeRoot",
+    "OCProperties",
+    "Lang",
+    "Perms",
+    "Outlines",
+    "Names",
+    "Dests",
+];
 const METADATA_DIRECT_PROPERTIES: &[&str] = &["Type", "Subtype", "Filter", "Length"];
 const PAGE_DIRECT_PROPERTIES: &[&str] = &["Type", "Parent", "Contents", "Resources", "Annots"];
 const FONT_DIRECT_PROPERTIES: &[&str] = &[
@@ -463,7 +476,12 @@ const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
 ];
 
 const EMPTY_LINK_NAMES: &[(&str, &str)] = &[];
-const DOCUMENT_LINKS: &[(&str, &str)] = &[("catalog", "catalog"), ("streams", "stream")];
+const DOCUMENT_LINKS: &[(&str, &str)] = &[
+    ("catalog", "catalog"),
+    ("streams", "stream"),
+    ("security", "security"),
+    ("signatures", "signature"),
+];
 const CATALOG_LINKS: &[(&str, &str)] = &[
     ("metadata", "metadata"),
     ("pages", "page"),
@@ -804,7 +822,7 @@ impl ValidationSession {
     fn validate_profile(&mut self, profile: &crate::ValidationProfile) -> Result<ProfileReport> {
         let index = RuleIndex::new(&profile.rules);
         let graph = ModelGraph::for_rules(&self.document, &self.limits, &profile.rules);
-        let mut evaluator = DefaultRuleEvaluator::new(self.limits.clone());
+        let mut evaluator = DefaultRuleEvaluator::with_graph(self.limits.clone(), &graph);
         let mut state = ProfileState::new(
             profile.identity.clone(),
             self.max_failed_assertions_per_rule,
@@ -1338,6 +1356,58 @@ impl ModelRegistry {
         })
     }
 
+    /// Returns the target family for a link on a registered family schema.
+    #[must_use]
+    pub(crate) fn link_target(
+        &self,
+        family: &ObjectTypeName,
+        link: &PropertyName,
+    ) -> Option<ObjectTypeName> {
+        self.families.get(family).and_then(|family| {
+            family
+                .link_schema()
+                .iter()
+                .find(|spec| spec.name.as_str() == link.as_str())
+                .map(|spec| spec.target.clone())
+        })
+    }
+
+    /// Returns an unsupported reason when a property path does not bind to the schema.
+    pub(crate) fn unsupported_property_path_reason(
+        &self,
+        object_type: &ObjectTypeName,
+        path: &crate::PropertyPath,
+    ) -> Result<Option<BoundedText>> {
+        let Some((terminal, links)) = path.parts().split_last() else {
+            return Ok(Some(BoundedText::unchecked("empty model property path")));
+        };
+        let mut family = object_type.clone();
+        for link in links {
+            let Some(target) = self.link_target(&family, link) else {
+                return Ok(Some(BoundedText::new(
+                    format!(
+                        "unknown validation model link {} on {}",
+                        link.as_str(),
+                        family.as_str()
+                    ),
+                    512,
+                )?));
+            };
+            family = target;
+        }
+        if !self.has_family_property(&family, terminal) {
+            return Ok(Some(BoundedText::new(
+                format!(
+                    "unknown validation model property {} on {}",
+                    terminal.as_str(),
+                    family.as_str()
+                ),
+                512,
+            )?));
+        }
+        Ok(None)
+    }
+
     fn family_property_names(&self, family: &ObjectTypeName) -> Option<Vec<PropertyName>> {
         self.families.get(family).map(|family| {
             family
@@ -1411,6 +1481,12 @@ impl LinkName {
     /// Returns [`crate::ConfigError`] when the identifier violates policy.
     pub fn new(value: impl Into<String>) -> std::result::Result<Self, crate::ConfigError> {
         Ok(Self(Identifier::new(value)?))
+    }
+
+    /// Returns the link name text.
+    #[must_use]
+    pub(crate) fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
@@ -1668,7 +1744,22 @@ impl<'a> ModelObjectRef<'a> {
         }
     }
 
-    fn linked_objects(
+    pub(crate) fn links(&self) -> &[LinkName] {
+        match self {
+            Self::Document(model) => model.links(),
+            Self::Catalog(model) => model.links(),
+            Self::Metadata(model) => model.links(),
+            Self::Page(model) => model.links(),
+            Self::Font(model) => model.links(),
+            Self::Annotation(model) => model.links(),
+            Self::OutputIntent(model) => model.links(),
+            Self::ContentStream(model) => model.links(),
+            Self::Stream(model) => model.links(),
+            Self::Generic(model) => model.links(),
+        }
+    }
+
+    pub(crate) fn linked_objects(
         &self,
         graph: &ModelGraph<'a>,
         max_objects: usize,
@@ -1708,11 +1799,20 @@ struct ResourceCollection<'a> {
 
 impl<'a> ModelGraph<'a> {
     fn for_rules(document: &'a ParsedDocument, limits: &'a ResourceLimits, rules: &[Rule]) -> Self {
-        let materialized_families = rules
+        let registry = ModelRegistry::default_registry();
+        let mut materialized_families = BTreeSet::new();
+        for rule in rules
             .iter()
             .filter(|rule| !matches!(rule.test, crate::RuleExpr::Unsupported { .. }))
-            .map(|rule| rule.object_type.clone())
-            .collect();
+        {
+            materialized_families.insert(rule.object_type.clone());
+            collect_rule_link_targets(
+                &registry,
+                &rule.object_type,
+                &rule.test,
+                &mut materialized_families,
+            );
+        }
         Self {
             document,
             limits,
@@ -2044,6 +2144,55 @@ impl<'a> ModelGraph<'a> {
     }
 }
 
+fn collect_rule_link_targets(
+    registry: &ModelRegistry,
+    object_type: &ObjectTypeName,
+    expr: &crate::RuleExpr,
+    families: &mut BTreeSet<ObjectTypeName>,
+) {
+    match expr {
+        crate::RuleExpr::Property { path } => {
+            let mut family = object_type.clone();
+            let Some((_terminal, links)) = path.parts().split_last() else {
+                return;
+            };
+            for link in links {
+                let Some(target) = registry.link_target(&family, link) else {
+                    return;
+                };
+                families.insert(target.clone());
+                family = target;
+            }
+        }
+        crate::RuleExpr::Unary { expr, .. } => {
+            collect_rule_link_targets(registry, object_type, expr, families);
+        }
+        crate::RuleExpr::Binary { left, right, .. } => {
+            collect_rule_link_targets(registry, object_type, left, families);
+            collect_rule_link_targets(registry, object_type, right, families);
+        }
+        crate::RuleExpr::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            collect_rule_link_targets(registry, object_type, condition, families);
+            collect_rule_link_targets(registry, object_type, when_true, families);
+            collect_rule_link_targets(registry, object_type, when_false, families);
+        }
+        crate::RuleExpr::Call { args, .. } => {
+            for arg in args {
+                collect_rule_link_targets(registry, object_type, arg, families);
+            }
+        }
+        crate::RuleExpr::Bool { .. }
+        | crate::RuleExpr::Number { .. }
+        | crate::RuleExpr::String { .. }
+        | crate::RuleExpr::Null
+        | crate::RuleExpr::Unsupported { .. } => {}
+    }
+}
+
 /// Document model wrapper.
 #[derive(Clone, Debug)]
 pub struct DocumentModel<'a> {
@@ -2061,7 +2210,10 @@ impl<'a> DocumentModel<'a> {
             document,
             object_type: ObjectTypeName::unchecked("document"),
             supertypes: Vec::new(),
-            links: vec![LinkName(Identifier::unchecked("catalog"))],
+            links: DOCUMENT_LINKS
+                .iter()
+                .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                .collect(),
         }
     }
 }
@@ -2178,7 +2330,10 @@ impl<'a> CatalogModel<'a> {
             pages,
             object_type: ObjectTypeName::unchecked("catalog"),
             supertypes: vec![ObjectTypeName::unchecked("object")],
-            links: vec![LinkName(Identifier::unchecked("metadata"))],
+            links: CATALOG_LINKS
+                .iter()
+                .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                .collect(),
         })
     }
 }
@@ -2261,7 +2416,33 @@ impl ModelObject for CatalogModel<'_> {
                     .and_then(|dictionary| dictionary.get("Dests"))
                     .is_some(),
             )),
-            "Marked" => Ok(ModelValue::Bool(false)),
+            "language" => self
+                .document
+                .objects
+                .get(&self.key)
+                .and_then(|object| object.object.as_dictionary())
+                .and_then(|dictionary| dictionary.get("Lang"))
+                .cloned()
+                .map_or(Ok(ModelValue::Null), |value| Ok(ModelValue::from(value))),
+            "permissions" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| dictionary.get("Perms"))
+                    .is_some(),
+            )),
+            "Marked" => Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .get(&self.key)
+                    .and_then(|object| object.object.as_dictionary())
+                    .and_then(|dictionary| {
+                        resolve_dictionary_value(self.document, dictionary.get("MarkInfo"))
+                    })
+                    .and_then(|mark_info| mark_info.get("Marked"))
+                    .is_some_and(|value| matches!(value, crate::CosObject::Boolean(true))),
+            )),
             _ => self
                 .document
                 .objects
@@ -2308,6 +2489,18 @@ impl ModelObject for CatalogModel<'_> {
         pages.reverse();
         for page in pages {
             push_linked(&mut objects, ModelObjectRef::Page(page), max_objects)?;
+        }
+        let mut generic_models = Vec::new();
+        graph.push_catalog_generic_models(
+            self,
+            max_objects.saturating_sub(objects.len()),
+            &mut generic_models,
+        )?;
+        generic_models.reverse();
+        for model in generic_models {
+            if graph.materializes(model.object_type.as_str()) {
+                push_linked(&mut objects, ModelObjectRef::Generic(model), max_objects)?;
+            }
         }
         Ok(objects)
     }
@@ -3478,7 +3671,7 @@ impl ProfileState {
         &mut self,
         object: &ModelObjectRef<'_>,
         rule: &Rule,
-        evaluator: &mut DefaultRuleEvaluator,
+        evaluator: &mut DefaultRuleEvaluator<'_>,
     ) -> Result<()> {
         self.rules_executed =
             self.rules_executed
@@ -3925,7 +4118,7 @@ trailer
     fn m6_model_pdf() -> &'static [u8] {
         br"%PDF-1.7
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R /AcroForm 7 0 R /StructTreeRoot 8 0 R /OCProperties 9 0 R /Names 10 0 R /Outlines 11 0 R /Perms 12 0 R /Dests [21 0 R] >>
+<< /Type /Catalog /Pages 2 0 R /Metadata 24 0 R /OutputIntents [26 0 R] /AcroForm 7 0 R /StructTreeRoot 8 0 R /OCProperties 9 0 R /Names 10 0 R /Outlines 11 0 R /Perms 12 0 R /Dests [21 0 R] /Lang (en-US) /MarkInfo << /Marked true >> >>
 endobj
 2 0 obj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
@@ -4001,6 +4194,19 @@ endstream
 endobj
 23 0 obj
 << /Filter /Standard /V 1 /R 2 /Length 40 /P -4 >>
+endobj
+24 0 obj
+<< /Type /Metadata /Subtype /XML /Length 0 >>
+stream
+endstream
+endobj
+25 0 obj
+<< /Length 0 >>
+stream
+endstream
+endobj
+26 0 obj
+<< /Type /OutputIntent /S /GTS_PDFA1 /DestOutputProfile 25 0 R >>
 endobj
 trailer
 << /Root 1 0 R >>
@@ -4151,6 +4357,97 @@ trailer
             &crate::ObjectTypeName::new("structureElement")?,
             &PropertyName::new("parentStandardType")?
         ));
+        let catalog_family = registry
+            .families
+            .get(&crate::ObjectTypeName::new("catalog")?)
+            .ok_or(crate::ProfileError::UnsupportedSelection)?;
+        let acro_form_link = crate::LinkName::new("acroForm")?;
+        assert!(
+            catalog_family
+                .link_schema()
+                .iter()
+                .any(|spec| spec.name == acro_form_link)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_read_registered_catalog_root_properties() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(m6_model_pdf()))?;
+        let catalog_key = document.catalog.ok_or(crate::ParseError::MissingObject {
+            message: crate::BoundedText::unchecked("missing catalog"),
+        })?;
+        let catalog =
+            CatalogModel::new(&document, catalog_key).ok_or(crate::ParseError::MissingObject {
+                message: crate::BoundedText::unchecked("missing catalog model"),
+            })?;
+
+        assert_eq!(
+            catalog.property(&PropertyName::new("AcroForm")?)?,
+            ModelValue::ObjectKey(crate::ObjectKey::new(
+                std::num::NonZeroU32::new(7).ok_or(crate::ParseError::MissingObject {
+                    message: BoundedText::unchecked("invalid object number"),
+                })?,
+                0,
+            ))
+        );
+        assert_eq!(
+            catalog.property(&PropertyName::new("language")?)?,
+            ModelValue::String(BoundedText::unchecked("en-US"))
+        );
+        assert_eq!(
+            catalog.property(&PropertyName::new("Marked")?)?,
+            ModelValue::Bool(true)
+        );
+        assert_eq!(
+            catalog.property(&PropertyName::new("permissions")?)?,
+            ModelValue::Bool(true)
+        );
+        assert_eq!(
+            catalog.property(&PropertyName::new("OutputIntents")?)?,
+            ModelValue::List(vec![ModelValue::ObjectKey(crate::ObjectKey::new(
+                std::num::NonZeroU32::new(26).ok_or(crate::ParseError::MissingObject {
+                    message: BoundedText::unchecked("invalid object number"),
+                })?,
+                0,
+            ))])
+        );
+        assert_eq!(
+            catalog.property(&PropertyName::new("Dests")?)?,
+            ModelValue::List(vec![ModelValue::ObjectKey(crate::ObjectKey::new(
+                std::num::NonZeroU32::new(21).ok_or(crate::ParseError::MissingObject {
+                    message: BoundedText::unchecked("invalid object number"),
+                })?,
+                0,
+            ))])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_materialize_every_present_catalog_link() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(m6_model_pdf()))?;
+        let catalog_key = document.catalog.ok_or(crate::ParseError::MissingObject {
+            message: crate::BoundedText::unchecked("missing catalog"),
+        })?;
+        let catalog =
+            CatalogModel::new(&document, catalog_key).ok_or(crate::ParseError::MissingObject {
+                message: crate::BoundedText::unchecked("missing catalog model"),
+            })?;
+        let limits = crate::ResourceLimits::default();
+        let graph = super::ModelGraph::with_all_families(&document, &limits);
+        let linked = catalog.linked_objects(&graph, 64)?;
+        let families = linked
+            .iter()
+            .map(ModelObjectRef::object_type)
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for (_link, target) in super::CATALOG_LINKS {
+            assert!(
+                families.contains(&crate::ObjectTypeName::new(*target)?),
+                "missing catalog link target {target}: {families:?}"
+            );
+        }
         Ok(())
     }
 
