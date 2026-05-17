@@ -1,0 +1,672 @@
+{
+  "vendorPins": {
+    "veraPDF-library": "acfcc419a5df444e3e8b2a18266d01e249299957"
+  },
+  "registeredFamilies": 53,
+  "registeredProperties": 671,
+  "registeredLinks": 72,
+  "modelFamilies": [
+    {
+      "family": "accessibilityAnnotation",
+      "properties": 5,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 5
+      }
+    },
+    {
+      "family": "accessibilityDocument",
+      "properties": 14,
+      "links": 9,
+      "propertySources": {
+        "semanticGraph": 14
+      }
+    },
+    {
+      "family": "acroForm",
+      "properties": 9,
+      "links": 1,
+      "propertySources": {
+        "directCos": 7,
+        "semanticGraph": 2
+      }
+    },
+    {
+      "family": "action",
+      "properties": 15,
+      "links": 3,
+      "propertySources": {
+        "directCos": 11,
+        "semanticGraph": 4
+      }
+    },
+    {
+      "family": "annotation",
+      "properties": 37,
+      "links": 4,
+      "propertySources": {
+        "directCos": 11,
+        "semanticGraph": 26
+      }
+    },
+    {
+      "family": "artifact",
+      "properties": 3,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 3
+      }
+    },
+    {
+      "family": "cMap",
+      "properties": 9,
+      "links": 0,
+      "propertySources": {
+        "directCos": 6,
+        "expectedDrift": 3
+      }
+    },
+    {
+      "family": "catalog",
+      "properties": 26,
+      "links": 10,
+      "propertySources": {
+        "directCos": 12,
+        "semanticGraph": 14
+      }
+    },
+    {
+      "family": "colorSpace",
+      "properties": 19,
+      "links": 0,
+      "propertySources": {
+        "directCos": 14,
+        "expectedDrift": 5
+      }
+    },
+    {
+      "family": "contentStream",
+      "properties": 21,
+      "links": 4,
+      "propertySources": {
+        "decodedStream": 11,
+        "directCos": 7,
+        "semanticGraph": 3
+      }
+    },
+    {
+      "family": "destination",
+      "properties": 4,
+      "links": 1,
+      "propertySources": {
+        "directCos": 3,
+        "semanticGraph": 1
+      }
+    },
+    {
+      "family": "document",
+      "properties": 43,
+      "links": 5,
+      "propertySources": {
+        "semanticGraph": 41,
+        "xmpRdf": 2
+      }
+    },
+    {
+      "family": "embeddedFontFile",
+      "properties": 12,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 12
+      }
+    },
+    {
+      "family": "extGState",
+      "properties": 12,
+      "links": 0,
+      "propertySources": {
+        "directCos": 9,
+        "expectedDrift": 3
+      }
+    },
+    {
+      "family": "fileSpec",
+      "properties": 11,
+      "links": 0,
+      "propertySources": {
+        "directCos": 11
+      }
+    },
+    {
+      "family": "font",
+      "properties": 30,
+      "links": 0,
+      "propertySources": {
+        "directCos": 18,
+        "expectedDrift": 12
+      }
+    },
+    {
+      "family": "fontDescriptor",
+      "properties": 15,
+      "links": 0,
+      "propertySources": {
+        "directCos": 15
+      }
+    },
+    {
+      "family": "fontProgram",
+      "properties": 10,
+      "links": 0,
+      "propertySources": {
+        "directCos": 10
+      }
+    },
+    {
+      "family": "formField",
+      "properties": 19,
+      "links": 5,
+      "propertySources": {
+        "directCos": 13,
+        "semanticGraph": 6
+      }
+    },
+    {
+      "family": "formXObject",
+      "properties": 8,
+      "links": 1,
+      "propertySources": {
+        "directCos": 8
+      }
+    },
+    {
+      "family": "function",
+      "properties": 8,
+      "links": 0,
+      "propertySources": {
+        "directCos": 8
+      }
+    },
+    {
+      "family": "heading",
+      "properties": 4,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 4
+      }
+    },
+    {
+      "family": "iccProfile",
+      "properties": 13,
+      "links": 0,
+      "propertySources": {
+        "decodedStream": 8,
+        "directCos": 5
+      }
+    },
+    {
+      "family": "image",
+      "properties": 14,
+      "links": 0,
+      "propertySources": {
+        "directCos": 11,
+        "semanticGraph": 3
+      }
+    },
+    {
+      "family": "imageChunk",
+      "properties": 10,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 10
+      }
+    },
+    {
+      "family": "inlineImage",
+      "properties": 6,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 6
+      }
+    },
+    {
+      "family": "link",
+      "properties": 4,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 4
+      }
+    },
+    {
+      "family": "list",
+      "properties": 5,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 5
+      }
+    },
+    {
+      "family": "markedContent",
+      "properties": 4,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 4
+      }
+    },
+    {
+      "family": "metadata",
+      "properties": 17,
+      "links": 0,
+      "propertySources": {
+        "directCos": 4,
+        "semanticGraph": 2,
+        "xmpRdf": 11
+      }
+    },
+    {
+      "family": "names",
+      "properties": 10,
+      "links": 2,
+      "propertySources": {
+        "directCos": 10
+      }
+    },
+    {
+      "family": "object",
+      "properties": 25,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 25
+      }
+    },
+    {
+      "family": "operator",
+      "properties": 6,
+      "links": 2,
+      "propertySources": {
+        "semanticGraph": 6
+      }
+    },
+    {
+      "family": "optionalContentProperties",
+      "properties": 8,
+      "links": 0,
+      "propertySources": {
+        "directCos": 3,
+        "semanticGraph": 5
+      }
+    },
+    {
+      "family": "outline",
+      "properties": 10,
+      "links": 6,
+      "propertySources": {
+        "directCos": 9,
+        "semanticGraph": 1
+      }
+    },
+    {
+      "family": "outputIntent",
+      "properties": 14,
+      "links": 0,
+      "propertySources": {
+        "decodedStream": 8,
+        "directCos": 5,
+        "semanticGraph": 1
+      }
+    },
+    {
+      "family": "page",
+      "properties": 26,
+      "links": 5,
+      "propertySources": {
+        "directCos": 15,
+        "semanticGraph": 11
+      }
+    },
+    {
+      "family": "pageTree",
+      "properties": 5,
+      "links": 0,
+      "propertySources": {
+        "directCos": 5
+      }
+    },
+    {
+      "family": "pattern",
+      "properties": 10,
+      "links": 0,
+      "propertySources": {
+        "directCos": 10
+      }
+    },
+    {
+      "family": "permissions",
+      "properties": 4,
+      "links": 0,
+      "propertySources": {
+        "directCos": 3,
+        "semanticGraph": 1
+      }
+    },
+    {
+      "family": "postScriptXObject",
+      "properties": 8,
+      "links": 0,
+      "propertySources": {
+        "directCos": 8
+      }
+    },
+    {
+      "family": "resource",
+      "properties": 8,
+      "links": 0,
+      "propertySources": {
+        "directCos": 8
+      }
+    },
+    {
+      "family": "resourceUse",
+      "properties": 7,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 7
+      }
+    },
+    {
+      "family": "security",
+      "properties": 6,
+      "links": 0,
+      "propertySources": {
+        "directCos": 6
+      }
+    },
+    {
+      "family": "shading",
+      "properties": 6,
+      "links": 0,
+      "propertySources": {
+        "directCos": 6
+      }
+    },
+    {
+      "family": "signature",
+      "properties": 12,
+      "links": 0,
+      "propertySources": {
+        "directCos": 7,
+        "semanticGraph": 5
+      }
+    },
+    {
+      "family": "stream",
+      "properties": 12,
+      "links": 0,
+      "propertySources": {
+        "decodedStream": 5,
+        "directCos": 7
+      }
+    },
+    {
+      "family": "structureElement",
+      "properties": 48,
+      "links": 4,
+      "propertySources": {
+        "semanticGraph": 48
+      }
+    },
+    {
+      "family": "structureTreeRoot",
+      "properties": 14,
+      "links": 9,
+      "propertySources": {
+        "directCos": 7,
+        "semanticGraph": 7
+      }
+    },
+    {
+      "family": "table",
+      "properties": 5,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 5
+      }
+    },
+    {
+      "family": "textChunk",
+      "properties": 8,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 8
+      }
+    },
+    {
+      "family": "undefinedOperator",
+      "properties": 4,
+      "links": 0,
+      "propertySources": {
+        "semanticGraph": 4
+      }
+    },
+    {
+      "family": "xObject",
+      "properties": 8,
+      "links": 1,
+      "propertySources": {
+        "directCos": 8
+      }
+    }
+  ],
+  "profiles": [
+    {
+      "flavour": "pdfa-1a",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-1A.xml",
+      "totalRules": 135,
+      "loweredRules": 135,
+      "boundRules": 66,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 68,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-1b",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-1B.xml",
+      "totalRules": 129,
+      "loweredRules": 129,
+      "boundRules": 61,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 67,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-2a",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-2A.xml",
+      "totalRules": 153,
+      "loweredRules": 153,
+      "boundRules": 77,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 75,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-2b",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-2B.xml",
+      "totalRules": 144,
+      "loweredRules": 144,
+      "boundRules": 71,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 72,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-2u",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-2U.xml",
+      "totalRules": 146,
+      "loweredRules": 146,
+      "boundRules": 71,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 74,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-3a",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-3A.xml",
+      "totalRules": 155,
+      "loweredRules": 155,
+      "boundRules": 80,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 74,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-3b",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-3B.xml",
+      "totalRules": 146,
+      "loweredRules": 146,
+      "boundRules": 74,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 71,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-3u",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-3U.xml",
+      "totalRules": 148,
+      "loweredRules": 148,
+      "boundRules": 74,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 73,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-4",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-4.xml",
+      "totalRules": 109,
+      "loweredRules": 109,
+      "boundRules": 59,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 49,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-4e",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-4E.xml",
+      "totalRules": 109,
+      "loweredRules": 109,
+      "boundRules": 60,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 48,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-4f",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-4F.xml",
+      "totalRules": 109,
+      "loweredRules": 109,
+      "boundRules": 60,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 48,
+        "missingSemanticFamily": 1,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfua-1",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFUA-1.xml",
+      "totalRules": 106,
+      "loweredRules": 106,
+      "boundRules": 64,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 38,
+        "missingSemanticFamily": 4,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfua-2-iso32005",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFUA-2-ISO32005.xml",
+      "totalRules": 1727,
+      "loweredRules": 1727,
+      "boundRules": 1638,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 80,
+        "missingSemanticFamily": 9,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "wtpdf-1-0-accessibility",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/WTPDF-1-0-Accessibility.xml",
+      "totalRules": 1723,
+      "loweredRules": 1723,
+      "boundRules": 1634,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 80,
+        "missingSemanticFamily": 9,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "wtpdf-1-0-reuse",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/WTPDF-1-0-Reuse.xml",
+      "totalRules": 1710,
+      "loweredRules": 1710,
+      "boundRules": 1623,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 78,
+        "missingSemanticFamily": 9,
+        "unsupportedExpression": 0
+      }
+    }
+  ]
+}

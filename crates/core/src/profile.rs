@@ -206,6 +206,8 @@ pub struct ModelFamilySchemaReport {
     pub properties: u64,
     /// Registered link count for this family.
     pub links: u64,
+    /// Property counts grouped by source-evidence category.
+    pub property_sources: BTreeMap<String, u64>,
 }
 
 /// Per-profile model-schema coverage counters.
@@ -433,11 +435,14 @@ pub fn model_schema_parity_report() -> Result<ModelSchemaParityReport> {
         model_families: registry
             .family_schema_counts()
             .into_iter()
-            .map(|(family, properties, links)| ModelFamilySchemaReport {
-                family,
-                properties,
-                links,
-            })
+            .map(
+                |(family, properties, links, property_sources)| ModelFamilySchemaReport {
+                    family,
+                    properties,
+                    links,
+                    property_sources,
+                },
+            )
             .collect(),
         profiles,
     })
@@ -708,6 +713,25 @@ impl ClusterKey {
         if self.primary_reason == "unsupportedExpression" {
             return "G1";
         }
+        if self.primary_reason == "missingSemanticFamily"
+            && self.semantic_family.as_deref() == Some("contentStream")
+        {
+            return "G4";
+        }
+        if self.primary_reason == "missingSemanticFamily"
+            && self.semantic_family.as_deref() == Some("accessibility")
+        {
+            return "G6";
+        }
+        if self.primary_reason == "missingProperty"
+            && self.object_type == "document"
+            && self
+                .property
+                .as_deref()
+                .is_some_and(is_g5_document_property)
+        {
+            return "G5";
+        }
         match self.object_type.as_str() {
             "font" | "fontDescriptor" | "fontProgram" | "cMap" | "embeddedFontFile" => "G3",
             "resource" | "colorSpace" | "iccProfile" | "extGState" | "pattern" | "shading"
@@ -728,6 +752,25 @@ impl ClusterKey {
             _ => "G2",
         }
     }
+}
+
+fn is_g5_document_property(property: &str) -> bool {
+    matches!(
+        property,
+        "XMPTitle"
+            | "XMPProducer"
+            | "XMPKeywords"
+            | "XMPDescription"
+            | "XMPCreatorTool"
+            | "XMPCreator"
+            | "XMPCreatorSize"
+            | "doModDatesMatch"
+            | "doCreationDatesMatch"
+            | "part"
+            | "partPrefix"
+            | "rev"
+            | "revPrefix"
+    )
 }
 
 #[derive(Default)]
@@ -4237,6 +4280,26 @@ trailer
                 .iter()
                 .any(|cluster| cluster.primary_reason.as_str() == "unsupportedExpression")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_have_no_phase22_g2_release_blocking_clusters() -> crate::Result<()> {
+        let clusters = super::unsupported_rule_cluster_report()?;
+
+        assert!(
+            !clusters
+                .clusters
+                .iter()
+                .any(|cluster| cluster.expected_phase.as_str() == "G2")
+        );
+        assert!(!clusters.clusters.iter().any(|cluster| {
+            cluster.expected_phase.as_str() == "G2" && cluster.release_blocking
+        }));
+        assert!(!clusters.clusters.iter().any(|cluster| {
+            cluster.primary_reason.as_str() == "missingProperty"
+                && cluster.expected_phase.as_str() == "G2"
+        }));
         Ok(())
     }
 

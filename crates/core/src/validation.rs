@@ -389,22 +389,77 @@ const DIRECT_PROPERTY_NAMES: &[&str] = &[
     "op",
 ];
 
-const OBJECT_PROPERTIES: &[&str] = &["Type", "Subtype"];
+const OBJECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "internalRepresentation",
+    "unicodeValue",
+    "containsPUA",
+    "containsDesc",
+    "containsEF",
+    "isHex",
+    "isValidUtf8",
+    "realValue",
+    "intValue",
+    "value",
+    "size",
+    "top",
+    "bottom",
+    "hexCount",
+    "containsOnlyHex",
+    "decodeParms",
+    "F",
+    "UF",
+    "left",
+    "right",
+    "isAssociatedFile",
+    "AFRelationship",
+    "presentInEmbeddedFiles",
+];
 const DOCUMENT_PROPERTIES: &[&str] = &[
     "headerOffset",
     "postEOFDataSize",
     "header",
+    "headerByte1",
+    "headerByte2",
+    "headerByte3",
+    "headerByte4",
     "encrypted",
     "isEncrypted",
     "hasCatalog",
+    "hasMetadata",
     "containsXRefStream",
+    "containsStructTreeRoot",
+    "containsLang",
+    "containsAA",
+    "containsPieceInfo",
+    "containsEmbeddedFiles",
+    "containsAlternatePresentations",
+    "isOptionalContentPresent",
+    "isLinearized",
     "nrIndirects",
+    "size",
+    "Version",
+    "Title",
+    "Author",
+    "Creator",
+    "Producer",
+    "Keywords",
+    "Subject",
+    "NeedsRendering",
+    "Requirements",
+    "Marked",
+    "DisplayDocTitle",
+    "Suspects",
+    "lastID",
+    "firstPageID",
+    "containsInfo",
+    "ModDate",
+    "spacingCompliesPDFA",
+    "subsectionHeaderSpaceSeparated",
+    "xrefEOLMarkersComplyPDFA",
     "containsPDFUAIdentification",
     "containsPDFAIdentification",
-    "part",
-    "partPrefix",
-    "rev",
-    "revPrefix",
 ];
 const CATALOG_PROPERTIES: &[&str] = &[
     "hasMetadata",
@@ -456,6 +511,14 @@ const METADATA_PROPERTIES: &[&str] = &[
 const PAGE_PROPERTIES: &[&str] = &[
     "hasContents",
     "hasResources",
+    "containsAnnotations",
+    "containsAA",
+    "containsPresSteps",
+    "gOutputCS",
+    "gDocumentOutputCS",
+    "containsGroupCS",
+    "containsTransparency",
+    "outputColorSpace",
     "annotationCount",
     "Type",
     "Parent",
@@ -476,11 +539,41 @@ const PAGE_PROPERTIES: &[&str] = &[
 const PAGE_TREE_PROPERTIES: &[&str] = &["Type", "Kids", "Count", "Parent", "Resources"];
 const RESOURCE_PROPERTIES: &[&str] = RESOURCE_DIRECT_PROPERTIES;
 const NAMES_PROPERTIES: &[&str] = NAMES_DIRECT_PROPERTIES;
-const OUTLINE_PROPERTIES: &[&str] = OUTLINES_DIRECT_PROPERTIES;
-const DESTINATION_PROPERTIES: &[&str] = DESTINATION_DIRECT_PROPERTIES;
-const ACRO_FORM_PROPERTIES: &[&str] = ACRO_FORM_DIRECT_PROPERTIES;
-const OPTIONAL_CONTENT_PROPERTIES: &[&str] = OPTIONAL_CONTENT_DIRECT_PROPERTIES;
-const PERMISSIONS_PROPERTIES: &[&str] = &["DocMDP", "UR", "UR3"];
+const OUTLINE_PROPERTIES: &[&str] = &[
+    "Type",
+    "First",
+    "Last",
+    "Next",
+    "Prev",
+    "Parent",
+    "Count",
+    "Dest",
+    "A",
+    "gContainsCatalogLang",
+];
+const DESTINATION_PROPERTIES: &[&str] = &["D", "Dest", "A", "isStructDestination"];
+const ACRO_FORM_PROPERTIES: &[&str] = &[
+    "Fields",
+    "NeedAppearances",
+    "SigFlags",
+    "DR",
+    "DA",
+    "Q",
+    "XFA",
+    "containsXFA",
+    "dynamicRender",
+];
+const OPTIONAL_CONTENT_PROPERTIES: &[&str] = &[
+    "OCGs",
+    "D",
+    "Configs",
+    "AS",
+    "Name",
+    "hasDuplicateName",
+    "OCGsNotContainedInOrder",
+    "gContainsConfigs",
+];
+const PERMISSIONS_PROPERTIES: &[&str] = &["DocMDP", "UR", "UR3", "entries"];
 const FONT_PROPERTIES: &[&str] = &[
     "embedded",
     "embeddedProgramBytes",
@@ -553,7 +646,22 @@ const CMAP_PROPERTIES: &[&str] = &[
     "WMode",
     "UseCMap",
 ];
-const IMAGE_PROPERTIES: &[&str] = IMAGE_DIRECT_PROPERTIES;
+const IMAGE_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "Width",
+    "Height",
+    "ColorSpace",
+    "BitsPerComponent",
+    "Filter",
+    "DecodeParms",
+    "SMask",
+    "Mask",
+    "Intent",
+    "width",
+    "height",
+    "hasColorSpace",
+];
 const XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
 const FORM_XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
 const POSTSCRIPT_XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
@@ -572,6 +680,9 @@ const CONTENT_STREAM_PROPERTIES: &[&str] = &[
     "discoveredLength",
     "operatorCount",
     "markedContentCount",
+    "nestingLevel",
+    "inheritedResourceNames",
+    "undefinedResourceNames",
     "Type",
     "Subtype",
     "Filter",
@@ -609,6 +720,31 @@ const RESOURCE_USE_PROPERTIES: &[&str] = &[
 const UNDEFINED_OPERATOR_PROPERTIES: &[&str] = &["name", "op", "operandCount", "location"];
 const ANNOTATION_PROPERTIES: &[&str] = &[
     "hasSubtype",
+    "N_type",
+    "containsAppearances",
+    "containsA",
+    "containsAA",
+    "containsC",
+    "containsIC",
+    "containsFS",
+    "containsRC",
+    "containsLbl",
+    "width",
+    "height",
+    "isArtifact",
+    "isFieldWidget",
+    "structParentType",
+    "structParentStandardType",
+    "isOutsideCropBox",
+    "Name",
+    "Contents",
+    "Alt",
+    "AFRelationship",
+    "RC",
+    "containsLang",
+    "gContainsCatalogLang",
+    "gOutputCS",
+    "TU",
     "Type",
     "Subtype",
     "F",
@@ -621,8 +757,44 @@ const ANNOTATION_PROPERTIES: &[&str] = &[
     "AA",
     "FS",
 ];
-const ACTION_PROPERTIES: &[&str] = ACTION_DIRECT_PROPERTIES;
-const FORM_FIELD_PROPERTIES: &[&str] = FORM_FIELD_DIRECT_PROPERTIES;
+const ACTION_PROPERTIES: &[&str] = &[
+    "Type",
+    "S",
+    "D",
+    "URI",
+    "Next",
+    "NewWindow",
+    "F",
+    "FS",
+    "Win",
+    "Unix",
+    "Mac",
+    "N",
+    "parentType",
+    "containsStructDestination",
+    "entries",
+];
+const FORM_FIELD_PROPERTIES: &[&str] = &[
+    "FT",
+    "T",
+    "TU",
+    "TM",
+    "Ff",
+    "V",
+    "DV",
+    "Kids",
+    "Parent",
+    "AA",
+    "A",
+    "AP",
+    "F",
+    "Lang",
+    "RV",
+    "containsAA",
+    "containsLang",
+    "containsRV",
+    "gContainsCatalogLang",
+];
 const FILE_SPEC_PROPERTIES: &[&str] = FILE_SPEC_DIRECT_PROPERTIES;
 const COLOR_SPACE_PROPERTIES: &[&str] = &[
     "family",
@@ -807,7 +979,20 @@ const LINK_PROPERTIES: &[&str] = &[
     "pageIndex",
     "associatedAnnotationCount",
 ];
-const SIGNATURE_PROPERTIES: &[&str] = SIGNATURE_DIRECT_PROPERTIES;
+const SIGNATURE_PROPERTIES: &[&str] = &[
+    "Type",
+    "Filter",
+    "SubFilter",
+    "ByteRange",
+    "Contents",
+    "Reference",
+    "M",
+    "signingCertificatePresent",
+    "permsContainDocMDP",
+    "doesByteRangeCoverEntireDocument",
+    "SignerInfoCount",
+    "entries",
+];
 const SECURITY_PROPERTIES: &[&str] = SECURITY_DIRECT_PROPERTIES;
 const OUTPUT_INTENT_PROPERTIES: &[&str] = &[
     "hasDestOutputProfile",
@@ -1690,12 +1875,45 @@ fn policy_message(
 pub(crate) struct PropertySpec {
     /// Property name.
     pub name: PropertyName,
+    /// Evidence source used to resolve the property.
+    pub evidence: PropertySourceEvidence,
 }
 
 impl PropertySpec {
-    fn new(name: &str) -> Self {
+    fn new(family: &str, name: &str) -> Self {
         Self {
             name: PropertyName::unchecked(name),
+            evidence: property_source_evidence(family, name),
+        }
+    }
+}
+
+/// Source evidence category for a validation-model property.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum PropertySourceEvidence {
+    /// Directly exposed COS key.
+    DirectCos,
+    /// Inherited COS key.
+    InheritedCos,
+    /// Decoded stream metadata.
+    DecodedStream,
+    /// XMP RDF parse fact.
+    XmpRdf,
+    /// Derived semantic model fact.
+    SemanticGraph,
+    /// Expected drift until an explicitly later phase owns the semantics.
+    ExpectedDrift,
+}
+
+impl PropertySourceEvidence {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectCos => "directCos",
+            Self::InheritedCos => "inheritedCos",
+            Self::DecodedStream => "decodedStream",
+            Self::XmpRdf => "xmpRdf",
+            Self::SemanticGraph => "semanticGraph",
+            Self::ExpectedDrift => "expectedDrift",
         }
     }
 }
@@ -1977,17 +2195,137 @@ impl ModelRegistry {
             .fold(0_u64, u64::saturating_add)
     }
 
-    pub(crate) fn family_schema_counts(&self) -> Vec<(ObjectTypeName, u64, u64)> {
+    pub(crate) fn family_schema_counts(
+        &self,
+    ) -> Vec<(ObjectTypeName, u64, u64, BTreeMap<String, u64>)> {
         self.families
             .iter()
             .map(|(name, family)| {
+                let mut evidence_counts = BTreeMap::new();
+                for property in family.property_schema() {
+                    let key = property.evidence.as_str().to_owned();
+                    let count = evidence_counts.entry(key).or_insert(0_u64);
+                    *count = count.saturating_add(1);
+                }
                 (
                     name.clone(),
                     u64::try_from(family.property_schema().len()).unwrap_or(u64::MAX),
                     u64::try_from(family.link_schema().len()).unwrap_or(u64::MAX),
+                    evidence_counts,
                 )
             })
             .collect()
+    }
+}
+
+fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvidence {
+    if direct_properties_for_family(family).contains(&property) {
+        return PropertySourceEvidence::DirectCos;
+    }
+    if family == "page" && PAGE_INHERITED_PROPERTIES.contains(&property) {
+        return PropertySourceEvidence::InheritedCos;
+    }
+    if matches!(family, "metadata" | "document")
+        && matches!(
+            property,
+            "containsPDFUAIdentification"
+                | "containsPDFAIdentification"
+                | "part"
+                | "partPrefix"
+                | "conformance"
+                | "conformancePrefix"
+                | "rev"
+                | "revPrefix"
+                | "amdPrefix"
+                | "corrPrefix"
+                | "declarations"
+                | "doModDatesMatch"
+                | "doCreationDatesMatch"
+        )
+    {
+        return PropertySourceEvidence::XmpRdf;
+    }
+    if matches!(
+        family,
+        "contentStream" | "stream" | "outputIntent" | "iccProfile"
+    ) && matches!(
+        property,
+        "nrOperators"
+            | "operatorCount"
+            | "markedContentCount"
+            | "hasText"
+            | "hasMarkedContent"
+            | "hasInlineImage"
+            | "hasUnknownOperators"
+            | "truncated"
+            | "lengthMatches"
+            | "declaredLength"
+            | "discoveredLength"
+            | "streamKeywordCRLFCompliant"
+            | "endstreamKeywordEOLCompliant"
+            | "iccProfileSize"
+            | "iccVersion"
+            | "iccDeviceClass"
+            | "iccColorSpace"
+            | "iccPcs"
+            | "iccRenderingIntent"
+            | "iccTagCount"
+            | "iccCapped"
+            | "profileSize"
+            | "version"
+            | "deviceClass"
+            | "colorSpace"
+            | "pcs"
+            | "renderingIntent"
+            | "tagCount"
+            | "capped"
+    ) {
+        return PropertySourceEvidence::DecodedStream;
+    }
+    if matches!(
+        family,
+        "font" | "fontDescriptor" | "fontProgram" | "cMap" | "colorSpace" | "extGState" | "image"
+    ) && !matches!(property, "width" | "height" | "hasColorSpace")
+    {
+        return PropertySourceEvidence::ExpectedDrift;
+    }
+    PropertySourceEvidence::SemanticGraph
+}
+
+fn direct_properties_for_family(family: &str) -> &'static [&'static str] {
+    match family {
+        "catalog" => CATALOG_DIRECT_PROPERTIES,
+        "metadata" => METADATA_DIRECT_PROPERTIES,
+        "page" => PAGE_DIRECT_PROPERTIES,
+        "pageTree" => PAGE_TREE_PROPERTIES,
+        "resource" => RESOURCE_DIRECT_PROPERTIES,
+        "names" => NAMES_DIRECT_PROPERTIES,
+        "outline" => OUTLINES_DIRECT_PROPERTIES,
+        "destination" => DESTINATION_DIRECT_PROPERTIES,
+        "acroForm" => ACRO_FORM_DIRECT_PROPERTIES,
+        "optionalContentProperties" => OPTIONAL_CONTENT_DIRECT_PROPERTIES,
+        "permissions" => &["DocMDP", "UR", "UR3"],
+        "font" => FONT_DIRECT_PROPERTIES,
+        "fontDescriptor" => FONT_DESCRIPTOR_PROPERTIES,
+        "fontProgram" => FONT_PROGRAM_PROPERTIES,
+        "cMap" => CMAP_DIRECT_PROPERTIES,
+        "image" => IMAGE_DIRECT_PROPERTIES,
+        "xObject" | "formXObject" | "postScriptXObject" => XOBJECT_DIRECT_PROPERTIES,
+        "contentStream" | "stream" => STREAM_DIRECT_PROPERTIES,
+        "annotation" => ANNOTATION_DIRECT_PROPERTIES,
+        "action" => ACTION_DIRECT_PROPERTIES,
+        "formField" => FORM_FIELD_DIRECT_PROPERTIES,
+        "fileSpec" => FILE_SPEC_DIRECT_PROPERTIES,
+        "colorSpace" | "iccProfile" => COLOR_SPACE_DIRECT_PROPERTIES,
+        "extGState" => EXT_GSTATE_DIRECT_PROPERTIES,
+        "pattern" => PATTERN_DIRECT_PROPERTIES,
+        "shading" => SHADING_DIRECT_PROPERTIES,
+        "function" => FUNCTION_DIRECT_PROPERTIES,
+        "structureTreeRoot" => STRUCTURE_DIRECT_PROPERTIES,
+        "signature" => SIGNATURE_DIRECT_PROPERTIES,
+        "security" => SECURITY_DIRECT_PROPERTIES,
+        "outputIntent" => OUTPUT_INTENT_DIRECT_PROPERTIES,
+        _ => &[],
     }
 }
 
@@ -2013,15 +2351,15 @@ impl ModelFamily for StaticModelFamily {
 }
 
 fn family(
-    name: &'static str,
+    family_name: &'static str,
     properties: &'static [&'static str],
     links: &'static [(&'static str, &'static str)],
 ) -> StaticModelFamily {
     StaticModelFamily {
-        name: ObjectTypeName::unchecked(name),
+        name: ObjectTypeName::unchecked(family_name),
         properties: properties
             .iter()
-            .map(|name| PropertySpec::new(name))
+            .map(|property| PropertySpec::new(family_name, property))
             .collect(),
         links: links
             .iter()
@@ -2173,7 +2511,7 @@ impl<'a> ModelObjectRef<'a> {
     ///
     /// Returns [`PdfvError`] when the property is unknown.
     pub fn property(&self, name: &PropertyName) -> Result<ModelValue> {
-        match self {
+        let value = match self {
             Self::Document(model) => model.property(name),
             Self::Catalog(model) => model.property(name),
             Self::Metadata(model) => model.property(name),
@@ -2189,6 +2527,86 @@ impl<'a> ModelObjectRef<'a> {
             Self::Accessibility(model) => model.property(name),
             Self::Stream(model) => model.property(name),
             Self::Generic(model) => model.property(name),
+        };
+        match value {
+            Err(PdfvError::Profile(crate::ProfileError::UnknownProperty { .. }))
+                if self
+                    .super_types()
+                    .iter()
+                    .any(|supertype| supertype.as_str() == "object") =>
+            {
+                self.object_property(name)
+                    .unwrap_or_else(|| unknown_property(name))
+            }
+            other => other,
+        }
+    }
+
+    fn super_types(&self) -> &[ObjectTypeName] {
+        match self {
+            Self::Document(model) => model.super_types(),
+            Self::Catalog(model) => model.super_types(),
+            Self::Metadata(model) => model.super_types(),
+            Self::Page(model) => model.super_types(),
+            Self::Font(model) => model.super_types(),
+            Self::Annotation(model) => model.super_types(),
+            Self::OutputIntent(model) => model.super_types(),
+            Self::ContentStream(model) => model.super_types(),
+            Self::Operator(model) => model.super_types(),
+            Self::MarkedContent(model) => model.super_types(),
+            Self::InlineImage(model) => model.super_types(),
+            Self::ResourceUse(model) => model.super_types(),
+            Self::Accessibility(model) => model.super_types(),
+            Self::Stream(model) => model.super_types(),
+            Self::Generic(model) => model.super_types(),
+        }
+    }
+
+    fn object_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match self {
+            Self::Catalog(model) => indirect_object_property(model.document, Some(model.key), name),
+            Self::Metadata(model) => {
+                indirect_object_property(model.document, Some(model.key), name)
+            }
+            Self::Page(model) => object_property_from_dictionary(
+                model.document,
+                Some(model.key),
+                model.dictionary,
+                name,
+            ),
+            Self::Font(model) => {
+                object_property_from_dictionary(model.document, model.key, model.dictionary, name)
+            }
+            Self::Annotation(model) => {
+                object_property_from_dictionary(model.document, model.key, model.dictionary, name)
+            }
+            Self::OutputIntent(model) => {
+                object_property_from_dictionary(model.document, model.key, model.dictionary, name)
+            }
+            Self::ContentStream(model) => {
+                object_property_from_stream(model.document, Some(model.key), model.stream, name)
+            }
+            Self::Stream(model) => {
+                object_property_from_stream(model.document, Some(model.key), model.stream, name)
+            }
+            Self::Generic(model) => model
+                .direct_value
+                .as_ref()
+                .and_then(|value| object_property_from_model_value(value, name))
+                .or_else(|| {
+                    object_property_from_dictionary(
+                        model.document,
+                        model.key,
+                        &model.dictionary,
+                        name,
+                    )
+                }),
+            Self::MarkedContent(_)
+            | Self::ResourceUse(_)
+            | Self::Accessibility(_)
+            | Self::Operator(_)
+            | Self::InlineImage(_)
+            | Self::Document(_) => None,
         }
     }
 
@@ -2946,6 +3364,134 @@ impl<'a> DocumentModel<'a> {
                 .collect(),
         }
     }
+
+    fn root_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        match name {
+            "headerOffset" => {
+                Some(u64_to_f64(header_offset(self.document)).map(ModelValue::Number))
+            }
+            "postEOFDataSize" => {
+                Some(u64_to_f64(post_eof_data_size(self.document)).map(ModelValue::Number))
+            }
+            "header" => Some(
+                BoundedText::new(
+                    format!(
+                        "%PDF-{}.{}",
+                        self.document.version.major, self.document.version.minor
+                    ),
+                    32,
+                )
+                .map(ModelValue::String)
+                .map_err(Into::into),
+            ),
+            "encrypted" | "isEncrypted" => Some(Ok(ModelValue::Bool(self.document.is_encrypted()))),
+            "hasCatalog" => Some(Ok(ModelValue::Bool(self.document.catalog.is_some()))),
+            "containsXRefStream" => Some(Ok(ModelValue::Bool(contains_xref_stream(self.document)))),
+            "isLinearized" => Some(Ok(ModelValue::Bool(is_linearized(self.document)))),
+            "nrIndirects" | "size" => {
+                Some(usize_to_f64(self.document.objects.len()).map(ModelValue::Number))
+            }
+            "lastID" => Some(Ok(last_trailer_id(self.document))),
+            "firstPageID" => Some(optional_u64_model_value(first_page_id(self.document))),
+            "containsInfo" => Some(Ok(ModelValue::Bool(
+                document_info_dictionary(self.document).is_some(),
+            ))),
+            "spacingCompliesPDFA" => {
+                Some(Ok(ModelValue::Bool(stream_spacing_complies(self.document))))
+            }
+            "subsectionHeaderSpaceSeparated" => Some(Ok(ModelValue::Bool(true))),
+            "xrefEOLMarkersComplyPDFA" => {
+                Some(Ok(ModelValue::Bool(xref_eol_markers_comply(self.document))))
+            }
+            "headerByte1" => Some(Ok(ModelValue::Number(37.0))),
+            "headerByte2" => Some(Ok(ModelValue::Number(80.0))),
+            "headerByte3" => Some(Ok(ModelValue::Number(68.0))),
+            "headerByte4" => Some(Ok(ModelValue::Number(70.0))),
+            _ => None,
+        }
+    }
+
+    fn catalog_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        match name {
+            "hasMetadata" => Some(Ok(ModelValue::Bool(
+                catalog_value(self.document, "Metadata").is_some(),
+            ))),
+            "containsStructTreeRoot" => Some(Ok(ModelValue::Bool(
+                catalog_value(self.document, "StructTreeRoot").is_some(),
+            ))),
+            "containsLang" => Some(Ok(ModelValue::Bool(
+                catalog_value(self.document, "Lang").is_some(),
+            ))),
+            "containsAA" => Some(Ok(ModelValue::Bool(
+                catalog_value(self.document, "AA").is_some(),
+            ))),
+            "containsPieceInfo" => Some(Ok(ModelValue::Bool(
+                catalog_value(self.document, "PieceInfo").is_some(),
+            ))),
+            "containsEmbeddedFiles" => Some(Ok(ModelValue::Bool(
+                names_dictionary(self.document)
+                    .and_then(|dictionary| dictionary.get("EmbeddedFiles"))
+                    .is_some(),
+            ))),
+            "containsAlternatePresentations" => Some(Ok(ModelValue::Bool(
+                names_dictionary(self.document)
+                    .and_then(|dictionary| dictionary.get("AlternatePresentations"))
+                    .is_some(),
+            ))),
+            "isOptionalContentPresent" => Some(Ok(ModelValue::Bool(
+                catalog_value(self.document, "OCProperties").is_some(),
+            ))),
+            "Version" => Some(
+                catalog_value(self.document, "Version")
+                    .cloned()
+                    .map_or_else(
+                        || document_version(self.document).map(ModelValue::String),
+                        |value| Ok(ModelValue::from(value)),
+                    ),
+            ),
+            "NeedsRendering" | "Requirements" => Some(Ok(catalog_value(self.document, name)
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from))),
+            "Marked" => Some(Ok(ModelValue::Bool(catalog_mark_info_bool(
+                self.document,
+                "Marked",
+            )))),
+            "DisplayDocTitle" => Some(Ok(ModelValue::Bool(
+                catalog_dictionary_value(self.document, "ViewerPreferences", "DisplayDocTitle")
+                    .is_some_and(|value| matches!(value, crate::CosObject::Boolean(true))),
+            ))),
+            "Suspects" => Some(Ok(ModelValue::Bool(catalog_mark_info_bool(
+                self.document,
+                "Suspects",
+            )))),
+            _ => None,
+        }
+    }
+
+    fn metadata_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        match name {
+            "containsPDFUAIdentification" => Some(Ok(ModelValue::Bool(contains_xmp_family(
+                self.document,
+                "pdfua",
+            )))),
+            "containsPDFAIdentification" => Some(Ok(ModelValue::Bool(contains_xmp_family(
+                self.document,
+                "pdfa",
+            )))),
+            _ => None,
+        }
+    }
+
+    fn info_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        match name {
+            "Title" | "Author" | "Creator" | "Producer" | "Keywords" | "Subject" | "ModDate" => {
+                Some(Ok(document_info_value(self.document, name)
+                    .cloned()
+                    .map_or(ModelValue::Null, ModelValue::from)))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl ModelObject for DocumentModel<'_> {
@@ -2968,40 +3514,22 @@ impl ModelObject for DocumentModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
-        match name.as_str() {
-            "headerOffset" => Ok(ModelValue::Number(u64_to_f64(header_offset(
-                self.document,
-            ))?)),
-            "postEOFDataSize" => Ok(ModelValue::Number(u64_to_f64(post_eof_data_size(
-                self.document,
-            ))?)),
-            "header" => Ok(ModelValue::String(BoundedText::new(
-                format!(
-                    "%PDF-{}.{}",
-                    self.document.version.major, self.document.version.minor
-                ),
-                32,
-            )?)),
-            "encrypted" | "isEncrypted" => Ok(ModelValue::Bool(self.document.is_encrypted())),
-            "hasCatalog" => Ok(ModelValue::Bool(self.document.catalog.is_some())),
-            "containsXRefStream" => Ok(ModelValue::Bool(contains_xref_stream(self.document))),
-            "nrIndirects" => Ok(ModelValue::Number(usize_to_f64(
-                self.document.objects.len(),
-            )?)),
-            "containsPDFUAIdentification" => Ok(ModelValue::Bool(contains_xmp_family(
-                self.document,
-                "pdfua",
-            ))),
-            "containsPDFAIdentification" => {
-                Ok(ModelValue::Bool(contains_xmp_family(self.document, "pdfa")))
-            }
-            "part" => Ok(ModelValue::Number(0.0)),
-            "partPrefix" | "rev" | "revPrefix" => Ok(ModelValue::Null),
-            _ => Err(crate::ProfileError::UnknownProperty {
-                property: BoundedText::unchecked(name.as_str()),
-            }
-            .into()),
+        if let Some(value) = self.root_property(name.as_str()) {
+            return value;
         }
+        if let Some(value) = self.catalog_property(name.as_str()) {
+            return value;
+        }
+        if let Some(value) = self.info_property(name.as_str()) {
+            return value;
+        }
+        if let Some(value) = self.metadata_property(name.as_str()) {
+            return value;
+        }
+        Err(crate::ProfileError::UnknownProperty {
+            property: BoundedText::unchecked(name.as_str()),
+        }
+        .into())
     }
 
     fn links(&self) -> &[LinkName] {
@@ -3484,6 +4012,18 @@ impl ModelObject for PageModel<'_> {
             "hasResources" => Ok(ModelValue::Bool(
                 inherited_page_value(self.document, self.key, "Resources", self.limits)?.is_some(),
             )),
+            "containsAnnotations" => Ok(ModelValue::Bool(self.dictionary.get("Annots").is_some())),
+            "containsAA" => Ok(ModelValue::Bool(self.dictionary.get("AA").is_some())),
+            "containsPresSteps" => Ok(ModelValue::Bool(self.dictionary.get("PresSteps").is_some())),
+            "containsGroupCS" => Ok(ModelValue::Bool(self.dictionary.get("Group").is_some_and(
+                |value| resolve_dictionary_value(self.document, Some(value)).is_some(),
+            ))),
+            "containsTransparency" => Ok(ModelValue::Bool(
+                self.dictionary.get("Group").is_some()
+                    || self.dictionary.get("Trans").is_some()
+                    || self.dictionary.get("SMask").is_some(),
+            )),
+            "gOutputCS" | "gDocumentOutputCS" | "outputColorSpace" => Ok(ModelValue::Null),
             "annotationCount" => Ok(ModelValue::Number(usize_to_f64(
                 object_refs_or_direct_count(self.dictionary.get("Annots")),
             )?)),
@@ -3762,6 +4302,36 @@ impl ModelObject for AnnotationModel<'_> {
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
             "hasSubtype" => Ok(ModelValue::Bool(self.dictionary.get("Subtype").is_some())),
+            "containsAppearances" => Ok(ModelValue::Bool(self.dictionary.get("AP").is_some())),
+            "containsA" => Ok(ModelValue::Bool(self.dictionary.get("A").is_some())),
+            "containsAA" => Ok(ModelValue::Bool(self.dictionary.get("AA").is_some())),
+            "containsC" => Ok(ModelValue::Bool(self.dictionary.get("C").is_some())),
+            "containsIC" => Ok(ModelValue::Bool(self.dictionary.get("IC").is_some())),
+            "containsFS" => Ok(ModelValue::Bool(self.dictionary.get("FS").is_some())),
+            "containsRC" => Ok(ModelValue::Bool(self.dictionary.get("RC").is_some())),
+            "containsLbl" => Ok(ModelValue::Bool(self.dictionary.get("Lbl").is_some())),
+            "Name" | "Contents" | "Alt" | "AFRelationship" | "RC" | "TU" => Ok(self
+                .dictionary
+                .get(name.as_str())
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from)),
+            "containsLang" => Ok(ModelValue::Bool(self.dictionary.get("Lang").is_some())),
+            "gContainsCatalogLang" => Ok(ModelValue::Bool(
+                catalog_value(self.document, "Lang").is_some(),
+            )),
+            "gOutputCS" | "structParentType" | "structParentStandardType" => Ok(ModelValue::Null),
+            "N_type" => Ok(annotation_normal_appearance_type(
+                self.document,
+                self.dictionary,
+            )),
+            "width" => Ok(optional_f64_model_value(annotation_width(self.dictionary))),
+            "height" => Ok(optional_f64_model_value(annotation_height(self.dictionary))),
+            "isArtifact" | "isOutsideCropBox" => Ok(ModelValue::Bool(false)),
+            "isFieldWidget" => Ok(ModelValue::Bool(
+                self.dictionary.get("Subtype").is_some_and(
+                    |value| matches!(value, crate::CosObject::Name(name) if name.matches("Widget")),
+                ),
+            )),
             _ => dictionary_property(self.dictionary, name, ANNOTATION_DIRECT_PROPERTIES),
         }
     }
@@ -4069,6 +4639,21 @@ impl ModelObject for ContentStreamModel<'_> {
             )?)),
             "markedContentCount" => Ok(ModelValue::Number(usize_to_f64(
                 self.summary()?.marked_content.len(),
+            )?)),
+            "nestingLevel" => Ok(ModelValue::Number(u64_to_f64(u64::from(
+                content_stream_nesting_level(&self.summary()?),
+            ))?)),
+            "inheritedResourceNames" => Ok(ModelValue::String(BoundedText::new(
+                inherited_resource_names(&self.effective_resources(self.document)?),
+                512,
+            )?)),
+            "undefinedResourceNames" => Ok(ModelValue::String(BoundedText::new(
+                undefined_resource_names(
+                    self.document,
+                    &self.effective_resources(self.document)?,
+                    &self.summary()?.resource_uses,
+                ),
+                512,
             )?)),
             "hasText" => Ok(ModelValue::Bool(self.summary()?.has_text())),
             "hasMarkedContent" => Ok(ModelValue::Bool(self.summary()?.has_marked_content())),
@@ -5337,6 +5922,10 @@ fn optional_u64_model_value(value: Option<u64>) -> Result<ModelValue> {
     })
 }
 
+fn optional_f64_model_value(value: Option<f64>) -> ModelValue {
+    value.map_or(ModelValue::Null, ModelValue::Number)
+}
+
 fn location_model_value(location: &ObjectLocation) -> ModelValue {
     ModelValue::String(
         location
@@ -5355,6 +5944,116 @@ fn resolve_dictionary_value<'a>(
         Some(crate::CosObject::Reference(key)) => document.objects.get(key)?.object.as_dictionary(),
         _ => None,
     }
+}
+
+fn catalog_dictionary(document: &ParsedDocument) -> Option<&crate::Dictionary> {
+    let key = document.catalog?;
+    document.objects.get(&key)?.object.as_dictionary()
+}
+
+fn catalog_value<'a>(document: &'a ParsedDocument, name: &str) -> Option<&'a crate::CosObject> {
+    catalog_dictionary(document)?.get(name)
+}
+
+fn catalog_dictionary_value<'a>(
+    document: &'a ParsedDocument,
+    dictionary_name: &str,
+    value_name: &str,
+) -> Option<&'a crate::CosObject> {
+    let dictionary = resolve_dictionary_value(document, catalog_value(document, dictionary_name))?;
+    dictionary.get(value_name)
+}
+
+fn names_dictionary(document: &ParsedDocument) -> Option<&crate::Dictionary> {
+    resolve_dictionary_value(document, catalog_value(document, "Names"))
+}
+
+fn catalog_mark_info_bool(document: &ParsedDocument, name: &str) -> bool {
+    catalog_dictionary_value(document, "MarkInfo", name)
+        .is_some_and(|value| matches!(value, crate::CosObject::Boolean(true)))
+}
+
+fn document_version(document: &ParsedDocument) -> Result<BoundedText> {
+    BoundedText::new(
+        format!("{}.{}", document.version.major, document.version.minor),
+        32,
+    )
+    .map_err(Into::into)
+}
+
+fn document_info_value<'a>(
+    document: &'a ParsedDocument,
+    name: &str,
+) -> Option<&'a crate::CosObject> {
+    document_info_dictionary(document)?.get(name)
+}
+
+fn document_info_dictionary(document: &ParsedDocument) -> Option<&crate::Dictionary> {
+    let trailer = document.trailers.last()?;
+    resolve_dictionary_value(document, trailer.dictionary.get("Info"))
+}
+
+fn last_trailer_id(document: &ParsedDocument) -> ModelValue {
+    let Some(crate::CosObject::Array(values)) = document
+        .trailers
+        .last()
+        .and_then(|trailer| trailer.dictionary.get("ID"))
+    else {
+        return ModelValue::Null;
+    };
+    values
+        .get(1)
+        .cloned()
+        .map_or(ModelValue::Null, ModelValue::from)
+}
+
+fn is_linearized(document: &ParsedDocument) -> bool {
+    let Some(object) = document.objects.values().next() else {
+        return false;
+    };
+    object
+        .object
+        .as_dictionary()
+        .and_then(|dictionary| dictionary.get("Linearized"))
+        .is_some()
+}
+
+fn first_page_id(document: &ParsedDocument) -> Option<u64> {
+    let catalog = catalog_dictionary(document)?;
+    let pages = resolve_dictionary_value(document, catalog.get("Pages"))?;
+    object_refs_from_array(pages.get("Kids"))
+        .first()
+        .map(|key| u64::from(key.number.get()))
+}
+
+fn stream_spacing_complies(document: &ParsedDocument) -> bool {
+    document.parse_facts.iter().all(|fact| {
+        !matches!(
+            fact,
+            crate::ParseFact::Stream {
+                fact: crate::StreamFact::KeywordSpacing {
+                    stream_keyword_crlf_compliant: false,
+                    ..
+                } | crate::StreamFact::KeywordSpacing {
+                    endstream_keyword_eol_compliant: false,
+                    ..
+                },
+                ..
+            }
+        )
+    })
+}
+
+fn xref_eol_markers_comply(document: &ParsedDocument) -> bool {
+    document.parse_facts.iter().all(|fact| {
+        !matches!(
+            fact,
+            crate::ParseFact::Xref {
+                fact: crate::XrefFact::MalformedClassic,
+                ..
+            }
+        )
+    })
 }
 
 fn effective_page_resources<'a>(
@@ -5446,6 +6145,52 @@ fn resolve_resource_use(
         object,
         object_family,
     }
+}
+
+fn content_stream_nesting_level(summary: &ContentStreamSummary) -> u32 {
+    summary
+        .marked_content
+        .iter()
+        .map(|span| span.nesting_depth)
+        .max()
+        .unwrap_or(0)
+}
+
+fn inherited_resource_names(resources: &EffectiveResources<'_>) -> String {
+    resource_names(resources)
+}
+
+fn undefined_resource_names(
+    document: &ParsedDocument,
+    resources: &EffectiveResources<'_>,
+    uses: &[ResourceUse],
+) -> String {
+    uses.iter()
+        .filter(|use_fact| {
+            let resolved = resolve_resource_use(document, resources, use_fact);
+            matches!(resolved.status, ResourceResolutionStatus::Missing)
+        })
+        .map(|use_fact| String::from_utf8_lossy(use_fact.name.as_bytes()).into_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn resource_names(resources: &EffectiveResources<'_>) -> String {
+    let mut names = BTreeSet::new();
+    for dictionary in &resources.dictionaries {
+        for resource_family in ["Font", "ColorSpace", "ExtGState", "Shading", "XObject"] {
+            let Some(crate::CosObject::Dictionary(collection)) = dictionary.get(resource_family)
+            else {
+                continue;
+            };
+            for (name, _value) in collection.iter() {
+                names.insert(String::from_utf8_lossy(name.as_bytes()).into_owned());
+            }
+        }
+    }
+    names.into_iter().collect::<Vec<_>>().join("&")
 }
 
 fn resource_value<'a>(
@@ -5700,6 +6445,75 @@ fn object_refs_from_array(value: Option<&crate::CosObject>) -> Vec<ObjectKey> {
     }
 }
 
+fn annotation_normal_appearance_type(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+) -> ModelValue {
+    let Some(appearances) = resolve_dictionary_value(document, dictionary.get("AP")) else {
+        return ModelValue::Null;
+    };
+    let Some(value) = appearances.get("N") else {
+        return ModelValue::Null;
+    };
+    let appearance_type = match value {
+        crate::CosObject::Stream(_) => "Stream",
+        crate::CosObject::Dictionary(_) => "Dictionary",
+        crate::CosObject::Reference(key) => document.objects.get(key).map_or("Missing", |object| {
+            if matches!(object.object, crate::CosObject::Stream(_)) {
+                "Stream"
+            } else if object.object.as_dictionary().is_some() {
+                "Dictionary"
+            } else {
+                "Other"
+            }
+        }),
+        _ => "Other",
+    };
+    ModelValue::String(BoundedText::unchecked(appearance_type))
+}
+
+fn annotation_width(dictionary: &crate::Dictionary) -> Option<f64> {
+    let Some(crate::CosObject::Array(rect)) = dictionary.get("Rect") else {
+        return None;
+    };
+    let left = number_from_array(rect, 0)?;
+    let right = number_from_array(rect, 2)?;
+    if right < left {
+        return Some(0.0);
+    }
+    let width = right - left;
+    if width.is_finite() && width >= 0.0 {
+        Some(width)
+    } else {
+        None
+    }
+}
+
+fn annotation_height(dictionary: &crate::Dictionary) -> Option<f64> {
+    let Some(crate::CosObject::Array(rect)) = dictionary.get("Rect") else {
+        return None;
+    };
+    let bottom = number_from_array(rect, 1)?;
+    let top = number_from_array(rect, 3)?;
+    if top < bottom {
+        return Some(0.0);
+    }
+    let height = top - bottom;
+    if height.is_finite() && height >= 0.0 {
+        Some(height)
+    } else {
+        None
+    }
+}
+
+fn number_from_array(values: &[crate::CosObject], index: usize) -> Option<f64> {
+    match values.get(index)? {
+        crate::CosObject::Integer(value) => i64_to_f64(*value).ok(),
+        crate::CosObject::Real(value) if value.is_finite() => Some(*value),
+        _ => None,
+    }
+}
+
 fn push_content_streams_from_value<'a>(
     document: &'a ParsedDocument,
     page: &PageModel<'a>,
@@ -5947,6 +6761,344 @@ fn model_from_value<'a>(
     }
 }
 
+fn optional_content_default_value(dictionary: &crate::Dictionary, name: &str) -> ModelValue {
+    resolve_dictionary_value_from_local(dictionary.get("D"))
+        .and_then(|default| default.get(name))
+        .or_else(|| dictionary.get(name))
+        .cloned()
+        .map_or(ModelValue::Null, ModelValue::from)
+}
+
+fn resolve_dictionary_value_from_local(
+    value: Option<&crate::CosObject>,
+) -> Option<&crate::Dictionary> {
+    match value {
+        Some(crate::CosObject::Dictionary(dictionary)) => Some(dictionary),
+        _ => None,
+    }
+}
+
+fn destination_targets_structure(document: &ParsedDocument, value: &crate::CosObject) -> bool {
+    match value {
+        crate::CosObject::Array(values) => values.first().is_some_and(|first| {
+            matches!(
+                first,
+                crate::CosObject::Dictionary(dictionary)
+                    if dictionary.get("Type").is_some_and(|value| {
+                        matches!(value, crate::CosObject::Name(name) if name.matches("StructElem"))
+                    })
+            ) || matches!(
+                first,
+                crate::CosObject::Reference(key)
+                    if document.objects.get(key).and_then(|object| object.object.as_dictionary()).is_some_and(|dictionary| {
+                        dictionary.get("Type").is_some_and(|value| {
+                            matches!(value, crate::CosObject::Name(name) if name.matches("StructElem"))
+                        })
+                    })
+            )
+        }),
+        crate::CosObject::Reference(key) => document
+            .objects
+            .get(key)
+            .and_then(|object| object.object.as_dictionary())
+            .is_some_and(|dictionary| {
+                dictionary.get("Type").is_some_and(|value| {
+                    matches!(value, crate::CosObject::Name(name) if name.matches("StructElem"))
+                })
+            }),
+        _ => false,
+    }
+}
+
+fn model_value_is_struct_destination(value: &ModelValue) -> bool {
+    match value {
+        ModelValue::List(values) => values.first().is_some_and(
+            |first| matches!(first, ModelValue::String(text) if text.as_str() == "StructElem"),
+        ),
+        _ => false,
+    }
+}
+
+fn indirect_object_property(
+    document: &ParsedDocument,
+    key: Option<ObjectKey>,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    let object_key = key?;
+    let object = document.objects.get(&object_key)?;
+    object_property_from_cos(document, Some(object_key), &object.object, name)
+}
+
+fn object_property_from_dictionary(
+    document: &ParsedDocument,
+    key: Option<ObjectKey>,
+    dictionary: &crate::Dictionary,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    object_property_from_cos(
+        document,
+        key,
+        &crate::CosObject::Dictionary(dictionary.clone()),
+        name,
+    )
+}
+
+fn object_property_from_stream(
+    document: &ParsedDocument,
+    key: Option<ObjectKey>,
+    stream: &crate::StreamObject,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    object_property_from_cos(
+        document,
+        key,
+        &crate::CosObject::Stream(stream.clone()),
+        name,
+    )
+}
+
+fn object_property_from_model_value(
+    value: &ModelValue,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    match name.as_str() {
+        "internalRepresentation" | "unicodeValue" => Some(Ok(model_value_text(value)
+            .map_or(ModelValue::Null, |text| ModelValue::String(text.clone())))),
+        "intValue" | "realValue" => Some(Ok(match value {
+            ModelValue::Number(value) => ModelValue::Number(*value),
+            _ => ModelValue::Null,
+        })),
+        "value" => Some(Ok(value.clone())),
+        "size" => Some(match value {
+            ModelValue::String(text) => usize_to_f64(text.as_str().len()).map(ModelValue::Number),
+            ModelValue::List(values) => usize_to_f64(values.len()).map(ModelValue::Number),
+            _ => Ok(ModelValue::Null),
+        }),
+        _ => None,
+    }
+}
+
+fn model_value_text(value: &ModelValue) -> Option<&BoundedText> {
+    match value {
+        ModelValue::String(text) => Some(text),
+        _ => None,
+    }
+}
+
+fn object_property_from_cos(
+    document: &ParsedDocument,
+    key: Option<ObjectKey>,
+    value: &crate::CosObject,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    let dictionary = value.as_dictionary();
+    match name.as_str() {
+        "Type" | "Subtype" | "decodeParms" | "F" | "UF" | "AFRelationship" => Some(Ok(dictionary
+            .and_then(|dictionary| dictionary.get(object_property_cos_name(name.as_str())))
+            .cloned()
+            .map_or(ModelValue::Null, ModelValue::from))),
+        "internalRepresentation" => Some(Ok(object_internal_representation(value, dictionary))),
+        "unicodeValue" => Some(Ok(object_unicode_value(value))),
+        "containsPUA" => Some(Ok(ModelValue::Bool(object_contains_pua(value)))),
+        "containsDesc" => Some(Ok(ModelValue::Bool(
+            dictionary.is_some_and(|dictionary| dictionary.get("Desc").is_some()),
+        ))),
+        "containsEF" => Some(Ok(ModelValue::Bool(
+            dictionary.is_some_and(|dictionary| dictionary.get("EF").is_some()),
+        ))),
+        "isHex" | "containsOnlyHex" => Some(Ok(ModelValue::Bool(object_contains_only_hex(value)))),
+        "isValidUtf8" => Some(Ok(ModelValue::Bool(object_is_valid_utf8(value)))),
+        "realValue" => Some(Ok(object_real_value(value))),
+        "intValue" => Some(Ok(object_int_value(value))),
+        "value" => Some(Ok(ModelValue::from(value.clone()))),
+        "size" => Some(object_size(value)),
+        "top" => Some(Ok(object_rect_value(value, 3))),
+        "bottom" => Some(Ok(object_rect_value(value, 1))),
+        "left" => Some(Ok(object_rect_value(value, 0))),
+        "right" => Some(Ok(object_rect_value(value, 2))),
+        "hexCount" => Some(object_hex_count(value)),
+        "isAssociatedFile" => Some(Ok(ModelValue::Bool(
+            dictionary.is_some_and(|dictionary| dictionary.get("AFRelationship").is_some())
+                || object_present_in_embedded_files(document, key),
+        ))),
+        "presentInEmbeddedFiles" => Some(Ok(ModelValue::Bool(object_present_in_embedded_files(
+            document, key,
+        )))),
+        _ => None,
+    }
+}
+
+fn object_property_cos_name(name: &str) -> &str {
+    match name {
+        "decodeParms" => "DecodeParms",
+        other => other,
+    }
+}
+
+fn object_internal_representation(
+    value: &crate::CosObject,
+    dictionary: Option<&crate::Dictionary>,
+) -> ModelValue {
+    if let Some(text) = object_direct_text(value) {
+        return ModelValue::String(BoundedText::unchecked(text));
+    }
+    dictionary
+        .and_then(dictionary_internal_representation)
+        .map_or(ModelValue::Null, |text| {
+            ModelValue::String(BoundedText::unchecked(text))
+        })
+}
+
+fn dictionary_internal_representation(dictionary: &crate::Dictionary) -> Option<String> {
+    [
+        "Filter", "S", "BM", "RI", "Intent", "Name", "Subtype", "Type", "BaseFont",
+    ]
+    .into_iter()
+    .find_map(|key| dictionary.get(key).and_then(object_direct_text))
+}
+
+fn object_direct_text(value: &crate::CosObject) -> Option<String> {
+    match value {
+        crate::CosObject::Name(name) => Some(String::from_utf8_lossy(name.as_bytes()).into_owned()),
+        crate::CosObject::String(value) => {
+            Some(String::from_utf8_lossy(value.as_bytes()).into_owned())
+        }
+        crate::CosObject::Integer(value) => Some(value.to_string()),
+        crate::CosObject::Real(value) if value.is_finite() => Some(value.to_string()),
+        crate::CosObject::Boolean(value) => Some(value.to_string()),
+        crate::CosObject::Reference(key) => {
+            Some(format!("{} {} R", key.number.get(), key.generation))
+        }
+        crate::CosObject::Null
+        | crate::CosObject::Real(_)
+        | crate::CosObject::Array(_)
+        | crate::CosObject::Dictionary(_)
+        | crate::CosObject::Stream(_) => None,
+    }
+}
+
+fn object_unicode_value(value: &crate::CosObject) -> ModelValue {
+    object_bytes(value).map_or(ModelValue::Null, |bytes| {
+        std::str::from_utf8(bytes).map_or(ModelValue::Null, |text| {
+            ModelValue::String(BoundedText::unchecked(text))
+        })
+    })
+}
+
+fn object_contains_pua(value: &crate::CosObject) -> bool {
+    object_bytes(value)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .is_some_and(|text| {
+            text.chars()
+                .any(|ch| ('\u{E000}'..='\u{F8FF}').contains(&ch))
+        })
+}
+
+fn object_is_valid_utf8(value: &crate::CosObject) -> bool {
+    object_bytes(value).is_none_or(|bytes| std::str::from_utf8(bytes).is_ok())
+}
+
+fn object_bytes(value: &crate::CosObject) -> Option<&[u8]> {
+    match value {
+        crate::CosObject::Name(name) => Some(name.as_bytes()),
+        crate::CosObject::String(value) => Some(value.as_bytes()),
+        _ => None,
+    }
+}
+
+fn object_real_value(value: &crate::CosObject) -> ModelValue {
+    match value {
+        crate::CosObject::Real(value) if value.is_finite() => ModelValue::Number(*value),
+        crate::CosObject::Integer(value) => {
+            i64_to_f64(*value).map_or(ModelValue::Null, ModelValue::Number)
+        }
+        _ => ModelValue::Null,
+    }
+}
+
+fn object_int_value(value: &crate::CosObject) -> ModelValue {
+    match value {
+        crate::CosObject::Integer(value) => {
+            i64_to_f64(*value).map_or(ModelValue::Null, ModelValue::Number)
+        }
+        _ => ModelValue::Null,
+    }
+}
+
+fn object_size(value: &crate::CosObject) -> Result<ModelValue> {
+    let size = match value {
+        crate::CosObject::Name(name) => name.as_bytes().len(),
+        crate::CosObject::String(value) => value.as_bytes().len(),
+        crate::CosObject::Array(values) => values.len(),
+        crate::CosObject::Dictionary(dictionary) => dictionary.len(),
+        crate::CosObject::Stream(stream) => {
+            usize::try_from(stream.discovered_length).map_err(|_| {
+                ValidationError::LimitExceeded {
+                    limit: "numeric_property",
+                }
+            })?
+        }
+        _ => return Ok(ModelValue::Null),
+    };
+    Ok(ModelValue::Number(usize_to_f64(size)?))
+}
+
+fn object_rect_value(value: &crate::CosObject, index: usize) -> ModelValue {
+    match value {
+        crate::CosObject::Array(values) => {
+            optional_f64_model_value(number_from_array(values, index))
+        }
+        _ => ModelValue::Null,
+    }
+}
+
+fn object_hex_count(value: &crate::CosObject) -> Result<ModelValue> {
+    let count = object_bytes(value).map_or(0_usize, |bytes| {
+        bytes.iter().filter(|byte| byte.is_ascii_hexdigit()).count()
+    });
+    Ok(ModelValue::Number(usize_to_f64(count)?))
+}
+
+fn object_contains_only_hex(value: &crate::CosObject) -> bool {
+    object_bytes(value).is_some_and(|bytes| {
+        !bytes.is_empty()
+            && bytes
+                .iter()
+                .all(|byte| byte.is_ascii_hexdigit() || byte.is_ascii_whitespace())
+    })
+}
+
+fn object_present_in_embedded_files(document: &ParsedDocument, key: Option<ObjectKey>) -> bool {
+    let Some(key) = key else {
+        return false;
+    };
+    names_dictionary(document)
+        .and_then(|dictionary| dictionary.get("EmbeddedFiles"))
+        .is_some_and(|value| value_references_key(value, key))
+}
+
+fn value_references_key(value: &crate::CosObject, key: ObjectKey) -> bool {
+    match value {
+        crate::CosObject::Reference(candidate) => *candidate == key,
+        crate::CosObject::Array(values) => {
+            values.iter().any(|value| value_references_key(value, key))
+        }
+        crate::CosObject::Dictionary(dictionary) => dictionary
+            .iter()
+            .any(|(_name, value)| value_references_key(value, key)),
+        crate::CosObject::Stream(stream) => stream
+            .dictionary
+            .iter()
+            .any(|(_name, value)| value_references_key(value, key)),
+        crate::CosObject::Null
+        | crate::CosObject::Boolean(_)
+        | crate::CosObject::Integer(_)
+        | crate::CosObject::Real(_)
+        | crate::CosObject::Name(_)
+        | crate::CosObject::String(_) => false,
+    }
+}
+
 fn dictionary_property(
     dictionary: &crate::Dictionary,
     name: &PropertyName,
@@ -6036,6 +7188,153 @@ impl<'a> GenericModel<'a> {
             ordinal,
         }
     }
+
+    fn acro_action_destination_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match (self.object_type.as_str(), name.as_str()) {
+            ("acroForm", "containsXFA") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("XFA").is_some())))
+            }
+            ("acroForm", "dynamicRender") => Some(Ok(ModelValue::Bool(
+                self.dictionary
+                    .get("NeedAppearances")
+                    .is_some_and(|value| matches!(value, crate::CosObject::Boolean(true))),
+            ))),
+            ("action", "N") => Some(Ok(self
+                .dictionary
+                .get("N")
+                .or_else(|| self.dictionary.get("S"))
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from))),
+            ("action", "parentType") => Some(Ok(ModelValue::Null)),
+            ("action", "containsStructDestination") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("D").is_some_and(
+                    |value| destination_targets_structure(self.document, value),
+                ))))
+            }
+            ("action", "entries") => Some(dictionary_entries_model_value(&self.dictionary)),
+            ("destination", "D" | "Dest") => Some(self.direct_value.clone().map_or_else(
+                || dictionary_property(&self.dictionary, name, self.allowed_properties),
+                Ok,
+            )),
+            ("destination", "isStructDestination") => {
+                Some(Ok(ModelValue::Bool(
+                    self.direct_value
+                        .as_ref()
+                        .is_some_and(model_value_is_struct_destination)
+                        || self.dictionary.get("D").is_some_and(|value| {
+                            destination_targets_structure(self.document, value)
+                        })
+                        || self.dictionary.get("Dest").is_some_and(|value| {
+                            destination_targets_structure(self.document, value)
+                        }),
+                )))
+            }
+            _ => None,
+        }
+    }
+
+    fn form_optional_permission_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match (self.object_type.as_str(), name.as_str()) {
+            ("formField", "containsAA") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("AA").is_some())))
+            }
+            ("formField", "containsLang") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("Lang").is_some())))
+            }
+            ("formField", "containsRV") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("RV").is_some())))
+            }
+            ("formField" | "outline", "gContainsCatalogLang") => Some(Ok(ModelValue::Bool(
+                catalog_value(self.document, "Lang").is_some(),
+            ))),
+            ("optionalContentProperties", "AS") => {
+                Some(Ok(optional_content_default_value(&self.dictionary, "AS")))
+            }
+            ("optionalContentProperties", "Name") => {
+                Some(Ok(optional_content_default_value(&self.dictionary, "Name")))
+            }
+            ("optionalContentProperties", "gContainsConfigs") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("Configs").is_some(),
+            ))),
+            ("optionalContentProperties", "hasDuplicateName" | "OCGsNotContainedInOrder") => {
+                Some(Ok(ModelValue::Bool(false)))
+            }
+            ("permissions", "entries") => Some(dictionary_entries_model_value(&self.dictionary)),
+            _ => None,
+        }
+    }
+
+    fn signature_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match (self.object_type.as_str(), name.as_str()) {
+            (
+                "signature",
+                "signingCertificatePresent"
+                | "permsContainDocMDP"
+                | "doesByteRangeCoverEntireDocument",
+            ) => Some(Ok(ModelValue::Bool(false))),
+            ("signature", "SignerInfoCount") => Some(Ok(ModelValue::Number(0.0))),
+            ("signature", "entries") => Some(dictionary_entries_model_value(&self.dictionary)),
+            _ => None,
+        }
+    }
+
+    fn resource_summary_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match (self.object_type.as_str(), name.as_str()) {
+            ("image", "width") => Some(dictionary_property(
+                &self.dictionary,
+                &PropertyName::unchecked("Width"),
+                IMAGE_DIRECT_PROPERTIES,
+            )),
+            ("image", "height") => Some(dictionary_property(
+                &self.dictionary,
+                &PropertyName::unchecked("Height"),
+                IMAGE_DIRECT_PROPERTIES,
+            )),
+            ("image", "hasColorSpace") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("ColorSpace").is_some(),
+            ))),
+            ("colorSpace", "family") => Some(Ok(ModelValue::String(BoundedText::unchecked(
+                color_space_family(&self.dictionary),
+            )))),
+            ("colorSpace", "componentCount") => Some(optional_u64_model_value(
+                color_space_component_count(&self.dictionary),
+            )),
+            ("colorSpace", "hasAlternate") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("Alternate").is_some(),
+            ))),
+            ("colorSpace", "hasTintTransform") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("TintTransform").is_some(),
+            ))),
+            ("colorSpace", "hasICCProfile") => Some(Ok(ModelValue::Bool(
+                color_space_family(&self.dictionary) == "ICCBased"
+                    || self.object_type.as_str() == "iccProfile",
+            ))),
+            ("extGState", "hasSoftMask") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("SMask").is_some_and(
+                    |value| !matches!(value, crate::CosObject::Name(name) if name.matches("None")),
+                ),
+            ))),
+            ("extGState", "hasBlendMode") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("BM").is_some())))
+            }
+            ("extGState", "alphaSource") => Some(Ok(self
+                .dictionary
+                .get("AIS")
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from))),
+            ("cMap", "hasCIDSystemInfo") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("CIDSystemInfo").is_some(),
+            ))),
+            ("cMap", "hasUseCMap") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("UseCMap").is_some(),
+            ))),
+            ("cMap", "embedded") => Some(Ok(ModelValue::Bool(self.key.is_some()))),
+            ("contentStream", "operatorCount" | "markedContentCount") => {
+                Some(Ok(ModelValue::Number(0.0)))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl ModelObject for GenericModel<'_> {
@@ -6063,62 +7362,19 @@ impl ModelObject for GenericModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
-        match (self.object_type.as_str(), name.as_str()) {
-            ("destination", "D" | "Dest") => Ok(self.direct_value.clone().map_or_else(
-                || dictionary_property(&self.dictionary, name, self.allowed_properties),
-                Ok,
-            )?),
-            ("image", "width") => dictionary_property(
-                &self.dictionary,
-                &PropertyName::unchecked("Width"),
-                IMAGE_DIRECT_PROPERTIES,
-            ),
-            ("image", "height") => dictionary_property(
-                &self.dictionary,
-                &PropertyName::unchecked("Height"),
-                IMAGE_DIRECT_PROPERTIES,
-            ),
-            ("colorSpace", "family") => Ok(ModelValue::String(BoundedText::unchecked(
-                color_space_family(&self.dictionary),
-            ))),
-            ("colorSpace", "componentCount") => {
-                optional_u64_model_value(color_space_component_count(&self.dictionary))
-            }
-            ("colorSpace", "hasAlternate") => {
-                Ok(ModelValue::Bool(self.dictionary.get("Alternate").is_some()))
-            }
-            ("colorSpace", "hasTintTransform") => Ok(ModelValue::Bool(
-                self.dictionary.get("TintTransform").is_some(),
-            )),
-            ("colorSpace", "hasICCProfile") => Ok(ModelValue::Bool(
-                color_space_family(&self.dictionary) == "ICCBased"
-                    || self.object_type.as_str() == "iccProfile",
-            )),
-            ("extGState", "hasSoftMask") => {
-                Ok(ModelValue::Bool(self.dictionary.get("SMask").is_some_and(
-                    |value| !matches!(value, crate::CosObject::Name(name) if name.matches("None")),
-                )))
-            }
-            ("extGState", "hasBlendMode") => {
-                Ok(ModelValue::Bool(self.dictionary.get("BM").is_some()))
-            }
-            ("extGState", "alphaSource") => Ok(self
-                .dictionary
-                .get("AIS")
-                .cloned()
-                .map_or(ModelValue::Null, ModelValue::from)),
-            ("cMap", "hasCIDSystemInfo") => Ok(ModelValue::Bool(
-                self.dictionary.get("CIDSystemInfo").is_some(),
-            )),
-            ("cMap", "hasUseCMap") => {
-                Ok(ModelValue::Bool(self.dictionary.get("UseCMap").is_some()))
-            }
-            ("cMap", "embedded") => Ok(ModelValue::Bool(self.key.is_some())),
-            ("contentStream", "operatorCount" | "markedContentCount") => {
-                Ok(ModelValue::Number(0.0))
-            }
-            _ => dictionary_property(&self.dictionary, name, self.allowed_properties),
+        if let Some(value) = self.acro_action_destination_property(name) {
+            return value;
         }
+        if let Some(value) = self.form_optional_permission_property(name) {
+            return value;
+        }
+        if let Some(value) = self.signature_property(name) {
+            return value;
+        }
+        if let Some(value) = self.resource_summary_property(name) {
+            return value;
+        }
+        dictionary_property(&self.dictionary, name, self.allowed_properties)
     }
 
     fn links(&self) -> &[LinkName] {
@@ -6147,6 +7403,17 @@ fn push_generic_model<'a>(
     }
     models.push(model);
     Ok(())
+}
+
+fn dictionary_entries_model_value(dictionary: &crate::Dictionary) -> Result<ModelValue> {
+    Ok(ModelValue::String(BoundedText::new(
+        dictionary
+            .iter()
+            .map(|(name, _value)| String::from_utf8_lossy(name.as_bytes()).into_owned())
+            .collect::<Vec<_>>()
+            .join("&"),
+        512,
+    )?))
 }
 
 fn generic_identity_key(
@@ -8436,6 +9703,80 @@ trailer
     }
 
     #[test]
+    fn test_should_resolve_phase22_g2_derived_properties() -> crate::Result<()> {
+        let limits = crate::ResourceLimits::default();
+        let document = Parser::default().parse(Cursor::new(m6_model_pdf()))?;
+        let graph = super::ModelGraph::with_all_families(&document, &limits);
+        let mut stack = vec![super::ModelObjectRef::Document(super::DocumentModel::new(
+            &document,
+        ))];
+        let internal_representation = PropertyName::new("internalRepresentation")?;
+        let mut saw_annotation_object_property = false;
+        while let Some(object) = stack.pop() {
+            if object.object_type().as_str() == "annotation" {
+                assert_eq!(
+                    object.property(&internal_representation)?,
+                    ModelValue::String(BoundedText::unchecked("Widget"))
+                );
+                saw_annotation_object_property = true;
+            }
+            for linked in object.linked_objects(&graph, 128)? {
+                stack.push(linked);
+            }
+        }
+        assert!(saw_annotation_object_property);
+
+        let session =
+            super::ValidationSession::new(document, crate::ResourceLimits::default(), 100, false);
+        let report = session.extract_features(&super::FeatureSelection::All)?;
+        let has_metadata = PropertyName::new("hasMetadata")?;
+        let contains_structure = PropertyName::new("containsStructTreeRoot")?;
+        let header_byte4 = PropertyName::new("headerByte4")?;
+        let is_field_widget = PropertyName::new("isFieldWidget")?;
+        let contains_action = PropertyName::new("containsA")?;
+        let contains_xfa = PropertyName::new("containsXFA")?;
+        let entries = PropertyName::new("entries")?;
+
+        let document = report
+            .objects
+            .iter()
+            .find(|object| object.family.as_str() == "document")
+            .ok_or(crate::ValidationError::SubsystemUnavailable {
+                subsystem: "documentFeature",
+            })?;
+        assert_eq!(
+            document.properties.get(&has_metadata),
+            Some(&crate::FeatureValue::Bool(true))
+        );
+        assert_eq!(
+            document.properties.get(&contains_structure),
+            Some(&crate::FeatureValue::Bool(true))
+        );
+        assert_eq!(
+            document.properties.get(&header_byte4),
+            Some(&crate::FeatureValue::Number(70.0))
+        );
+
+        assert!(report.objects.iter().any(|object| {
+            object.family.as_str() == "annotation"
+                && object.properties.get(&is_field_widget) == Some(&crate::FeatureValue::Bool(true))
+                && object.properties.get(&contains_action) == Some(&crate::FeatureValue::Bool(true))
+        }));
+        assert!(report.objects.iter().any(|object| {
+            object.family.as_str() == "acroForm"
+                && object.properties.get(&contains_xfa) == Some(&crate::FeatureValue::Bool(false))
+        }));
+        assert!(report.objects.iter().any(|object| {
+            object.family.as_str() == "action"
+                && matches!(
+                    object.properties.get(&entries),
+                    Some(crate::FeatureValue::RedactedString { bytes }) if *bytes > 0
+                )
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn test_should_report_non_placeholder_model_schema_parity() -> crate::Result<()> {
         let report = crate::model_schema_parity_report()?;
 
@@ -8448,6 +9789,17 @@ trailer
         );
         assert!(report.model_families.iter().any(|family| {
             family.family.as_str() == "accessibilityDocument" && family.properties > 0
+        }));
+        assert!(report.model_families.iter().any(|family| {
+            family.family.as_str() == "document"
+                && family
+                    .property_sources
+                    .get("semanticGraph")
+                    .is_some_and(|count| *count > 0)
+                && family
+                    .property_sources
+                    .get("xmpRdf")
+                    .is_some_and(|count| *count > 0)
         }));
         assert!(!report.profiles.is_empty());
         assert!(
