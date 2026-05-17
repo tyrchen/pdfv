@@ -1,6 +1,6 @@
 //! Built-in validation profiles and bounded rule expression evaluation.
 
-use std::num::NonZeroU32;
+use std::{collections::BTreeMap, num::NonZeroU32};
 
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
@@ -167,6 +167,73 @@ pub struct ProfileCatalogEntry {
     pub source_file: BoundedText,
     /// Executable rule coverage.
     pub coverage: ProfileCoverage,
+}
+
+/// Model-schema parity report for generated built-in profiles.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelSchemaParityReport {
+    /// Vendor pins used by the generated profile catalog.
+    pub vendor_pins: BTreeMap<String, String>,
+    /// Number of registered validation model families.
+    pub registered_families: u64,
+    /// Number of registered model properties across families.
+    pub registered_properties: u64,
+    /// Number of registered model links across families.
+    pub registered_links: u64,
+    /// Per-profile model-schema coverage.
+    pub profiles: Vec<ModelSchemaProfileReport>,
+}
+
+/// Per-profile model-schema coverage counters.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelSchemaProfileReport {
+    /// CLI/catalog flavour spelling.
+    pub flavour: BoundedText,
+    /// Vendored XML source file.
+    pub source: BoundedText,
+    /// Total rules imported from XML.
+    pub total_rules: u64,
+    /// Rules whose expression lowered before model-schema checks.
+    pub lowered_rules: u64,
+    /// Lowered rules whose object, properties, and links bind to the registry.
+    pub bound_rules: u64,
+    /// Unsupported rules grouped by primary reason category.
+    pub unsupported_by_reason: BTreeMap<String, u64>,
+}
+
+/// Builds a deterministic model-schema parity report for generated profiles.
+///
+/// # Errors
+///
+/// Returns [`crate::PdfvError`] if generated profile XML cannot be imported or
+/// bounded report fields cannot be constructed.
+pub fn model_schema_parity_report() -> Result<ModelSchemaParityReport> {
+    let registry = crate::validation::ModelRegistry::default_registry();
+    let mut profiles = Vec::with_capacity(GENERATED_PROFILE_SOURCES.len());
+    for source in GENERATED_PROFILE_SOURCES {
+        let import = import_verapdf_profile_xml(source.xml)?;
+        profiles.push(model_schema_profile_report(
+            &registry,
+            source,
+            &import.profile,
+        )?);
+    }
+    let mut vendor_pins = BTreeMap::new();
+    vendor_pins.insert(
+        String::from("veraPDF-library"),
+        String::from(VERA_PDF_LIBRARY_PIN),
+    );
+    Ok(ModelSchemaParityReport {
+        vendor_pins,
+        registered_families: registry.registered_family_count(),
+        registered_properties: registry.registered_property_count(),
+        registered_links: registry.registered_link_count(),
+        profiles,
+    })
 }
 
 impl ProfileCatalogEntry {
@@ -1075,6 +1142,61 @@ fn apply_model_schema_checks(import: &mut ProfileImportSummary) -> Result<()> {
     import.supported_rules = supported_rules;
     import.unsupported_rules = unsupported_rules;
     Ok(())
+}
+
+fn model_schema_profile_report(
+    registry: &crate::validation::ModelRegistry,
+    source: &GeneratedProfileSource,
+    profile: &ValidationProfile,
+) -> Result<ModelSchemaProfileReport> {
+    let mut lowered_rules = 0_u64;
+    let mut bound_rules = 0_u64;
+    let mut unsupported_by_reason = BTreeMap::new();
+    for rule in &profile.rules {
+        if matches!(rule.test, RuleExpr::Unsupported { .. }) {
+            increment_reason(&mut unsupported_by_reason, "unsupportedExpression");
+            continue;
+        }
+        lowered_rules = lowered_rules.saturating_add(1);
+        let reason = if registry.has_family(&rule.object_type) {
+            unsupported_property_reason(registry, &rule.object_type, &rule.test)?
+                .map(|reason| unsupported_reason_category(reason.as_str()))
+        } else {
+            Some("missingObjectType")
+        };
+        if let Some(reason) = reason {
+            increment_reason(&mut unsupported_by_reason, reason);
+        } else {
+            bound_rules = bound_rules.saturating_add(1);
+        }
+    }
+    Ok(ModelSchemaProfileReport {
+        flavour: BoundedText::new(source.display_flavour, 128)?,
+        source: BoundedText::new(source.source_file, 512)?,
+        total_rules: u64::try_from(profile.rules.len()).unwrap_or(u64::MAX),
+        lowered_rules,
+        bound_rules,
+        unsupported_by_reason,
+    })
+}
+
+fn unsupported_reason_category(reason: &str) -> &'static str {
+    if reason.contains("unknown validation model link") {
+        "missingLink"
+    } else if reason.contains("unknown validation model property") {
+        "missingProperty"
+    } else if reason.contains("unknown validation model family") {
+        "missingObjectType"
+    } else {
+        "unsupportedExpression"
+    }
+}
+
+fn increment_reason(reasons: &mut BTreeMap<String, u64>, reason: &'static str) {
+    reasons
+        .entry(String::from(reason))
+        .and_modify(|count| *count = count.saturating_add(1))
+        .or_insert(1);
 }
 
 fn unsupported_property_reason(

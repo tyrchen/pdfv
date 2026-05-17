@@ -37,10 +37,11 @@ pub use parser::{
 #[cfg(feature = "custom-profiles")]
 pub use profile::CustomProfileRepository;
 pub use profile::{
-    BinaryOp, BuiltinFunction, BuiltinProfileRepository, ErrorTemplate, ModelValue, ObjectTypeName,
-    ProfileCatalogEntry, ProfileImportSummary, ProfileRepository, PropertyName, PropertyPath, Rule,
-    RuleEvaluator, RuleExpr, RuleOutcome, UnaryOp, ValidationProfile, display_flavour,
-    import_verapdf_profile_xml,
+    BinaryOp, BuiltinFunction, BuiltinProfileRepository, ErrorTemplate, ModelSchemaParityReport,
+    ModelSchemaProfileReport, ModelValue, ObjectTypeName, ProfileCatalogEntry,
+    ProfileImportSummary, ProfileRepository, PropertyName, PropertyPath, Rule, RuleEvaluator,
+    RuleExpr, RuleOutcome, UnaryOp, ValidationProfile, display_flavour, import_verapdf_profile_xml,
+    model_schema_parity_report,
 };
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};

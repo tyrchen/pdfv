@@ -40,4 +40,7 @@ update-submodule:
 generate-profiles:
 	@cargo run -p pdfv-core --example generate_profiles -- crates/core/src/generated_profiles.rs
 
-.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles
+parity-model-schema:
+	@cargo run -p pdfv-core --example parity_model_schema
+
+.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema

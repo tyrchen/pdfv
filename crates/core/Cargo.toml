@@ -40,6 +40,10 @@ serde_json.workspace = true
 name = "parser_m1"
 harness = false
 
+[[bench]]
+name = "model_traversal_m6"
+harness = false
+
 [features]
 default = ["json", "flate", "decrypt"]
 json = []

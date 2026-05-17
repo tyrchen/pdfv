@@ -36,7 +36,32 @@ const CATALOG_DIRECT_PROPERTIES: &[&str] = &[
     "Dests",
 ];
 const METADATA_DIRECT_PROPERTIES: &[&str] = &["Type", "Subtype", "Filter", "Length"];
-const PAGE_DIRECT_PROPERTIES: &[&str] = &["Type", "Parent", "Contents", "Resources", "Annots"];
+const PAGE_INHERITED_PROPERTIES: &[&str] = &[
+    "Resources",
+    "MediaBox",
+    "CropBox",
+    "BleedBox",
+    "TrimBox",
+    "ArtBox",
+    "Rotate",
+];
+const PAGE_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Parent",
+    "Contents",
+    "Resources",
+    "Annots",
+    "MediaBox",
+    "CropBox",
+    "BleedBox",
+    "TrimBox",
+    "ArtBox",
+    "Rotate",
+    "UserUnit",
+    "Tabs",
+    "StructParents",
+    "AA",
+];
 const FONT_DIRECT_PROPERTIES: &[&str] = &[
     "Type",
     "Subtype",
@@ -50,7 +75,7 @@ const FONT_DIRECT_PROPERTIES: &[&str] = &[
     "CIDToGIDMap",
 ];
 const ANNOTATION_DIRECT_PROPERTIES: &[&str] = &[
-    "Type", "Subtype", "F", "C", "IC", "AP", "FT", "CA", "A", "AA",
+    "Type", "Subtype", "F", "C", "IC", "AP", "FT", "CA", "A", "AA", "FS",
 ];
 const OUTPUT_INTENT_DIRECT_PROPERTIES: &[&str] = &[
     "Type",
@@ -110,11 +135,38 @@ const NAMES_DIRECT_PROPERTIES: &[&str] = &[
     "AlternatePresentations",
     "Renditions",
 ];
-const OUTLINES_DIRECT_PROPERTIES: &[&str] = &["Type", "First", "Last", "Count"];
+const OUTLINES_DIRECT_PROPERTIES: &[&str] = &[
+    "Type", "First", "Last", "Next", "Prev", "Parent", "Count", "Dest", "A",
+];
 const DESTINATION_DIRECT_PROPERTIES: &[&str] = &["D", "Dest", "A"];
-const ACTION_DIRECT_PROPERTIES: &[&str] = &["Type", "S", "D", "URI", "Next", "NewWindow"];
+const ACTION_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "S",
+    "D",
+    "URI",
+    "Next",
+    "NewWindow",
+    "F",
+    "FS",
+    "Win",
+    "Unix",
+    "Mac",
+];
 const FORM_FIELD_DIRECT_PROPERTIES: &[&str] = &[
-    "FT", "T", "TU", "TM", "Ff", "V", "DV", "Kids", "Parent", "AA",
+    "FT", "T", "TU", "TM", "Ff", "V", "DV", "Kids", "Parent", "AA", "A", "AP", "F",
+];
+const FILE_SPEC_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "FS",
+    "F",
+    "UF",
+    "DOS",
+    "Mac",
+    "Unix",
+    "EF",
+    "Desc",
+    "CI",
+    "AFRelationship",
 ];
 const IMAGE_DIRECT_PROPERTIES: &[&str] = &[
     "Type",
@@ -160,6 +212,7 @@ const DIRECT_PROPERTY_NAMES: &[&str] = &[
     "AA",
     "AIS",
     "AP",
+    "AFRelationship",
     "Alternate",
     "AlternatePresentations",
     "Annot",
@@ -191,6 +244,7 @@ const DIRECT_PROPERTY_NAMES: &[&str] = &[
     "F",
     "FDecodeParms",
     "FFilter",
+    "FS",
     "FT",
     "Ff",
     "Fields",
@@ -228,6 +282,7 @@ const DIRECT_PROPERTY_NAMES: &[&str] = &[
     "Parent",
     "ParentTree",
     "ParentTreeNextKey",
+    "Prev",
     "Pattern",
     "ProcSet",
     "Properties",
@@ -250,6 +305,7 @@ const DIRECT_PROPERTY_NAMES: &[&str] = &[
     "ToUnicode",
     "Type",
     "URI",
+    "UF",
     "URLS",
     "V",
     "Width",
@@ -333,6 +389,16 @@ const PAGE_PROPERTIES: &[&str] = &[
     "Contents",
     "Resources",
     "Annots",
+    "MediaBox",
+    "CropBox",
+    "BleedBox",
+    "TrimBox",
+    "ArtBox",
+    "Rotate",
+    "UserUnit",
+    "Tabs",
+    "StructParents",
+    "AA",
 ];
 const PAGE_TREE_PROPERTIES: &[&str] = &["Type", "Kids", "Count", "Parent", "Resources"];
 const RESOURCE_PROPERTIES: &[&str] = RESOURCE_DIRECT_PROPERTIES;
@@ -386,9 +452,11 @@ const ANNOTATION_PROPERTIES: &[&str] = &[
     "CA",
     "A",
     "AA",
+    "FS",
 ];
 const ACTION_PROPERTIES: &[&str] = ACTION_DIRECT_PROPERTIES;
 const FORM_FIELD_PROPERTIES: &[&str] = FORM_FIELD_DIRECT_PROPERTIES;
+const FILE_SPEC_PROPERTIES: &[&str] = FILE_SPEC_DIRECT_PROPERTIES;
 const COLOR_SPACE_PROPERTIES: &[&str] = COLOR_SPACE_DIRECT_PROPERTIES;
 const EXT_GSTATE_PROPERTIES: &[&str] = EXT_GSTATE_DIRECT_PROPERTIES;
 const STRUCTURE_PROPERTIES: &[&str] = STRUCTURE_DIRECT_PROPERTIES;
@@ -499,7 +567,37 @@ const PAGE_LINKS: &[(&str, &str)] = &[
     ("fonts", "font"),
     ("annotations", "annotation"),
     ("contentStreams", "contentStream"),
+    ("additionalActions", "action"),
 ];
+const ANNOTATION_LINKS: &[(&str, &str)] = &[
+    ("action", "action"),
+    ("additionalActions", "action"),
+    ("fileSpec", "fileSpec"),
+    ("formField", "formField"),
+];
+const ACTION_LINKS: &[(&str, &str)] = &[
+    ("next", "action"),
+    ("fileSpec", "fileSpec"),
+    ("destination", "destination"),
+];
+const FORM_FIELD_LINKS: &[(&str, &str)] = &[
+    ("kids", "formField"),
+    ("parent", "formField"),
+    ("action", "action"),
+    ("additionalActions", "action"),
+    ("fileSpec", "fileSpec"),
+];
+const ACRO_FORM_LINKS: &[(&str, &str)] = &[("fields", "formField")];
+const OUTLINE_LINKS: &[(&str, &str)] = &[
+    ("first", "outline"),
+    ("last", "outline"),
+    ("next", "outline"),
+    ("previous", "outline"),
+    ("action", "action"),
+    ("destination", "destination"),
+];
+const NAMES_LINKS: &[(&str, &str)] = &[("destinations", "destination"), ("files", "fileSpec")];
+const DESTINATION_LINKS: &[(&str, &str)] = &[("action", "action")];
 
 /// Feature extraction selection.
 #[derive(Clone, Debug, Default, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
@@ -1271,10 +1369,10 @@ impl ModelRegistry {
             family("page", PAGE_PROPERTIES, PAGE_LINKS),
             family("pageTree", PAGE_TREE_PROPERTIES, EMPTY_LINK_NAMES),
             family("resource", RESOURCE_PROPERTIES, EMPTY_LINK_NAMES),
-            family("names", NAMES_PROPERTIES, EMPTY_LINK_NAMES),
-            family("outline", OUTLINE_PROPERTIES, EMPTY_LINK_NAMES),
-            family("destination", DESTINATION_PROPERTIES, EMPTY_LINK_NAMES),
-            family("acroForm", ACRO_FORM_PROPERTIES, EMPTY_LINK_NAMES),
+            family("names", NAMES_PROPERTIES, NAMES_LINKS),
+            family("outline", OUTLINE_PROPERTIES, OUTLINE_LINKS),
+            family("destination", DESTINATION_PROPERTIES, DESTINATION_LINKS),
+            family("acroForm", ACRO_FORM_PROPERTIES, ACRO_FORM_LINKS),
             family(
                 "optionalContentProperties",
                 OPTIONAL_CONTENT_PROPERTIES,
@@ -1292,9 +1390,10 @@ impl ModelRegistry {
                 UNDEFINED_OPERATOR_PROPERTIES,
                 EMPTY_LINK_NAMES,
             ),
-            family("annotation", ANNOTATION_PROPERTIES, EMPTY_LINK_NAMES),
-            family("action", ACTION_PROPERTIES, EMPTY_LINK_NAMES),
-            family("formField", FORM_FIELD_PROPERTIES, EMPTY_LINK_NAMES),
+            family("annotation", ANNOTATION_PROPERTIES, ANNOTATION_LINKS),
+            family("action", ACTION_PROPERTIES, ACTION_LINKS),
+            family("formField", FORM_FIELD_PROPERTIES, FORM_FIELD_LINKS),
+            family("fileSpec", FILE_SPEC_PROPERTIES, EMPTY_LINK_NAMES),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
             family("extGState", EXT_GSTATE_PROPERTIES, EMPTY_LINK_NAMES),
             family("structureTreeRoot", STRUCTURE_PROPERTIES, EMPTY_LINK_NAMES),
@@ -1421,6 +1520,24 @@ impl ModelRegistry {
     /// Iterates registered family names.
     pub(crate) fn family_names(&self) -> impl Iterator<Item = &ObjectTypeName> {
         self.families.keys()
+    }
+
+    pub(crate) fn registered_family_count(&self) -> u64 {
+        u64::try_from(self.families.len()).unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn registered_property_count(&self) -> u64 {
+        self.families
+            .values()
+            .map(|family| u64::try_from(family.property_schema().len()).unwrap_or(u64::MAX))
+            .fold(0_u64, u64::saturating_add)
+    }
+
+    pub(crate) fn registered_link_count(&self) -> u64 {
+        self.families
+            .values()
+            .map(|family| u64::try_from(family.link_schema().len()).unwrap_or(u64::MAX))
+            .fold(0_u64, u64::saturating_add)
     }
 }
 
@@ -1735,11 +1852,11 @@ impl<'a> ModelObjectRef<'a> {
                 model.page_ordinal, model.key.number, model.key.generation
             ),
             Self::Stream(model) => format!("stream:{}:{}", model.key.number, model.key.generation),
-            Self::Generic(model) => format!(
-                "{}:{}:{}",
+            Self::Generic(model) => generic_identity_key(
                 model.object_type.as_str(),
+                model.key,
                 model.ordinal,
-                model.key.map_or(0, |key| key.number.get())
+                model.context.as_str(),
             ),
         }
     }
@@ -1768,13 +1885,13 @@ impl<'a> ModelObjectRef<'a> {
             Self::Document(model) => model.linked_objects(graph, max_objects),
             Self::Catalog(model) => model.linked_objects(graph, max_objects),
             Self::Metadata(model) => model.linked_objects(graph, max_objects),
-            Self::Page(model) => model.linked_objects(graph, max_objects),
+            Self::Page(model) => page_linked_objects(model, graph, max_objects),
             Self::Font(model) => model.linked_objects(graph, max_objects),
             Self::Annotation(model) => model.linked_objects(graph, max_objects),
             Self::OutputIntent(model) => model.linked_objects(graph, max_objects),
             Self::ContentStream(model) => model.linked_objects(graph, max_objects),
             Self::Stream(model) => model.linked_objects(graph, max_objects),
-            Self::Generic(model) => model.linked_objects(graph, max_objects),
+            Self::Generic(model) => generic_linked_objects(model, graph, max_objects),
         }
     }
 }
@@ -1869,7 +1986,7 @@ impl<'a> ModelGraph<'a> {
         PageModel::from_catalog(self.document, catalog, self.limits, max_objects)
     }
 
-    fn fonts(&self, page: &PageModel<'_>, max_objects: usize) -> Result<Vec<FontModel<'a>>> {
+    fn fonts(&self, page: &PageModel<'a>, max_objects: usize) -> Result<Vec<FontModel<'a>>> {
         FontModel::from_page(self.document, page, max_objects)
     }
 
@@ -2013,9 +2130,7 @@ impl<'a> ModelGraph<'a> {
         max_objects: usize,
         models: &mut Vec<GenericModel<'a>>,
     ) -> Result<()> {
-        if let Some(resources) =
-            resolve_dictionary_value(self.document, page.dictionary.get("Resources"))
-        {
+        if let Some(resources) = page_resources_dictionary(self.document, page)? {
             push_generic_model(
                 models,
                 GenericModel::new(
@@ -2610,6 +2725,7 @@ impl ModelObject for MetadataModel<'_> {
 #[derive(Clone, Debug)]
 pub struct PageModel<'a> {
     document: &'a ParsedDocument,
+    limits: &'a ResourceLimits,
     key: ObjectKey,
     offset: u64,
     ordinal: usize,
@@ -2623,7 +2739,7 @@ impl<'a> PageModel<'a> {
     fn from_catalog(
         document: &'a ParsedDocument,
         catalog: &CatalogModel<'_>,
-        limits: &ResourceLimits,
+        limits: &'a ResourceLimits,
         max_objects: usize,
     ) -> Result<Vec<Self>> {
         let Some(pages_root) = catalog.pages else {
@@ -2652,17 +2768,17 @@ impl<'a> PageModel<'a> {
                     }
                     pages.push(Self {
                         document,
+                        limits,
                         key,
                         offset: object.offset,
                         ordinal: pages.len(),
                         dictionary,
                         object_type: ObjectTypeName::unchecked("page"),
                         supertypes: vec![ObjectTypeName::unchecked("object")],
-                        links: vec![
-                            LinkName(Identifier::unchecked("fonts")),
-                            LinkName(Identifier::unchecked("annotations")),
-                            LinkName(Identifier::unchecked("contentStreams")),
-                        ],
+                        links: PAGE_LINKS
+                            .iter()
+                            .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                            .collect(),
                     });
                 }
                 _ => {
@@ -2710,10 +2826,19 @@ impl ModelObject for PageModel<'_> {
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
             "hasContents" => Ok(ModelValue::Bool(self.dictionary.get("Contents").is_some())),
-            "hasResources" => Ok(ModelValue::Bool(self.dictionary.get("Resources").is_some())),
+            "hasResources" => Ok(ModelValue::Bool(
+                inherited_page_value(self.document, self.key, "Resources", self.limits)?.is_some(),
+            )),
             "annotationCount" => Ok(ModelValue::Number(usize_to_f64(
                 object_refs_or_direct_count(self.dictionary.get("Annots")),
             )?)),
+            _ if PAGE_INHERITED_PROPERTIES.contains(&name.as_str()) => {
+                Ok(
+                    inherited_page_value(self.document, self.key, name.as_str(), self.limits)?
+                        .cloned()
+                        .map_or(ModelValue::Null, ModelValue::from),
+                )
+            }
             _ => dictionary_property(self.dictionary, name, PAGE_DIRECT_PROPERTIES),
         }
     }
@@ -2724,35 +2849,55 @@ impl ModelObject for PageModel<'_> {
 
     fn linked_objects<'a>(
         &self,
-        graph: &ModelGraph<'a>,
-        max_objects: usize,
+        _graph: &ModelGraph<'a>,
+        _max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
-        let mut objects = Vec::new();
-        let mut content_streams = graph.content_streams(self, max_objects)?;
-        content_streams.reverse();
-        for content_stream in content_streams {
-            push_linked(
-                &mut objects,
-                ModelObjectRef::ContentStream(content_stream),
-                max_objects,
-            )?;
-        }
-        let mut annotations = graph.annotations(self, max_objects.saturating_sub(objects.len()))?;
-        annotations.reverse();
-        for annotation in annotations {
-            push_linked(
-                &mut objects,
-                ModelObjectRef::Annotation(annotation),
-                max_objects,
-            )?;
-        }
-        let mut fonts = graph.fonts(self, max_objects.saturating_sub(objects.len()))?;
-        fonts.reverse();
-        for font in fonts {
-            push_linked(&mut objects, ModelObjectRef::Font(font), max_objects)?;
-        }
-        Ok(objects)
+        Ok(Vec::new())
     }
+}
+
+fn page_linked_objects<'a>(
+    page: &PageModel<'a>,
+    graph: &ModelGraph<'a>,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    let mut objects = Vec::new();
+    let mut content_streams = graph.content_streams(page, max_objects)?;
+    content_streams.reverse();
+    for content_stream in content_streams {
+        push_linked(
+            &mut objects,
+            ModelObjectRef::ContentStream(content_stream),
+            max_objects,
+        )?;
+    }
+    let mut annotations = graph.annotations(page, max_objects.saturating_sub(objects.len()))?;
+    annotations.reverse();
+    for annotation in annotations {
+        push_linked(
+            &mut objects,
+            ModelObjectRef::Annotation(annotation),
+            max_objects,
+        )?;
+    }
+    let mut fonts = graph.fonts(page, max_objects.saturating_sub(objects.len()))?;
+    fonts.reverse();
+    for font in fonts {
+        push_linked(&mut objects, ModelObjectRef::Font(font), max_objects)?;
+    }
+    let mut actions = action_models_from_dictionary_entries(
+        graph.document,
+        page.dictionary,
+        &["AA"],
+        page.ordinal,
+        "root/page",
+        max_objects.saturating_sub(objects.len()),
+    )?;
+    actions.reverse();
+    for action in actions {
+        push_linked(&mut objects, ModelObjectRef::Generic(action), max_objects)?;
+    }
+    Ok(objects)
 }
 
 /// Font dictionary model wrapper.
@@ -2772,15 +2917,11 @@ pub struct FontModel<'a> {
 impl<'a> FontModel<'a> {
     fn from_page(
         document: &'a ParsedDocument,
-        page: &PageModel<'_>,
+        page: &PageModel<'a>,
         max_objects: usize,
     ) -> Result<Vec<Self>> {
         let mut fonts = Vec::new();
-        let Some(page_dictionary) = page_dictionary(document, page.key) else {
-            return Ok(fonts);
-        };
-        let Some(resources) = resolve_dictionary_value(document, page_dictionary.get("Resources"))
-        else {
+        let Some(resources) = page_resources_dictionary(document, page)? else {
             return Ok(fonts);
         };
         let Some(crate::CosObject::Dictionary(fonts_dictionary)) = resources.get("Font") else {
@@ -2898,7 +3039,10 @@ impl<'a> AnnotationModel<'a> {
                     dictionary,
                     object_type: ObjectTypeName::unchecked("annotation"),
                     supertypes: vec![ObjectTypeName::unchecked("object")],
-                    links: Vec::new(),
+                    links: ANNOTATION_LINKS
+                        .iter()
+                        .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                        .collect(),
                 });
             }
         }
@@ -2938,10 +3082,58 @@ impl ModelObject for AnnotationModel<'_> {
 
     fn linked_objects<'a>(
         &self,
-        _graph: &ModelGraph<'a>,
-        _max_objects: usize,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
-        Ok(Vec::new())
+        let mut objects = Vec::new();
+        if self.dictionary.get("Subtype").is_some_and(
+            |value| matches!(value, crate::CosObject::Name(name) if name.matches("Widget")),
+        ) {
+            push_linked(
+                &mut objects,
+                ModelObjectRef::Generic(GenericModel::new(
+                    graph.document,
+                    "formField",
+                    self.key,
+                    self.offset,
+                    self.dictionary,
+                    self.ordinal,
+                    format!(
+                        "root/page[{}]/annotation[{}]/formField[0]",
+                        self.page_ordinal, self.ordinal
+                    ),
+                )),
+                max_objects,
+            )?;
+        }
+        let mut actions = action_models_from_dictionary_entries(
+            graph.document,
+            self.dictionary,
+            &["A", "AA"],
+            self.ordinal,
+            "root/annotation",
+            max_objects.saturating_sub(objects.len()),
+        )?;
+        actions.reverse();
+        for action in actions {
+            push_linked(&mut objects, ModelObjectRef::Generic(action), max_objects)?;
+        }
+        if let Some(file_spec) = file_spec_model_from_value(
+            graph.document,
+            self.dictionary.get("FS"),
+            self.ordinal,
+            format!(
+                "root/page[{}]/annotation[{}]/fileSpec[0]",
+                self.page_ordinal, self.ordinal
+            ),
+        ) {
+            push_linked(
+                &mut objects,
+                ModelObjectRef::Generic(file_spec),
+                max_objects,
+            )?;
+        }
+        Ok(objects)
     }
 }
 
@@ -3136,6 +3328,51 @@ fn resolve_dictionary_value<'a>(
     }
 }
 
+fn inherited_page_value<'a>(
+    document: &'a ParsedDocument,
+    page_key: ObjectKey,
+    name: &str,
+    limits: &ResourceLimits,
+) -> Result<Option<&'a crate::CosObject>> {
+    let mut current = Some(page_key);
+    let mut visited = HashSet::new();
+    while let Some(key) = current {
+        if !visited.insert(key) {
+            return Ok(None);
+        }
+        if u64::try_from(visited.len()).map_err(|_| ValidationError::LimitExceeded {
+            limit: "max_objects",
+        })? > limits.max_objects
+        {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_objects",
+            }
+            .into());
+        }
+        let Some(dictionary) = page_dictionary(document, key) else {
+            return Ok(None);
+        };
+        if let Some(value) = dictionary.get(name) {
+            return Ok(Some(value));
+        }
+        current = match dictionary.get("Parent") {
+            Some(crate::CosObject::Reference(parent)) => Some(*parent),
+            _ => None,
+        };
+    }
+    Ok(None)
+}
+
+fn page_resources_dictionary<'a>(
+    document: &'a ParsedDocument,
+    page: &PageModel<'a>,
+) -> Result<Option<&'a crate::Dictionary>> {
+    Ok(resolve_dictionary_value(
+        document,
+        inherited_page_value(document, page.key, "Resources", page.limits)?,
+    ))
+}
+
 fn page_dictionary(document: &ParsedDocument, key: ObjectKey) -> Option<&crate::Dictionary> {
     document.objects.get(&key)?.object.as_dictionary()
 }
@@ -3253,6 +3490,137 @@ fn array_values(value: Option<&crate::CosObject>) -> impl Iterator<Item = &crate
         .flatten()
 }
 
+fn action_models_from_dictionary_entries<'a>(
+    document: &'a ParsedDocument,
+    dictionary: &crate::Dictionary,
+    keys: &[&str],
+    owner_ordinal: usize,
+    context_prefix: &str,
+    max_objects: usize,
+) -> Result<Vec<GenericModel<'a>>> {
+    let mut actions = Vec::new();
+    for key in keys {
+        let context = format!("{context_prefix}[{owner_ordinal}]/{key}");
+        if *key == "AA" {
+            collect_additional_action_models_from_value(
+                document,
+                dictionary.get(key),
+                owner_ordinal,
+                &context,
+                max_objects,
+                &mut actions,
+            )?;
+        } else {
+            collect_action_models_from_value(
+                document,
+                dictionary.get(key),
+                &context,
+                max_objects,
+                &mut actions,
+            )?;
+        }
+    }
+    Ok(actions)
+}
+
+fn collect_action_models_from_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&crate::CosObject>,
+    context: &str,
+    max_objects: usize,
+    actions: &mut Vec<GenericModel<'a>>,
+) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if let Some(model) = dictionary_backed_model_from_value(
+        document,
+        Some(value),
+        "action",
+        actions.len(),
+        context.to_owned(),
+    ) {
+        push_generic_model(actions, model, max_objects)?;
+    }
+    Ok(())
+}
+
+fn collect_additional_action_models_from_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&crate::CosObject>,
+    owner_ordinal: usize,
+    context: &str,
+    max_objects: usize,
+    actions: &mut Vec<GenericModel<'a>>,
+) -> Result<()> {
+    let Some(crate::CosObject::Dictionary(additional_actions)) = value else {
+        return Ok(());
+    };
+    for (name, action) in additional_actions.iter() {
+        let action_context = format!(
+            "{context}/action[{}:{}]",
+            owner_ordinal,
+            String::from_utf8_lossy(name.as_bytes())
+        );
+        if let Some(model) = dictionary_backed_model_from_value(
+            document,
+            Some(action),
+            "action",
+            actions.len(),
+            action_context,
+        ) {
+            push_generic_model(actions, model, max_objects)?;
+        }
+    }
+    Ok(())
+}
+
+fn file_spec_model_from_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&crate::CosObject>,
+    ordinal: usize,
+    context: String,
+) -> Option<GenericModel<'a>> {
+    dictionary_backed_model_from_value(document, value, "fileSpec", ordinal, context)
+}
+
+fn destination_model_from_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&crate::CosObject>,
+    ordinal: usize,
+    context: String,
+) -> Option<GenericModel<'a>> {
+    dictionary_backed_model_from_value(document, value, "destination", ordinal, context)
+}
+
+fn dictionary_backed_model_from_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&crate::CosObject>,
+    family: &'static str,
+    ordinal: usize,
+    context: String,
+) -> Option<GenericModel<'a>> {
+    match value? {
+        crate::CosObject::Dictionary(dictionary) => Some(GenericModel::new(
+            document, family, None, None, dictionary, ordinal, context,
+        )),
+        crate::CosObject::Reference(key) => {
+            let object = document.objects.get(key)?;
+            let dictionary = object.object.as_dictionary()?;
+            Some(GenericModel::new(
+                document,
+                family,
+                Some(*key),
+                Some(object.offset),
+                dictionary,
+                ordinal,
+                context,
+            ))
+        }
+        _ => None,
+    }
+}
+
 fn dictionary_property(
     dictionary: &crate::Dictionary,
     name: &PropertyName,
@@ -3280,7 +3648,7 @@ pub struct GenericModel<'a> {
     document: &'a ParsedDocument,
     key: Option<ObjectKey>,
     offset: Option<u64>,
-    dictionary: &'a crate::Dictionary,
+    dictionary: crate::Dictionary,
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
@@ -3295,7 +3663,7 @@ impl<'a> GenericModel<'a> {
         family: &'static str,
         key: Option<ObjectKey>,
         offset: Option<u64>,
-        dictionary: &'a crate::Dictionary,
+        dictionary: &crate::Dictionary,
         ordinal: usize,
         context: impl Into<String>,
     ) -> Self {
@@ -3303,10 +3671,13 @@ impl<'a> GenericModel<'a> {
             document,
             key,
             offset,
-            dictionary,
+            dictionary: dictionary.clone(),
             object_type: ObjectTypeName::unchecked(family),
             supertypes: vec![ObjectTypeName::unchecked("object")],
-            links: Vec::new(),
+            links: family_links(family)
+                .iter()
+                .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+                .collect(),
             allowed_properties: family_direct_properties(family),
             context: context.into(),
             ordinal,
@@ -3317,7 +3688,12 @@ impl<'a> GenericModel<'a> {
 impl ModelObject for GenericModel<'_> {
     fn id(&self) -> Option<ObjectIdentity> {
         Some(ObjectIdentity {
-            key: format!("{}:{}", self.object_type.as_str(), self.ordinal),
+            key: generic_identity_key(
+                self.object_type.as_str(),
+                self.key,
+                self.ordinal,
+                self.context.as_str(),
+            ),
         })
     }
 
@@ -3336,19 +3712,19 @@ impl ModelObject for GenericModel<'_> {
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match (self.object_type.as_str(), name.as_str()) {
             ("image", "width") => dictionary_property(
-                self.dictionary,
+                &self.dictionary,
                 &PropertyName::unchecked("Width"),
                 IMAGE_DIRECT_PROPERTIES,
             ),
             ("image", "height") => dictionary_property(
-                self.dictionary,
+                &self.dictionary,
                 &PropertyName::unchecked("Height"),
                 IMAGE_DIRECT_PROPERTIES,
             ),
             ("contentStream", "operatorCount" | "markedContentCount") => {
                 Ok(ModelValue::Number(0.0))
             }
-            _ => dictionary_property(self.dictionary, name, self.allowed_properties),
+            _ => dictionary_property(&self.dictionary, name, self.allowed_properties),
         }
     }
 
@@ -3380,6 +3756,273 @@ fn push_generic_model<'a>(
     Ok(())
 }
 
+fn generic_identity_key(
+    family: &str,
+    key: Option<ObjectKey>,
+    ordinal: usize,
+    context: &str,
+) -> String {
+    key.map_or_else(
+        || format!("{family}:inline:{ordinal}:{context}"),
+        |key| format!("{family}:{}:{}", key.number, key.generation),
+    )
+}
+
+fn generic_linked_objects<'a>(
+    model: &GenericModel<'a>,
+    graph: &ModelGraph<'a>,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    match model.object_type.as_str() {
+        "acroForm" => generic_models_from_dictionary_value(
+            graph.document,
+            model.dictionary.get("Fields"),
+            "formField",
+            &model.context,
+            max_objects,
+        ),
+        "formField" => form_field_linked_objects(model, graph, max_objects),
+        "action" => action_linked_objects(model, graph, max_objects),
+        "outline" => outline_linked_objects(model, graph, max_objects),
+        "names" => names_linked_objects(model, graph, max_objects),
+        "destination" => destination_linked_objects(model, graph, max_objects),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn generic_models_from_dictionary_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&crate::CosObject>,
+    family: &'static str,
+    context_prefix: &str,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    let mut objects = Vec::new();
+    let Some(value) = value else {
+        return Ok(objects);
+    };
+    match value {
+        crate::CosObject::Array(values) => {
+            for item in values {
+                let ordinal = objects.len();
+                if let Some(model) = dictionary_backed_model_from_value(
+                    document,
+                    Some(item),
+                    family,
+                    ordinal,
+                    format!("{context_prefix}/{family}[{ordinal}]"),
+                ) {
+                    push_linked(&mut objects, ModelObjectRef::Generic(model), max_objects)?;
+                }
+            }
+        }
+        _ => {
+            if let Some(model) = dictionary_backed_model_from_value(
+                document,
+                Some(value),
+                family,
+                0,
+                format!("{context_prefix}/{family}[0]"),
+            ) {
+                push_linked(&mut objects, ModelObjectRef::Generic(model), max_objects)?;
+            }
+        }
+    }
+    Ok(objects)
+}
+
+fn form_field_linked_objects<'a>(
+    model: &GenericModel<'a>,
+    graph: &ModelGraph<'a>,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    let mut objects = generic_models_from_dictionary_value(
+        graph.document,
+        model.dictionary.get("Kids"),
+        "formField",
+        &model.context,
+        max_objects,
+    )?;
+    if let Some(parent) = generic_models_from_dictionary_value(
+        graph.document,
+        model.dictionary.get("Parent"),
+        "formField",
+        &model.context,
+        max_objects.saturating_sub(objects.len()),
+    )?
+    .into_iter()
+    .next()
+    {
+        push_linked(&mut objects, parent, max_objects)?;
+    }
+    let mut actions = action_models_from_dictionary_entries(
+        graph.document,
+        &model.dictionary,
+        &["A", "AA"],
+        model.ordinal,
+        &model.context,
+        max_objects.saturating_sub(objects.len()),
+    )?;
+    actions.reverse();
+    for action in actions {
+        push_linked(&mut objects, ModelObjectRef::Generic(action), max_objects)?;
+    }
+    if let Some(file_spec) = file_spec_model_from_value(
+        graph.document,
+        model.dictionary.get("F"),
+        model.ordinal,
+        format!("{}/fileSpec[0]", model.context),
+    ) {
+        push_linked(
+            &mut objects,
+            ModelObjectRef::Generic(file_spec),
+            max_objects,
+        )?;
+    }
+    Ok(objects)
+}
+
+fn action_linked_objects<'a>(
+    model: &GenericModel<'a>,
+    graph: &ModelGraph<'a>,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    let mut objects = generic_models_from_dictionary_value(
+        graph.document,
+        model.dictionary.get("Next"),
+        "action",
+        &model.context,
+        max_objects,
+    )?;
+    if let Some(file_spec) = file_spec_model_from_value(
+        graph.document,
+        model
+            .dictionary
+            .get("F")
+            .or_else(|| model.dictionary.get("FS")),
+        model.ordinal,
+        format!("{}/fileSpec[0]", model.context),
+    ) {
+        push_linked(
+            &mut objects,
+            ModelObjectRef::Generic(file_spec),
+            max_objects,
+        )?;
+    }
+    for value_name in ["D"] {
+        if let Some(destination) = destination_model_from_value(
+            graph.document,
+            model.dictionary.get(value_name),
+            model.ordinal,
+            format!("{}/destination[0]", model.context),
+        ) {
+            push_linked(
+                &mut objects,
+                ModelObjectRef::Generic(destination),
+                max_objects,
+            )?;
+        }
+    }
+    Ok(objects)
+}
+
+fn outline_linked_objects<'a>(
+    model: &GenericModel<'a>,
+    graph: &ModelGraph<'a>,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    let mut objects = Vec::new();
+    for key in ["First", "Last", "Next", "Prev"] {
+        let linked = generic_models_from_dictionary_value(
+            graph.document,
+            model.dictionary.get(key),
+            "outline",
+            &model.context,
+            max_objects.saturating_sub(objects.len()),
+        )?;
+        for object in linked {
+            push_linked(&mut objects, object, max_objects)?;
+        }
+    }
+    let mut actions = action_models_from_dictionary_entries(
+        graph.document,
+        &model.dictionary,
+        &["A"],
+        model.ordinal,
+        &model.context,
+        max_objects.saturating_sub(objects.len()),
+    )?;
+    actions.reverse();
+    for action in actions {
+        push_linked(&mut objects, ModelObjectRef::Generic(action), max_objects)?;
+    }
+    if let Some(destination) = destination_model_from_value(
+        graph.document,
+        model.dictionary.get("Dest"),
+        model.ordinal,
+        format!("{}/destination[0]", model.context),
+    ) {
+        push_linked(
+            &mut objects,
+            ModelObjectRef::Generic(destination),
+            max_objects,
+        )?;
+    }
+    Ok(objects)
+}
+
+fn names_linked_objects<'a>(
+    model: &GenericModel<'a>,
+    graph: &ModelGraph<'a>,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    let mut objects = Vec::new();
+    for key in ["Dests", "EmbeddedFiles"] {
+        let Some(dictionary) = resolve_dictionary_value(graph.document, model.dictionary.get(key))
+        else {
+            continue;
+        };
+        let names = dictionary.get("Names");
+        let family = if key == "EmbeddedFiles" {
+            "fileSpec"
+        } else {
+            "destination"
+        };
+        for (ordinal, value) in array_values(names).enumerate() {
+            if ordinal % 2 == 0 {
+                continue;
+            }
+            let linked = generic_models_from_dictionary_value(
+                graph.document,
+                Some(value),
+                family,
+                &model.context,
+                max_objects.saturating_sub(objects.len()),
+            )?;
+            for object in linked {
+                push_linked(&mut objects, object, max_objects)?;
+            }
+        }
+    }
+    Ok(objects)
+}
+
+fn destination_linked_objects<'a>(
+    model: &GenericModel<'a>,
+    graph: &ModelGraph<'a>,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    action_models_from_dictionary_entries(
+        graph.document,
+        &model.dictionary,
+        &["A"],
+        model.ordinal,
+        &model.context,
+        max_objects,
+    )
+    .map(|actions| actions.into_iter().map(ModelObjectRef::Generic).collect())
+}
+
 fn family_direct_properties(family: &str) -> &'static [&'static str] {
     match family {
         "resource" => RESOURCE_DIRECT_PROPERTIES,
@@ -3394,6 +4037,7 @@ fn family_direct_properties(family: &str) -> &'static [&'static str] {
         "xObject" => XOBJECT_DIRECT_PROPERTIES,
         "action" => ACTION_DIRECT_PROPERTIES,
         "formField" => FORM_FIELD_DIRECT_PROPERTIES,
+        "fileSpec" => FILE_SPEC_DIRECT_PROPERTIES,
         "colorSpace" => COLOR_SPACE_DIRECT_PROPERTIES,
         "extGState" => EXT_GSTATE_DIRECT_PROPERTIES,
         "structureTreeRoot" => STRUCTURE_DIRECT_PROPERTIES,
@@ -3402,6 +4046,20 @@ fn family_direct_properties(family: &str) -> &'static [&'static str] {
         "security" => SECURITY_DIRECT_PROPERTIES,
         "pageTree" => PAGE_TREE_PROPERTIES,
         _ => DIRECT_PROPERTY_NAMES,
+    }
+}
+
+fn family_links(family: &str) -> &'static [(&'static str, &'static str)] {
+    match family {
+        "page" => PAGE_LINKS,
+        "annotation" => ANNOTATION_LINKS,
+        "action" => ACTION_LINKS,
+        "formField" => FORM_FIELD_LINKS,
+        "acroForm" => ACRO_FORM_LINKS,
+        "outline" => OUTLINE_LINKS,
+        "names" => NAMES_LINKS,
+        "destination" => DESTINATION_LINKS,
+        _ => EMPTY_LINK_NAMES,
     }
 }
 
@@ -3473,7 +4131,7 @@ fn classify_dictionary(dictionary: &crate::Dictionary) -> Option<&'static str> {
             return Some("outputIntent");
         }
         if name.matches("Filespec") {
-            return Some("destination");
+            return Some("fileSpec");
         }
     }
     if dictionary.get("Fields").is_some() {
@@ -4084,7 +4742,7 @@ mod tests {
 << /Type /Catalog /Pages 2 0 R /OutputIntents [8 0 R] >>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>
 endobj
 3 0 obj
 << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Annots [5 0 R] /Contents 6 0 R >>
@@ -4115,13 +4773,17 @@ trailer
 "
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single inline PDF fixture keeps object numbers readable for model graph tests"
+    )]
     fn m6_model_pdf() -> &'static [u8] {
         br"%PDF-1.7
 1 0 obj
 << /Type /Catalog /Pages 2 0 R /Metadata 24 0 R /OutputIntents [26 0 R] /AcroForm 7 0 R /StructTreeRoot 8 0 R /OCProperties 9 0 R /Names 10 0 R /Outlines 11 0 R /Perms 12 0 R /Dests [21 0 R] /Lang (en-US) /MarkInfo << /Marked true >> >>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>
 endobj
 3 0 obj
 << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 5 0 R /Fm1 22 0 R >> /ColorSpace << /CS1 13 0 R >> /ExtGState << /GS1 14 0 R >> >> /Annots [6 0 R] /Contents 15 0 R >>
@@ -4135,7 +4797,7 @@ stream
 endstream
 endobj
 6 0 obj
-<< /Type /Annot /Subtype /Widget /FT /Sig /A 17 0 R >>
+<< /Type /Annot /Subtype /Widget /FT /Sig /A 17 0 R /AA << /D 27 0 R >> /FS 28 0 R >>
 endobj
 7 0 obj
 << /Fields [6 0 R] /SigFlags 3 >>
@@ -4171,7 +4833,7 @@ endobj
 << /Type /CMap /CMapName /Identity-H >>
 endobj
 17 0 obj
-<< /Type /Action /S /URI /URI (https://example.invalid) >>
+<< /Type /Action /S /URI /URI (https://example.invalid) /Next 27 0 R >>
 endobj
 18 0 obj
 << /Type /StructElem /S /Document /K [] >>
@@ -4208,6 +4870,12 @@ endobj
 26 0 obj
 << /Type /OutputIntent /S /GTS_PDFA1 /DestOutputProfile 25 0 R >>
 endobj
+27 0 obj
+<< /Type /Action /S /GoTo /D 21 0 R >>
+endobj
+28 0 obj
+<< /Type /Filespec /F (attachment.txt) >>
+endobj
 trailer
 << /Root 1 0 R >>
 %%EOF
@@ -4225,8 +4893,8 @@ trailer
                 message: crate::BoundedText::unchecked("missing catalog model"),
             })?;
 
-        let pages =
-            PageModel::from_catalog(&document, &catalog, &crate::ResourceLimits::default(), 16)?;
+        let limits = crate::ResourceLimits::default();
+        let pages = PageModel::from_catalog(&document, &catalog, &limits, 16)?;
         let page = pages.first().ok_or(crate::ParseError::MissingObject {
             message: crate::BoundedText::unchecked("missing page"),
         })?;
@@ -4243,6 +4911,15 @@ trailer
         assert_eq!(
             page.property(&PropertyName::new("hasContents")?)?,
             ModelValue::Bool(true)
+        );
+        assert_eq!(
+            page.property(&PropertyName::new("MediaBox")?)?,
+            ModelValue::List(vec![
+                ModelValue::Number(0.0),
+                ModelValue::Number(0.0),
+                ModelValue::Number(200.0),
+                ModelValue::Number(200.0),
+            ])
         );
         Ok(())
     }
@@ -4296,20 +4973,18 @@ trailer
         let report = session.extract_features(&super::FeatureSelection::Families {
             families: vec![action_family.clone()],
         })?;
-        let Some(action) = report
+        let uri_property = PropertyName::new("URI")?;
+        let has_redacted_uri = report
             .objects
             .iter()
-            .find(|object| object.family == action_family)
-        else {
-            return Err(crate::ParseError::MissingObject {
-                message: crate::BoundedText::unchecked("missing action feature"),
-            }
-            .into());
-        };
-        assert!(matches!(
-            action.properties.get(&PropertyName::new("URI")?),
-            Some(crate::FeatureValue::RedactedString { bytes }) if *bytes > 0
-        ));
+            .filter(|object| object.family == action_family)
+            .any(|action| {
+                matches!(
+                    action.properties.get(&uri_property),
+                    Some(crate::FeatureValue::RedactedString { bytes }) if *bytes > 0
+                )
+            });
+        assert!(has_redacted_uri);
         Ok(())
     }
 
@@ -4492,9 +5167,60 @@ trailer
             "cMap",
             "embeddedFontFile",
             "action",
+            "fileSpec",
             "signature",
             "security",
         ] {
+            assert!(families.contains(family), "missing {family}: {families:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_report_non_placeholder_model_schema_parity() -> crate::Result<()> {
+        let report = crate::model_schema_parity_report()?;
+
+        assert!(report.registered_families > 20);
+        assert!(report.registered_properties > 100);
+        assert!(report.registered_links > 20);
+        assert!(!report.profiles.is_empty());
+        assert!(
+            report
+                .profiles
+                .iter()
+                .any(|profile| profile.bound_rules > 0)
+        );
+        assert!(report.profiles.iter().any(|profile| {
+            profile
+                .unsupported_by_reason
+                .contains_key("missingProperty")
+                || profile.unsupported_by_reason.contains_key("missingLink")
+                || profile
+                    .unsupported_by_reason
+                    .contains_key("missingObjectType")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_bound_cycles_in_page_names_outline_form_and_action_graphs() -> crate::Result<()>
+    {
+        let document = Parser::default().parse(Cursor::new(cyclic_m6_graph_pdf()))?;
+        let limits = crate::ResourceLimits {
+            max_objects: 64,
+            ..crate::ResourceLimits::default()
+        };
+        let session = super::ValidationSession::new(document, limits, 100, false);
+        let report = session.extract_features(&super::FeatureSelection::All)?;
+        let families = report
+            .objects
+            .iter()
+            .map(|object| object.family.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(!report.truncated);
+        assert!(report.visited_objects <= 64);
+        for family in ["names", "outline", "destination", "formField", "action"] {
             assert!(families.contains(family), "missing {family}: {families:?}");
         }
         Ok(())
@@ -4560,6 +5286,47 @@ trailer
         br"%PDF-1.7
 1 0 obj
 << /Type /Catalog >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+"
+    }
+
+    fn cyclic_m6_graph_pdf() -> &'static [u8] {
+        br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Names 7 0 R /Outlines 8 0 R /AcroForm 11 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [2 0 R 3 0 R] /Count 1 /Resources << >> /MediaBox [0 0 100 100] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>
+endobj
+4 0 obj
+<< /Type /Annot /Subtype /Widget /FT /Btn /A 5 0 R >>
+endobj
+5 0 obj
+<< /Type /Action /S /URI /URI (https://example.invalid) /Next 5 0 R >>
+endobj
+6 0 obj
+<< /D [3 0 R /Fit] /A 5 0 R >>
+endobj
+7 0 obj
+<< /Dests << /Names [(home) 6 0 R] >> >>
+endobj
+8 0 obj
+<< /Type /Outlines /First 9 0 R /Last 9 0 R /Count 1 >>
+endobj
+9 0 obj
+<< /Title (loop) /Next 9 0 R /Dest 6 0 R >>
+endobj
+11 0 obj
+<< /Fields [12 0 R] >>
+endobj
+12 0 obj
+<< /FT /Tx /Kids [12 0 R] /A 5 0 R >>
 endobj
 trailer
 << /Root 1 0 R >>
