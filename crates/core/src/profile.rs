@@ -270,6 +270,139 @@ pub struct UnsupportedRuleParityEntry {
     pub expression_fragment: BoundedText,
 }
 
+/// Unsupported-rule cluster report for release-readiness burn-down.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedRuleClusterReport {
+    /// Deterministic schema version for this report contract.
+    pub schema_version: Identifier,
+    /// Vendor pins used by the generated profile catalog.
+    pub vendor_pins: BTreeMap<String, String>,
+    /// Summary counters across all clusters.
+    pub summary: UnsupportedRuleClusterSummary,
+    /// Unsupported-rule clusters in deterministic key order.
+    pub clusters: Vec<UnsupportedRuleCluster>,
+}
+
+/// Summary counters for unsupported-rule clusters.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedRuleClusterSummary {
+    /// Total unsupported rules.
+    pub total_rules: u64,
+    /// Total unsupported-rule clusters.
+    pub total_clusters: u64,
+    /// Release-blocking unsupported rules for in-scope PDF/A and PDF/UA readiness.
+    pub release_blocking_rules: u64,
+    /// Release-blocking clusters for in-scope PDF/A and PDF/UA readiness.
+    pub release_blocking_clusters: u64,
+}
+
+/// One unsupported-rule cluster.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedRuleCluster {
+    /// Primary unsupported reason.
+    pub primary_reason: BoundedText,
+    /// Profile family, such as `pdfa`, `pdfua`, or `wtpdf`.
+    pub profile_family: BoundedText,
+    /// Validation model object type.
+    pub object_type: ObjectTypeName,
+    /// Missing model property when the cluster is property-backed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub property: Option<PropertyName>,
+    /// Missing validation model link when the cluster is link-backed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<PropertyName>,
+    /// Missing semantic family when the cluster is semantic-backed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_family: Option<BoundedText>,
+    /// Number of rules in this cluster.
+    pub rule_count: u64,
+    /// Whether this cluster blocks the first PDF/A and PDF/UA readiness claim.
+    pub release_blocking: bool,
+    /// Owner spec for the implementation workstream.
+    pub owner_spec: SpecReference,
+    /// Expected readiness plan phase for this cluster.
+    pub expected_phase: BoundedText,
+    /// Representative examples in deterministic rule order.
+    pub examples: Vec<UnsupportedRuleClusterExample>,
+}
+
+/// One representative unsupported rule inside a cluster.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedRuleClusterExample {
+    /// CLI/catalog flavour spelling.
+    pub flavour: BoundedText,
+    /// Unsupported rule id.
+    pub rule_id: RuleId,
+    /// Bounded detailed reason.
+    pub reason: BoundedText,
+    /// Bounded expression fragment.
+    pub expression_fragment: BoundedText,
+}
+
+/// Unsupported-rule burn-down report comparing current clusters to an optional baseline.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuleBurnDownReport {
+    /// Deterministic schema version for this report contract.
+    pub schema_version: Identifier,
+    /// Current unsupported-rule cluster summary.
+    pub current_summary: UnsupportedRuleClusterSummary,
+    /// Prior unsupported-rule cluster summary when a baseline was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_summary: Option<UnsupportedRuleClusterSummary>,
+    /// All current clusters with previous counts and deltas when a baseline was supplied.
+    pub clusters: Vec<RuleBurnDownCluster>,
+    /// Largest clusters by current rule count.
+    pub largest_clusters: Vec<RuleBurnDownCluster>,
+}
+
+/// One burn-down row for a current unsupported-rule cluster.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuleBurnDownCluster {
+    /// Primary unsupported reason.
+    pub primary_reason: BoundedText,
+    /// Profile family, such as `pdfa`, `pdfua`, or `wtpdf`.
+    pub profile_family: BoundedText,
+    /// Validation model object type.
+    pub object_type: ObjectTypeName,
+    /// Missing model property when the cluster is property-backed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub property: Option<PropertyName>,
+    /// Missing validation model link when the cluster is link-backed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<PropertyName>,
+    /// Missing semantic family when the cluster is semantic-backed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_family: Option<BoundedText>,
+    /// Current rule count.
+    pub current_rules: u64,
+    /// Previous rule count from a baseline snapshot when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_rules: Option<u64>,
+    /// Signed delta from previous to current when a baseline snapshot was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta_rules: Option<i64>,
+    /// Whether this cluster blocks the first PDF/A and PDF/UA readiness claim.
+    pub release_blocking: bool,
+    /// Owner spec for the implementation workstream.
+    pub owner_spec: SpecReference,
+    /// Expected readiness plan phase for this cluster.
+    pub expected_phase: BoundedText,
+    /// Representative examples in deterministic rule order.
+    pub examples: Vec<UnsupportedRuleClusterExample>,
+}
+
 /// Builds a deterministic model-schema parity report for generated profiles.
 ///
 /// # Errors
@@ -369,6 +502,343 @@ pub fn unsupported_rules_parity_report() -> Result<UnsupportedRulesParityReport>
         String::from(VERA_PDF_LIBRARY_PIN),
     );
     Ok(UnsupportedRulesParityReport { vendor_pins, rules })
+}
+
+/// Builds deterministic unsupported-rule clusters for release-readiness burn-down.
+///
+/// # Errors
+///
+/// Returns [`crate::PdfvError`] if generated profile XML cannot be imported or
+/// bounded report fields cannot be constructed.
+pub fn unsupported_rule_cluster_report() -> Result<UnsupportedRuleClusterReport> {
+    unsupported_rule_cluster_report_from_rules(&unsupported_rules_parity_report()?)
+}
+
+/// Builds a rule burn-down report from current clusters and an optional baseline.
+///
+/// # Errors
+///
+/// Returns [`crate::PdfvError`] if bounded report fields cannot be constructed.
+pub fn rule_burn_down_report(
+    previous: Option<&UnsupportedRuleClusterReport>,
+) -> Result<RuleBurnDownReport> {
+    let current = unsupported_rule_cluster_report()?;
+    rule_burn_down_report_from_clusters(&current, previous)
+}
+
+/// Builds a rule burn-down report from supplied current and optional baseline clusters.
+///
+/// # Errors
+///
+/// Returns [`crate::PdfvError`] if bounded report fields cannot be constructed.
+pub fn rule_burn_down_report_from_clusters(
+    current: &UnsupportedRuleClusterReport,
+    previous: Option<&UnsupportedRuleClusterReport>,
+) -> Result<RuleBurnDownReport> {
+    let previous_by_key = previous
+        .map(|report| {
+            report
+                .clusters
+                .iter()
+                .map(|cluster| (ClusterKey::from_cluster(cluster), cluster.rule_count))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let rows = current
+        .clusters
+        .iter()
+        .map(|cluster| {
+            let previous_rules = previous_by_key
+                .get(&ClusterKey::from_cluster(cluster))
+                .copied();
+            let delta_rules =
+                previous_rules.map(|previous| signed_count_delta(cluster.rule_count, previous));
+            Ok(RuleBurnDownCluster {
+                primary_reason: cluster.primary_reason.clone(),
+                profile_family: cluster.profile_family.clone(),
+                object_type: cluster.object_type.clone(),
+                property: cluster.property.clone(),
+                link: cluster.link.clone(),
+                semantic_family: cluster.semantic_family.clone(),
+                current_rules: cluster.rule_count,
+                previous_rules,
+                delta_rules,
+                release_blocking: cluster.release_blocking,
+                owner_spec: cluster.owner_spec.clone(),
+                expected_phase: cluster.expected_phase.clone(),
+                examples: cluster.examples.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut largest_clusters = rows.clone();
+    largest_clusters.sort_by(|left, right| {
+        right
+            .current_rules
+            .cmp(&left.current_rules)
+            .then_with(|| {
+                left.primary_reason
+                    .as_str()
+                    .cmp(right.primary_reason.as_str())
+            })
+            .then_with(|| {
+                left.profile_family
+                    .as_str()
+                    .cmp(right.profile_family.as_str())
+            })
+            .then_with(|| left.object_type.as_str().cmp(right.object_type.as_str()))
+            .then_with(|| {
+                option_name_as_str(left.property.as_ref())
+                    .cmp(option_name_as_str(right.property.as_ref()))
+            })
+            .then_with(|| {
+                option_name_as_str(left.link.as_ref()).cmp(option_name_as_str(right.link.as_ref()))
+            })
+    });
+    largest_clusters.truncate(20);
+    Ok(RuleBurnDownReport {
+        schema_version: Identifier::new("phase22-rule-burn-down-v1")?,
+        current_summary: current.summary.clone(),
+        previous_summary: previous.map(|report| report.summary.clone()),
+        clusters: rows,
+        largest_clusters,
+    })
+}
+
+fn unsupported_rule_cluster_report_from_rules(
+    report: &UnsupportedRulesParityReport,
+) -> Result<UnsupportedRuleClusterReport> {
+    let mut clusters: BTreeMap<ClusterKey, ClusterAccumulator> = BTreeMap::new();
+    for rule in &report.rules {
+        let key = ClusterKey::from_rule(rule);
+        clusters.entry(key).or_default().push(rule);
+    }
+    let clusters = clusters
+        .into_iter()
+        .map(|(key, cluster)| cluster.finish(key))
+        .collect::<Result<Vec<_>>>()?;
+    let summary = UnsupportedRuleClusterSummary::from_clusters(&clusters);
+    Ok(UnsupportedRuleClusterReport {
+        schema_version: Identifier::new("phase22-unsupported-clusters-v1")?,
+        vendor_pins: report.vendor_pins.clone(),
+        summary,
+        clusters,
+    })
+}
+
+fn signed_count_delta(current: u64, previous: u64) -> i64 {
+    if current >= previous {
+        i64::try_from(current.saturating_sub(previous)).unwrap_or(i64::MAX)
+    } else {
+        -i64::try_from(previous.saturating_sub(current)).unwrap_or(i64::MAX)
+    }
+}
+
+impl UnsupportedRuleClusterSummary {
+    fn from_clusters(clusters: &[UnsupportedRuleCluster]) -> Self {
+        let mut summary = Self {
+            total_clusters: u64::try_from(clusters.len()).unwrap_or(u64::MAX),
+            ..Self::default()
+        };
+        for cluster in clusters {
+            summary.total_rules = summary.total_rules.saturating_add(cluster.rule_count);
+            if cluster.release_blocking {
+                summary.release_blocking_clusters =
+                    summary.release_blocking_clusters.saturating_add(1);
+                summary.release_blocking_rules = summary
+                    .release_blocking_rules
+                    .saturating_add(cluster.rule_count);
+            }
+        }
+        summary
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ClusterKey {
+    primary_reason: String,
+    profile_family: String,
+    object_type: String,
+    property: Option<String>,
+    link: Option<String>,
+    semantic_family: Option<String>,
+}
+
+impl ClusterKey {
+    fn from_rule(rule: &UnsupportedRuleParityEntry) -> Self {
+        Self {
+            primary_reason: rule.primary_reason.as_str().to_owned(),
+            profile_family: profile_family(rule.flavour.as_str()).to_owned(),
+            object_type: rule.object_type.as_str().to_owned(),
+            property: missing_property(rule),
+            link: missing_link(rule),
+            semantic_family: missing_semantic_family(rule).map(ToOwned::to_owned),
+        }
+    }
+
+    fn from_cluster(cluster: &UnsupportedRuleCluster) -> Self {
+        Self {
+            primary_reason: cluster.primary_reason.as_str().to_owned(),
+            profile_family: cluster.profile_family.as_str().to_owned(),
+            object_type: cluster.object_type.as_str().to_owned(),
+            property: cluster
+                .property
+                .as_ref()
+                .map(|property| property.as_str().to_owned()),
+            link: cluster.link.as_ref().map(|link| link.as_str().to_owned()),
+            semantic_family: cluster
+                .semantic_family
+                .as_ref()
+                .map(|family| family.as_str().to_owned()),
+        }
+    }
+
+    fn release_blocking(&self) -> bool {
+        matches!(self.profile_family.as_str(), "pdfa" | "pdfua")
+    }
+
+    fn owner_spec(&self) -> Result<SpecReference> {
+        let (specification, clause) = owner_spec_for_cluster(self);
+        Ok(SpecReference {
+            specification: BoundedText::new(specification, 128)?,
+            clause: BoundedText::new(clause, 128)?,
+        })
+    }
+
+    fn expected_phase(&self) -> &'static str {
+        if self.primary_reason == "unsupportedExpression" {
+            return "G1";
+        }
+        match self.object_type.as_str() {
+            "font" | "fontDescriptor" | "fontProgram" | "cMap" | "embeddedFontFile" => "G3",
+            "resource" | "colorSpace" | "iccProfile" | "extGState" | "pattern" | "shading"
+            | "function" | "xObject" | "formXObject" | "postScriptXObject" | "image"
+            | "outputIntent" => "G4",
+            "metadata" => "G5",
+            "accessibilityDocument"
+            | "structureTreeRoot"
+            | "structureElement"
+            | "textChunk"
+            | "imageChunk"
+            | "accessibilityAnnotation"
+            | "artifact"
+            | "table"
+            | "list"
+            | "heading"
+            | "link" => "G6",
+            _ => "G2",
+        }
+    }
+}
+
+#[derive(Default)]
+struct ClusterAccumulator {
+    rule_count: u64,
+    examples: Vec<UnsupportedRuleClusterExample>,
+}
+
+impl ClusterAccumulator {
+    fn push(&mut self, rule: &UnsupportedRuleParityEntry) {
+        self.rule_count = self.rule_count.saturating_add(1);
+        if self.examples.len() < 3 {
+            self.examples.push(UnsupportedRuleClusterExample {
+                flavour: rule.flavour.clone(),
+                rule_id: rule.rule_id.clone(),
+                reason: rule.reason.clone(),
+                expression_fragment: rule.expression_fragment.clone(),
+            });
+        }
+    }
+
+    fn finish(self, key: ClusterKey) -> Result<UnsupportedRuleCluster> {
+        let release_blocking = key.release_blocking();
+        let owner_spec = key.owner_spec()?;
+        let expected_phase = BoundedText::new(key.expected_phase(), 16)?;
+        Ok(UnsupportedRuleCluster {
+            primary_reason: BoundedText::new(key.primary_reason, 128)?,
+            profile_family: BoundedText::new(key.profile_family, 64)?,
+            object_type: ObjectTypeName::new(key.object_type)?,
+            property: key.property.map(PropertyName::new).transpose()?,
+            link: key.link.map(PropertyName::new).transpose()?,
+            semantic_family: key
+                .semantic_family
+                .map(|family| BoundedText::new(family, 128))
+                .transpose()?,
+            rule_count: self.rule_count,
+            release_blocking,
+            owner_spec,
+            expected_phase,
+            examples: self.examples,
+        })
+    }
+}
+
+fn profile_family(flavour: &str) -> &str {
+    flavour.split('-').next().unwrap_or(flavour)
+}
+
+fn missing_property(rule: &UnsupportedRuleParityEntry) -> Option<String> {
+    (rule.primary_reason.as_str() == "missingProperty")
+        .then(|| {
+            reason_token(
+                rule.reason.as_str(),
+                "unknown validation model property ",
+                " on ",
+            )
+        })
+        .flatten()
+}
+
+fn missing_link(rule: &UnsupportedRuleParityEntry) -> Option<String> {
+    (rule.primary_reason.as_str() == "missingLink")
+        .then(|| {
+            reason_token(
+                rule.reason.as_str(),
+                "unknown validation model link ",
+                " on ",
+            )
+        })
+        .flatten()
+}
+
+fn missing_semantic_family(rule: &UnsupportedRuleParityEntry) -> Option<&'static str> {
+    if rule.primary_reason.as_str() != "missingSemanticFamily" {
+        return None;
+    }
+    Some(match rule.object_type.as_str() {
+        "undefinedOperator" | "operator" | "markedContent" | "contentStream" => "contentStream",
+        _ => "accessibility",
+    })
+}
+
+fn reason_token(reason: &str, prefix: &str, suffix: &str) -> Option<String> {
+    reason
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.split_once(suffix).map(|(token, _)| token.to_owned()))
+}
+
+fn owner_spec_for_cluster(key: &ClusterKey) -> (&'static str, &'static str) {
+    if key.primary_reason == "unsupportedExpression" {
+        return ("12-profile-rule-ir-design.md", "Expression parity");
+    }
+    match key.expected_phase() {
+        "G3" | "G4" => (
+            "22-resource-font-color-semantics-design.md",
+            "Resource semantics",
+        ),
+        "G5" => ("18-xmp-metadata-flavour-design.md", "XMP RDF metadata"),
+        "G6" => (
+            "23-structure-accessibility-design.md",
+            "Accessibility semantics",
+        ),
+        _ => (
+            "17-validation-model-parity-design.md",
+            "Derived model properties",
+        ),
+    }
+}
+
+fn option_name_as_str(value: Option<&PropertyName>) -> &str {
+    value.map_or("", PropertyName::as_str)
 }
 
 impl ProfileCatalogEntry {
@@ -2908,6 +3378,53 @@ trailer
     }
 
     #[test]
+    fn test_should_cluster_unsupported_rules_for_burn_down() -> crate::Result<()> {
+        let unsupported = super::unsupported_rules_parity_report()?;
+        let clusters = super::unsupported_rule_cluster_report_from_rules(&unsupported)?;
+
+        assert!(!clusters.clusters.is_empty());
+        assert_eq!(
+            clusters.summary.total_rules,
+            u64::try_from(unsupported.rules.len()).unwrap_or(u64::MAX)
+        );
+        assert!(clusters.summary.release_blocking_rules > 0);
+        assert!(clusters.clusters.iter().any(|cluster| {
+            cluster.primary_reason.as_str() == "missingProperty"
+                && cluster.property.is_some()
+                && cluster.release_blocking
+        }));
+        assert!(clusters.clusters.iter().any(|cluster| {
+            cluster.primary_reason.as_str() == "unsupportedExpression"
+                && cluster.expected_phase.as_str() == "G1"
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_compare_burn_down_clusters_against_baseline() -> crate::Result<()> {
+        let current = cluster_report("phase22-unsupported-clusters-v1", 5)?;
+        let previous = cluster_report("phase22-unsupported-clusters-v1", 8)?;
+
+        let report = super::rule_burn_down_report_from_clusters(&current, Some(&previous))?;
+
+        assert_eq!(
+            report
+                .clusters
+                .first()
+                .and_then(|cluster| cluster.previous_rules),
+            Some(8)
+        );
+        assert_eq!(
+            report
+                .clusters
+                .first()
+                .and_then(|cluster| cluster.delta_rules),
+            Some(-3)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_should_improve_m6_official_profile_coverage_for_accessibility_profiles()
     -> crate::Result<()> {
         let profiles = BuiltinProfileRepository::new().list_profiles()?;
@@ -2929,6 +3446,40 @@ trailer
             );
         }
         Ok(())
+    }
+
+    fn cluster_report(
+        schema_version: &str,
+        rule_count: u64,
+    ) -> crate::Result<super::UnsupportedRuleClusterReport> {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": schema_version,
+            "vendorPins": {},
+            "summary": {
+                "totalRules": rule_count,
+                "totalClusters": 1,
+                "releaseBlockingRules": rule_count,
+                "releaseBlockingClusters": 1,
+            },
+            "clusters": [
+                {
+                    "primaryReason": "missingProperty",
+                    "profileFamily": "pdfa",
+                    "objectType": "font",
+                    "property": "isSymbolic",
+                    "ruleCount": rule_count,
+                    "releaseBlocking": true,
+                    "ownerSpec": {
+                        "specification": "22-resource-font-color-semantics-design.md",
+                        "clause": "Resource semantics"
+                    },
+                    "expectedPhase": "G3",
+                    "examples": []
+                }
+            ],
+        }))
+        .map_err(crate::ReportError::from)
+        .map_err(Into::into)
     }
 
     #[test]

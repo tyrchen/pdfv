@@ -49,4 +49,9 @@ parity-profile-report:
 parity-corpus:
 	@cargo run -p pdfv-core --example parity_corpus
 
-.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus
+parity-unsupported-clusters:
+	@cargo run -p pdfv-core --example parity_burn_down
+
+parity-burn-down: parity-unsupported-clusters
+
+.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down

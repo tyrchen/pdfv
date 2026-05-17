@@ -8,6 +8,8 @@ Parity reports are transient by default and are generated under `target/parity/`
 make parity-profile-report
 make parity-model-schema
 make parity-corpus
+make parity-unsupported-clusters
+make parity-burn-down
 ```
 
 Milestone snapshots may be copied into `docs/reviews/` after the milestone gates pass. A snapshot must include the veraPDF vendor pin from the JSON report and the implementation phase that produced it.
@@ -16,5 +18,10 @@ Coverage decreases are review-gated. To compare against a prior snapshot, point 
 
 - setting `PDFV_PARITY_REVIEW_NOTE` to an existing Markdown review note, or
 - adding a `coverage decrease` entry to `docs/reviews/` or `specs/93-improvements-review.md`.
+
+`make parity-unsupported-clusters` writes `target/parity/unsupported-rule-clusters.json`.
+`make parity-burn-down` writes both `unsupported-rule-clusters.json` and `rule-burn-down.json`.
+If `PDFV_PARITY_BASELINE_DIR` points to a previous snapshot directory that contains
+`unsupported-rule-clusters.json`, the burn-down report includes previous counts and deltas.
 
 `make parity-corpus` runs only generated and checked-in semantic rows and does not require Java. Live veraPDF corpus checks remain opt-in through `PDFV_VERAPDF_CORPUS_DIR` and `make test-conformance-verapdf`.

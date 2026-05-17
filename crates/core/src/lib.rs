@@ -47,9 +47,12 @@ pub use profile::{
     BinaryOp, BuiltinFunction, BuiltinProfileRepository, ErrorTemplate, ModelFamilySchemaReport,
     ModelSchemaParityReport, ModelSchemaProfileReport, ModelValue, ObjectTypeName,
     ProfileCatalogEntry, ProfileCoverageParityReport, ProfileImportSummary, ProfileRepository,
-    PropertyName, PropertyPath, Rule, RuleEvaluator, RuleExpr, RuleOutcome, UnaryOp,
-    UnsupportedRuleParityEntry, UnsupportedRulesParityReport, ValidationProfile, display_flavour,
-    import_verapdf_profile_xml, model_schema_parity_report, profile_coverage_parity_report,
+    PropertyName, PropertyPath, Rule, RuleBurnDownCluster, RuleBurnDownReport, RuleEvaluator,
+    RuleExpr, RuleOutcome, UnaryOp, UnsupportedRuleCluster, UnsupportedRuleClusterExample,
+    UnsupportedRuleClusterReport, UnsupportedRuleClusterSummary, UnsupportedRuleParityEntry,
+    UnsupportedRulesParityReport, ValidationProfile, display_flavour, import_verapdf_profile_xml,
+    model_schema_parity_report, profile_coverage_parity_report, rule_burn_down_report,
+    rule_burn_down_report_from_clusters, unsupported_rule_cluster_report,
     unsupported_rules_parity_report,
 };
 use secrecy::{ExposeSecret, SecretString};
