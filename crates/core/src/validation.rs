@@ -7283,8 +7283,9 @@ mod tests {
     use crate::{
         BinaryOp, BoundedText, ErrorTemplate, FeatureSelection, FlavourSelection, Identifier,
         InputName, ModelObject, ModelObjectRef, ModelValue, ObjectTypeName, Parser, PdfvError,
-        ProfileIdentity, ProfileRepository, PropertyName, ResourceLimits, Rule, RuleExpr, RuleId,
-        ValidationFlavour, ValidationOptions, ValidationProfile, Validator,
+        PolicyOperator, PolicyRule, PolicySet, PolicyValue, ProfileIdentity, ProfileRepository,
+        PropertyName, ResourceLimits, Rule, RuleExpr, RuleId, ValidationFlavour, ValidationOptions,
+        ValidationProfile, Validator,
     };
 
     #[derive(Debug)]
@@ -8001,6 +8002,53 @@ trailer
                 Some(crate::FeatureValue::String(value)) if value.as_str().contains("secret")
             )
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_evaluate_policy_from_library_feature_report() -> crate::Result<()> {
+        let policy = PolicySet {
+            name: Some(BoundedText::unchecked("library-catalog-policy")),
+            rules: vec![PolicyRule {
+                id: Identifier::new("catalog-has-no-metadata")?,
+                description: BoundedText::unchecked("Catalog metadata is absent"),
+                family: ObjectTypeName::new("catalog")?,
+                field: PropertyName::new("hasMetadata")?,
+                operator: PolicyOperator::Equals,
+                value: Some(PolicyValue::Bool(false)),
+            }],
+        };
+        let options = ValidationOptions::builder().policy(Some(policy)).build();
+        let validator = Validator::new(options)?;
+        let report = validator.validate_reader(Cursor::new(m1_model_pdf()), InputName::memory())?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+        let policy = report
+            .policy_report
+            .ok_or(crate::ValidationError::SubsystemUnavailable {
+                subsystem: "policy",
+            })?;
+
+        assert!(
+            features
+                .objects
+                .iter()
+                .any(|object| object.family.as_str() == "catalog")
+        );
+        assert!(policy.is_compliant);
+        assert_eq!(policy.results.len(), 1);
+        let result =
+            policy
+                .results
+                .first()
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "policyResult",
+                })?;
+        assert!(result.passed);
         Ok(())
     }
 

@@ -1,6 +1,6 @@
 # veraPDF CLI Compatibility
 
-Status: current for phase 17.
+Status: current for phase 20.
 
 pdfv exposes migration-oriented veraPDF surfaces where the Rust implementation has a bounded backing model. Unsupported veraPDF options are not accepted as silent no-ops.
 

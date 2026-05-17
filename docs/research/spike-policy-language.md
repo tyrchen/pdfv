@@ -4,11 +4,11 @@ Status: complete · Owner: pdfv · Last updated: 2026-05-16
 
 ## Question
 
-What policy format should Phase 16 implement without exposing filesystem, network, XSLT, regex, or raw-PDF access?
+What policy format should Phase 20 implement without exposing filesystem, network, XSLT, regex, or raw-PDF access?
 
 ## Findings
 
-Phase 16 policy execution must consume `FeatureReport`, not PDF bytes. That keeps the boundary explicit:
+Phase 20 policy execution must consume `FeatureReport`, not PDF bytes. That keeps the boundary explicit:
 
 ```text
 PDF bytes -> ParsedDocument -> ModelGraph -> FeatureReport -> PolicyReport
