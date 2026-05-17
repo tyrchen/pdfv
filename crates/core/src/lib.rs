@@ -70,6 +70,9 @@ const DEFAULT_MAX_STRING_BYTES: usize = 1_048_576;
 const DEFAULT_MAX_STREAM_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_MAX_ENCRYPTION_DICT_ENTRIES: u64 = 64;
 const DEFAULT_MEMORY_SOURCE_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
+const DEFAULT_MAX_RESOURCE_CONTEXTS: u64 = 10_000;
+const DEFAULT_MAX_EMBEDDED_FONT_BYTES: u64 = 16 * 1024 * 1024;
+const DEFAULT_MAX_ICC_PROFILE_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_MAX_XMP_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_MAX_XMP_ELEMENTS: u64 = 50_000;
 const DEFAULT_MAX_XMP_DEPTH: u32 = 32;
@@ -667,6 +670,18 @@ pub struct ResourceLimits {
     #[builder(default = content::default_max_type3_charproc_ops())]
     #[serde(default = "content::default_max_type3_charproc_ops")]
     pub max_type3_charproc_ops: u64,
+    /// Maximum resource dictionaries traversed while resolving one effective resource context.
+    #[builder(default = DEFAULT_MAX_RESOURCE_CONTEXTS)]
+    #[serde(default = "default_max_resource_contexts")]
+    pub max_resource_contexts: u64,
+    /// Maximum embedded font program bytes summarized for validation facts.
+    #[builder(default = DEFAULT_MAX_EMBEDDED_FONT_BYTES)]
+    #[serde(default = "default_max_embedded_font_bytes")]
+    pub max_embedded_font_bytes: u64,
+    /// Maximum ICC profile bytes summarized for validation facts.
+    #[builder(default = DEFAULT_MAX_ICC_PROFILE_BYTES)]
+    #[serde(default = "default_max_icc_profile_bytes")]
+    pub max_icc_profile_bytes: u64,
 }
 
 impl Default for ResourceLimits {
@@ -702,6 +717,9 @@ impl Default for ResourceLimits {
             max_graphics_state_depth: content::default_max_graphics_state_depth(),
             max_type3_charproc_streams: content::default_max_type3_charproc_streams(),
             max_type3_charproc_ops: content::default_max_type3_charproc_ops(),
+            max_resource_contexts: DEFAULT_MAX_RESOURCE_CONTEXTS,
+            max_embedded_font_bytes: DEFAULT_MAX_EMBEDDED_FONT_BYTES,
+            max_icc_profile_bytes: DEFAULT_MAX_ICC_PROFILE_BYTES,
         }
     }
 }
@@ -716,6 +734,18 @@ fn default_max_decrypted_string_bytes() -> usize {
 
 fn default_max_decrypted_stream_bytes() -> u64 {
     DEFAULT_MAX_STREAM_DECODE_BYTES
+}
+
+fn default_max_resource_contexts() -> u64 {
+    DEFAULT_MAX_RESOURCE_CONTEXTS
+}
+
+fn default_max_embedded_font_bytes() -> u64 {
+    DEFAULT_MAX_EMBEDDED_FONT_BYTES
+}
+
+fn default_max_icc_profile_bytes() -> u64 {
+    DEFAULT_MAX_ICC_PROFILE_BYTES
 }
 
 fn default_max_encryption_dict_entries() -> u64 {

@@ -2151,7 +2151,8 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDAcroForm" => Some("acroForm"),
         "PDFormField" | "PDTextField" => Some("formField"),
         "OutputIntents" | "OutputIntent" | "PDOutputIntent" => Some("outputIntent"),
-        "PDXObject" | "PDXForm" | "PD3DStream" | "PDMediaClip" | "PDRichMedia" => Some("xObject"),
+        "PDXObject" | "PD3DStream" | "PDMediaClip" | "PDRichMedia" => Some("xObject"),
+        "PDXForm" => Some("formXObject"),
         "PDXImage" | "JPEG2000" | "PDMaskImage" => Some("image"),
         "PDContentStream" | "Op_q_gsave" => Some("contentStream"),
         "Op_Undefined" => Some("undefinedOperator"),
@@ -2161,8 +2162,11 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDDestination" => Some("destination"),
         "PDExtGState" => Some("extGState"),
         "PDDeviceN" | "PDICCBasedCMYK" | "PDDeviceRGB" | "PDDeviceGray" | "PDDeviceCMYK"
-        | "PDSeparation" | "PDHalftone" | "PDGroup" | "ICCProfile" | "ICCOutputProfile"
-        | "ICCInputProfile" => Some("colorSpace"),
+        | "PDSeparation" | "PDHalftone" | "PDGroup" => Some("colorSpace"),
+        "ICCProfile" | "ICCOutputProfile" | "ICCInputProfile" => Some("iccProfile"),
+        "PDPattern" | "PDTilingPattern" | "PDShadingPattern" => Some("pattern"),
+        "PDShading" => Some("shading"),
+        "PDFunction" => Some("function"),
         "PDStructTreeRoot" => Some("structureTreeRoot"),
         "PDStructElem"
         | "SEDocument"

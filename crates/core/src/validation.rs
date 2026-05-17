@@ -17,7 +17,7 @@ use crate::{
     ProfileReport, ProfileRepository, PropertyName, ResourceLimits, Result, Rule, RuleEvaluator,
     RuleId, RuleOutcome, TaskDuration, UnsupportedRule, ValidationError, ValidationOptions,
     ValidationReport, ValidationStatus,
-    content::{ContentStreamSummary, MarkedContentSpan, OperatorFact, ResourceUse},
+    content::{ContentStreamSummary, MarkedContentSpan, OperatorFact, ResourceFamily, ResourceUse},
     profile::DefaultRuleEvaluator,
     xmp::{FlavourDetector, parse_document_xmp},
 };
@@ -74,6 +74,14 @@ const FONT_DIRECT_PROPERTIES: &[&str] = &[
     "Encoding",
     "ToUnicode",
     "CIDToGIDMap",
+    "DescendantFonts",
+    "CharProcs",
+    "Resources",
+    "FontMatrix",
+    "FontBBox",
+    "DW",
+    "W",
+    "CIDSystemInfo",
 ];
 const ANNOTATION_DIRECT_PROPERTIES: &[&str] = &[
     "Type", "Subtype", "F", "C", "IC", "AP", "FT", "CA", "A", "AA", "FS",
@@ -192,9 +200,60 @@ const XOBJECT_DIRECT_PROPERTIES: &[&str] = &[
     "Filter",
     "DecodeParms",
 ];
-const CMAP_DIRECT_PROPERTIES: &[&str] = &["Type", "Subtype", "CMapName", "CIDSystemInfo"];
-const COLOR_SPACE_DIRECT_PROPERTIES: &[&str] =
-    &["Type", "N", "Alternate", "Range", "Metadata", "Filter"];
+const PATTERN_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "PatternType",
+    "PaintType",
+    "TilingType",
+    "BBox",
+    "XStep",
+    "YStep",
+    "Resources",
+    "Matrix",
+    "Shading",
+];
+const SHADING_DIRECT_PROPERTIES: &[&str] = &[
+    "ShadingType",
+    "ColorSpace",
+    "Background",
+    "BBox",
+    "Function",
+    "AntiAlias",
+];
+const FUNCTION_DIRECT_PROPERTIES: &[&str] = &[
+    "FunctionType",
+    "Domain",
+    "Range",
+    "Size",
+    "BitsPerSample",
+    "Order",
+    "Encode",
+    "Decode",
+];
+const CMAP_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "CMapName",
+    "CIDSystemInfo",
+    "WMode",
+    "UseCMap",
+];
+const COLOR_SPACE_DIRECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "N",
+    "Alternate",
+    "Range",
+    "Metadata",
+    "Filter",
+    "Family",
+    "Base",
+    "HiVal",
+    "Lookup",
+    "TintTransform",
+    "Colorants",
+    "Process",
+    "Components",
+];
 const EXT_GSTATE_DIRECT_PROPERTIES: &[&str] =
     &["Type", "BM", "CA", "ca", "SMask", "AIS", "OP", "op", "OPM"];
 const SIGNATURE_DIRECT_PROPERTIES: &[&str] = &[
@@ -254,9 +313,15 @@ const DIRECT_PROPERTY_NAMES: &[&str] = &[
     "FirstChar",
     "Font",
     "FontDescriptor",
+    "FontFile",
+    "FontFile2",
+    "FontFile3",
     "Group",
     "Height",
     "IC",
+    "Length1",
+    "Length2",
+    "Length3",
     "IDS",
     "IDTree",
     "Info",
@@ -285,7 +350,9 @@ const DIRECT_PROPERTY_NAMES: &[&str] = &[
     "ParentTreeNextKey",
     "Prev",
     "Pattern",
+    "PatternType",
     "ProcSet",
+    "Process",
     "Properties",
     "Q",
     "Range",
@@ -296,6 +363,7 @@ const DIRECT_PROPERTY_NAMES: &[&str] = &[
     "S",
     "SMask",
     "Shading",
+    "ShadingType",
     "SigFlags",
     "SubFilter",
     "Subtype",
@@ -411,7 +479,17 @@ const OPTIONAL_CONTENT_PROPERTIES: &[&str] = OPTIONAL_CONTENT_DIRECT_PROPERTIES;
 const PERMISSIONS_PROPERTIES: &[&str] = &["DocMDP", "UR", "UR3"];
 const FONT_PROPERTIES: &[&str] = &[
     "embedded",
+    "embeddedProgramBytes",
+    "embeddedProgramCapped",
     "hasSubtype",
+    "fontFamily",
+    "hasFontDescriptor",
+    "hasToUnicode",
+    "hasEncoding",
+    "hasWidths",
+    "hasCIDSystemInfo",
+    "hasCharProcs",
+    "hasResources",
     "Type",
     "Subtype",
     "BaseFont",
@@ -422,10 +500,62 @@ const FONT_PROPERTIES: &[&str] = &[
     "Encoding",
     "ToUnicode",
     "CIDToGIDMap",
+    "DescendantFonts",
+    "CharProcs",
+    "Resources",
+    "FontMatrix",
+    "FontBBox",
+    "DW",
+    "W",
+    "CIDSystemInfo",
 ];
-const CMAP_PROPERTIES: &[&str] = CMAP_DIRECT_PROPERTIES;
+const FONT_DESCRIPTOR_PROPERTIES: &[&str] = &[
+    "Type",
+    "FontName",
+    "Flags",
+    "FontBBox",
+    "ItalicAngle",
+    "Ascent",
+    "Descent",
+    "CapHeight",
+    "StemV",
+    "FontFile",
+    "FontFile2",
+    "FontFile3",
+    "hasFontFile",
+    "fontProgramBytes",
+    "fontProgramCapped",
+];
+const FONT_PROGRAM_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "Filter",
+    "Length",
+    "Length1",
+    "Length2",
+    "Length3",
+    "declaredLength",
+    "discoveredLength",
+    "capped",
+];
+const CMAP_PROPERTIES: &[&str] = &[
+    "hasCIDSystemInfo",
+    "hasUseCMap",
+    "embedded",
+    "Type",
+    "Subtype",
+    "CMapName",
+    "CIDSystemInfo",
+    "WMode",
+    "UseCMap",
+];
 const IMAGE_PROPERTIES: &[&str] = IMAGE_DIRECT_PROPERTIES;
 const XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
+const FORM_XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
+const POSTSCRIPT_XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
+const PATTERN_PROPERTIES: &[&str] = PATTERN_DIRECT_PROPERTIES;
+const SHADING_PROPERTIES: &[&str] = SHADING_DIRECT_PROPERTIES;
+const FUNCTION_PROPERTIES: &[&str] = FUNCTION_DIRECT_PROPERTIES;
 const CONTENT_STREAM_PROPERTIES: &[&str] = &[
     "nrOperators",
     "hasText",
@@ -463,7 +593,15 @@ const INLINE_IMAGE_PROPERTIES: &[&str] = &[
     "bitsPerComponent",
     "location",
 ];
-const RESOURCE_USE_PROPERTIES: &[&str] = &["family", "name", "operator", "location"];
+const RESOURCE_USE_PROPERTIES: &[&str] = &[
+    "family",
+    "name",
+    "operator",
+    "location",
+    "status",
+    "resolvedFamily",
+    "resolvedObject",
+];
 const UNDEFINED_OPERATOR_PROPERTIES: &[&str] = &["name", "op", "operandCount", "location"];
 const ANNOTATION_PROPERTIES: &[&str] = &[
     "hasSubtype",
@@ -482,8 +620,56 @@ const ANNOTATION_PROPERTIES: &[&str] = &[
 const ACTION_PROPERTIES: &[&str] = ACTION_DIRECT_PROPERTIES;
 const FORM_FIELD_PROPERTIES: &[&str] = FORM_FIELD_DIRECT_PROPERTIES;
 const FILE_SPEC_PROPERTIES: &[&str] = FILE_SPEC_DIRECT_PROPERTIES;
-const COLOR_SPACE_PROPERTIES: &[&str] = COLOR_SPACE_DIRECT_PROPERTIES;
-const EXT_GSTATE_PROPERTIES: &[&str] = EXT_GSTATE_DIRECT_PROPERTIES;
+const COLOR_SPACE_PROPERTIES: &[&str] = &[
+    "family",
+    "componentCount",
+    "hasAlternate",
+    "hasTintTransform",
+    "hasICCProfile",
+    "Type",
+    "N",
+    "Alternate",
+    "Range",
+    "Metadata",
+    "Filter",
+    "Family",
+    "Base",
+    "HiVal",
+    "Lookup",
+    "TintTransform",
+    "Colorants",
+    "Process",
+    "Components",
+];
+const ICC_PROFILE_PROPERTIES: &[&str] = &[
+    "profileSize",
+    "version",
+    "deviceClass",
+    "colorSpace",
+    "pcs",
+    "renderingIntent",
+    "tagCount",
+    "capped",
+    "N",
+    "Alternate",
+    "Range",
+    "Metadata",
+    "Filter",
+];
+const EXT_GSTATE_PROPERTIES: &[&str] = &[
+    "hasSoftMask",
+    "hasBlendMode",
+    "alphaSource",
+    "Type",
+    "BM",
+    "CA",
+    "ca",
+    "SMask",
+    "AIS",
+    "OP",
+    "op",
+    "OPM",
+];
 const STRUCTURE_PROPERTIES: &[&str] = STRUCTURE_DIRECT_PROPERTIES;
 const STRUCTURE_ELEMENT_PROPERTIES: &[&str] = &[
     "Type",
@@ -530,6 +716,14 @@ const SIGNATURE_PROPERTIES: &[&str] = SIGNATURE_DIRECT_PROPERTIES;
 const SECURITY_PROPERTIES: &[&str] = SECURITY_DIRECT_PROPERTIES;
 const OUTPUT_INTENT_PROPERTIES: &[&str] = &[
     "hasDestOutputProfile",
+    "iccProfileSize",
+    "iccVersion",
+    "iccDeviceClass",
+    "iccColorSpace",
+    "iccPcs",
+    "iccRenderingIntent",
+    "iccTagCount",
+    "iccCapped",
     "Type",
     "S",
     "DestOutputProfile",
@@ -558,14 +752,27 @@ const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
     "Encoding",
     "FT",
     "Filter",
+    "family",
     "S",
     "Subtype",
     "Type",
+    "colorSpace",
+    "deviceClass",
+    "iccColorSpace",
+    "iccDeviceClass",
+    "iccPcs",
+    "iccVersion",
+    "name",
+    "operator",
+    "pcs",
     "conformance",
     "conformancePrefix",
     "header",
     "partPrefix",
+    "resolvedFamily",
     "revPrefix",
+    "status",
+    "version",
 ];
 
 const EMPTY_LINK_NAMES: &[(&str, &str)] = &[];
@@ -633,6 +840,7 @@ const OUTLINE_LINKS: &[(&str, &str)] = &[
 ];
 const NAMES_LINKS: &[(&str, &str)] = &[("destinations", "destination"), ("files", "fileSpec")];
 const DESTINATION_LINKS: &[(&str, &str)] = &[("action", "action")];
+const XOBJECT_LINKS: &[(&str, &str)] = &[("contentStreams", "contentStream")];
 
 /// Feature extraction selection.
 #[derive(Clone, Debug, Default, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
@@ -1415,10 +1623,22 @@ impl ModelRegistry {
             ),
             family("permissions", PERMISSIONS_PROPERTIES, EMPTY_LINK_NAMES),
             family("font", FONT_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "fontDescriptor",
+                FONT_DESCRIPTOR_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family("fontProgram", FONT_PROGRAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("cMap", CMAP_PROPERTIES, EMPTY_LINK_NAMES),
             family("embeddedFontFile", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("image", IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
-            family("xObject", XOBJECT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("xObject", XOBJECT_PROPERTIES, XOBJECT_LINKS),
+            family("formXObject", FORM_XOBJECT_PROPERTIES, XOBJECT_LINKS),
+            family(
+                "postScriptXObject",
+                POSTSCRIPT_XOBJECT_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family(
                 "contentStream",
                 CONTENT_STREAM_PROPERTIES,
@@ -1438,7 +1658,11 @@ impl ModelRegistry {
             family("formField", FORM_FIELD_PROPERTIES, FORM_FIELD_LINKS),
             family("fileSpec", FILE_SPEC_PROPERTIES, EMPTY_LINK_NAMES),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("iccProfile", ICC_PROFILE_PROPERTIES, EMPTY_LINK_NAMES),
             family("extGState", EXT_GSTATE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("pattern", PATTERN_PROPERTIES, EMPTY_LINK_NAMES),
+            family("shading", SHADING_PROPERTIES, EMPTY_LINK_NAMES),
+            family("function", FUNCTION_PROPERTIES, EMPTY_LINK_NAMES),
             family("structureTreeRoot", STRUCTURE_PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 "structureElement",
@@ -1834,8 +2058,8 @@ impl<'a> ModelObjectRef<'a> {
                 object: Some(model.key),
                 offset: Some(model.offset),
                 path: Some(BoundedText::unchecked(format!(
-                    "root/page[{}]/contentStream[{}]",
-                    model.page_ordinal, model.ordinal
+                    "{}/contentStream[{}]",
+                    model.context_prefix, model.ordinal
                 ))),
             },
             Self::Operator(model) => model.fact.location().clone(),
@@ -1877,8 +2101,8 @@ impl<'a> ModelObjectRef<'a> {
                 BoundedText::unchecked(format!("root/catalog[0]/outputIntent[{}]", model.ordinal))
             }
             Self::ContentStream(model) => BoundedText::unchecked(format!(
-                "root/page[{}]/contentStream[{}]",
-                model.page_ordinal, model.ordinal
+                "{}/contentStream[{}]",
+                model.context_prefix, model.ordinal
             )),
             Self::Operator(model) => BoundedText::unchecked(format!(
                 "root/page[{}]/contentStream[{}]/operator[{}]",
@@ -2021,6 +2245,50 @@ struct ResourceCollection<'a> {
     max_objects: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceResolutionStatus {
+    Resolved,
+    Missing,
+    WrongType,
+    Cyclic,
+}
+
+impl ResourceResolutionStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Resolved => "resolved",
+            Self::Missing => "missing",
+            Self::WrongType => "wrongType",
+            Self::Cyclic => "cyclic",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedResourceUse {
+    status: ResourceResolutionStatus,
+    family: ResourceFamily,
+    object: Option<ObjectKey>,
+    object_family: Option<&'static str>,
+}
+
+#[derive(Clone, Debug)]
+struct EffectiveResources<'a> {
+    dictionaries: Vec<&'a crate::Dictionary>,
+    cyclic: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct IccHeader {
+    profile_size: u64,
+    version: String,
+    device_class: String,
+    color_space: String,
+    pcs: String,
+    rendering_intent: u64,
+    tag_count: u64,
+}
+
 impl<'a> ModelGraph<'a> {
     fn for_rules(document: &'a ParsedDocument, limits: &'a ResourceLimits, rules: &[Rule]) -> Self {
         let registry = ModelRegistry::default_registry();
@@ -2114,7 +2382,7 @@ impl<'a> ModelGraph<'a> {
         catalog: &CatalogModel<'_>,
         max_objects: usize,
     ) -> Result<Vec<OutputIntentModel<'a>>> {
-        OutputIntentModel::from_catalog(self.document, catalog, max_objects)
+        OutputIntentModel::from_catalog(self.document, catalog, self.limits, max_objects)
     }
 
     fn content_streams(
@@ -2241,7 +2509,8 @@ impl<'a> ModelGraph<'a> {
         max_objects: usize,
         models: &mut Vec<GenericModel<'a>>,
     ) -> Result<()> {
-        if let Some(resources) = page_resources_dictionary(self.document, page)? {
+        let effective = effective_page_resources(self.document, page)?;
+        for (resource_ordinal, resources) in effective.dictionaries.iter().enumerate() {
             push_generic_model(
                 models,
                 GenericModel::new(
@@ -2250,44 +2519,30 @@ impl<'a> ModelGraph<'a> {
                     None,
                     None,
                     resources,
-                    page.ordinal,
-                    format!("root/page[{}]/resources[0]", page.ordinal),
+                    resource_ordinal,
+                    format!("root/page[{}]/resources[{resource_ordinal}]", page.ordinal),
                 ),
                 max_objects,
             )?;
-            self.push_resource_collection(
-                ResourceCollection {
-                    resources,
-                    resource_name: "XObject",
-                    family: "xObject",
-                    context_prefix: "root/page",
-                    page_ordinal: page.ordinal,
-                    max_objects,
-                },
-                models,
-            )?;
-            self.push_resource_collection(
-                ResourceCollection {
-                    resources,
-                    resource_name: "ColorSpace",
-                    family: "colorSpace",
-                    context_prefix: "root/page",
-                    page_ordinal: page.ordinal,
-                    max_objects,
-                },
-                models,
-            )?;
-            self.push_resource_collection(
-                ResourceCollection {
-                    resources,
-                    resource_name: "ExtGState",
-                    family: "extGState",
-                    context_prefix: "root/page",
-                    page_ordinal: page.ordinal,
-                    max_objects,
-                },
-                models,
-            )?;
+            for (resource_name, family) in [
+                ("XObject", "xObject"),
+                ("ColorSpace", "colorSpace"),
+                ("ExtGState", "extGState"),
+                ("Pattern", "pattern"),
+                ("Shading", "shading"),
+            ] {
+                self.push_resource_collection(
+                    ResourceCollection {
+                        resources,
+                        resource_name,
+                        family,
+                        context_prefix: "root/page",
+                        page_ordinal: page.ordinal,
+                        max_objects,
+                    },
+                    models,
+                )?;
+            }
         }
         Ok(())
     }
@@ -3015,6 +3270,7 @@ fn page_linked_objects<'a>(
 #[derive(Clone, Debug)]
 pub struct FontModel<'a> {
     document: &'a ParsedDocument,
+    limits: &'a ResourceLimits,
     page_ordinal: usize,
     key: Option<ObjectKey>,
     offset: Option<u64>,
@@ -3032,31 +3288,36 @@ impl<'a> FontModel<'a> {
         max_objects: usize,
     ) -> Result<Vec<Self>> {
         let mut fonts = Vec::new();
-        let Some(resources) = page_resources_dictionary(document, page)? else {
-            return Ok(fonts);
-        };
-        let Some(crate::CosObject::Dictionary(fonts_dictionary)) = resources.get("Font") else {
-            return Ok(fonts);
-        };
-        for (name, value) in fonts_dictionary.iter() {
-            if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
-                if fonts.len() >= max_objects {
-                    return Err(ValidationError::LimitExceeded {
-                        limit: "max_objects",
-                    }
-                    .into());
+        let effective = effective_page_resources(document, page)?;
+        let mut seen_names = BTreeSet::new();
+        for resources in effective.dictionaries.iter().rev() {
+            let Some(crate::CosObject::Dictionary(fonts_dictionary)) = resources.get("Font") else {
+                continue;
+            };
+            for (name, value) in fonts_dictionary.iter() {
+                if !seen_names.insert(name.clone()) {
+                    continue;
                 }
-                fonts.push(Self {
-                    document,
-                    page_ordinal: page.ordinal,
-                    key,
-                    offset,
-                    name: name.clone(),
-                    dictionary,
-                    object_type: ObjectTypeName::unchecked("font"),
-                    supertypes: vec![ObjectTypeName::unchecked("object")],
-                    links: Vec::new(),
-                });
+                if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
+                    if fonts.len() >= max_objects {
+                        return Err(ValidationError::LimitExceeded {
+                            limit: "max_objects",
+                        }
+                        .into());
+                    }
+                    fonts.push(Self {
+                        document,
+                        limits: page.limits,
+                        page_ordinal: page.ordinal,
+                        key,
+                        offset,
+                        name: name.clone(),
+                        dictionary,
+                        object_type: ObjectTypeName::unchecked("font"),
+                        supertypes: vec![ObjectTypeName::unchecked("object")],
+                        links: Vec::new(),
+                    });
+                }
             }
         }
         Ok(fonts)
@@ -3088,10 +3349,39 @@ impl ModelObject for FontModel<'_> {
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
-            "embedded" => Ok(ModelValue::Bool(
-                self.dictionary.get("FontDescriptor").is_some(),
+            "embedded" => Ok(ModelValue::Bool(font_embedded(
+                self.document,
+                self.dictionary,
+            ))),
+            "embeddedProgramBytes" => Ok(ModelValue::Number(u64_to_f64(font_program_bytes(
+                self.document,
+                self.dictionary,
+            )?)?)),
+            "embeddedProgramCapped" => Ok(ModelValue::Bool(
+                font_program_bytes(self.document, self.dictionary)?
+                    > self.limits.max_embedded_font_bytes,
             )),
             "hasSubtype" => Ok(ModelValue::Bool(self.dictionary.get("Subtype").is_some())),
+            "fontFamily" => Ok(ModelValue::String(BoundedText::unchecked(
+                classify_font_dictionary(self.dictionary).unwrap_or("font"),
+            ))),
+            "hasFontDescriptor" => Ok(ModelValue::Bool(
+                self.dictionary.get("FontDescriptor").is_some(),
+            )),
+            "hasToUnicode" => Ok(ModelValue::Bool(self.dictionary.get("ToUnicode").is_some())),
+            "hasEncoding" => Ok(ModelValue::Bool(self.dictionary.get("Encoding").is_some())),
+            "hasWidths" => Ok(ModelValue::Bool(
+                self.dictionary.get("Widths").is_some()
+                    || self.dictionary.get("W").is_some()
+                    || self.dictionary.get("DW").is_some(),
+            )),
+            "hasCIDSystemInfo" => Ok(ModelValue::Bool(
+                self.dictionary.get("CIDSystemInfo").is_some()
+                    || descendant_font_dictionary(self.document, self.dictionary)
+                        .is_some_and(|dictionary| dictionary.get("CIDSystemInfo").is_some()),
+            )),
+            "hasCharProcs" => Ok(ModelValue::Bool(self.dictionary.get("CharProcs").is_some())),
+            "hasResources" => Ok(ModelValue::Bool(self.dictionary.get("Resources").is_some())),
             _ => dictionary_property(self.dictionary, name, FONT_DIRECT_PROPERTIES),
         }
     }
@@ -3252,6 +3542,7 @@ impl ModelObject for AnnotationModel<'_> {
 #[derive(Clone, Debug)]
 pub struct OutputIntentModel<'a> {
     document: &'a ParsedDocument,
+    limits: &'a ResourceLimits,
     ordinal: usize,
     key: Option<ObjectKey>,
     offset: Option<u64>,
@@ -3265,6 +3556,7 @@ impl<'a> OutputIntentModel<'a> {
     fn from_catalog(
         document: &'a ParsedDocument,
         catalog: &CatalogModel<'_>,
+        limits: &'a ResourceLimits,
         max_objects: usize,
     ) -> Result<Vec<Self>> {
         let Some(catalog_object) = document.objects.get(&catalog.key) else {
@@ -3284,6 +3576,7 @@ impl<'a> OutputIntentModel<'a> {
                 }
                 output_intents.push(Self {
                     document,
+                    limits,
                     ordinal,
                     key,
                     offset,
@@ -3322,6 +3615,53 @@ impl ModelObject for OutputIntentModel<'_> {
             "hasDestOutputProfile" => Ok(ModelValue::Bool(
                 self.dictionary.get("DestOutputProfile").is_some(),
             )),
+            "iccProfileSize" => optional_u64_model_value(
+                output_intent_icc_header(self.document, self.dictionary, self.limits)?
+                    .map(|header| header.profile_size),
+            ),
+            "iccVersion" => {
+                Ok(
+                    output_intent_icc_header(self.document, self.dictionary, self.limits)?
+                        .map_or(ModelValue::Null, |header| {
+                            ModelValue::String(BoundedText::unchecked(header.version))
+                        }),
+                )
+            }
+            "iccDeviceClass" => {
+                Ok(
+                    output_intent_icc_header(self.document, self.dictionary, self.limits)?
+                        .map_or(ModelValue::Null, |header| {
+                            ModelValue::String(BoundedText::unchecked(header.device_class))
+                        }),
+                )
+            }
+            "iccColorSpace" => {
+                Ok(
+                    output_intent_icc_header(self.document, self.dictionary, self.limits)?
+                        .map_or(ModelValue::Null, |header| {
+                            ModelValue::String(BoundedText::unchecked(header.color_space))
+                        }),
+                )
+            }
+            "iccPcs" => Ok(
+                output_intent_icc_header(self.document, self.dictionary, self.limits)?
+                    .map_or(ModelValue::Null, |header| {
+                        ModelValue::String(BoundedText::unchecked(header.pcs))
+                    }),
+            ),
+            "iccRenderingIntent" => optional_u64_model_value(
+                output_intent_icc_header(self.document, self.dictionary, self.limits)?
+                    .map(|header| header.rendering_intent),
+            ),
+            "iccTagCount" => optional_u64_model_value(
+                output_intent_icc_header(self.document, self.dictionary, self.limits)?
+                    .map(|header| header.tag_count),
+            ),
+            "iccCapped" => Ok(ModelValue::Bool(
+                icc_stream_from_dictionary(self.document, self.dictionary).is_some_and(|stream| {
+                    stream.discovered_length > self.limits.max_icc_profile_bytes
+                }),
+            )),
             _ => dictionary_property(self.dictionary, name, OUTPUT_INTENT_DIRECT_PROPERTIES),
         }
     }
@@ -3344,6 +3684,9 @@ impl ModelObject for OutputIntentModel<'_> {
 pub struct ContentStreamModel<'a> {
     document: &'a ParsedDocument,
     limits: &'a ResourceLimits,
+    page_key: Option<ObjectKey>,
+    resource_context: Option<crate::Dictionary>,
+    context_prefix: String,
     page_ordinal: usize,
     ordinal: usize,
     key: ObjectKey,
@@ -3376,10 +3719,7 @@ impl<'a> ContentStreamModel<'a> {
     }
 
     fn summary(&self) -> Result<ContentStreamSummary> {
-        let location_path = format!(
-            "root/page[{}]/contentStream[{}]",
-            self.page_ordinal, self.ordinal
-        );
+        let location_path = format!("{}/contentStream[{}]", self.context_prefix, self.ordinal);
         self.summary_cache
             .get_or_init(|| {
                 let decoded = self.stream.decoded_bytes(self.limits)?;
@@ -3392,6 +3732,22 @@ impl<'a> ContentStreamModel<'a> {
             })
             .clone()
             .map_err(PdfvError::Parse)
+    }
+
+    fn effective_resources(&self, document: &'a ParsedDocument) -> Result<EffectiveResources<'_>> {
+        if let Some(resources) = &self.resource_context {
+            return Ok(EffectiveResources {
+                dictionaries: vec![resources],
+                cyclic: false,
+            });
+        }
+        let Some(page_key) = self.page_key else {
+            return Ok(EffectiveResources {
+                dictionaries: Vec::new(),
+                cyclic: false,
+            });
+        };
+        effective_resources_for_page_key(document, page_key, self.limits)
     }
 }
 
@@ -3518,7 +3874,9 @@ impl ModelObject for ContentStreamModel<'_> {
             }
         }
         if graph.materializes("resourceUse") {
+            let effective = self.effective_resources(graph.document)?;
             for (ordinal, use_fact) in summary.resource_uses.iter().cloned().enumerate() {
+                let resolved = resolve_resource_use(graph.document, &effective, &use_fact);
                 push_linked(
                     &mut objects,
                     ModelObjectRef::ResourceUse(ResourceUseModel::new(
@@ -3528,6 +3886,7 @@ impl ModelObject for ContentStreamModel<'_> {
                         self.ordinal,
                         ordinal,
                         use_fact,
+                        resolved,
                     )),
                     max_objects,
                 )?;
@@ -3849,6 +4208,7 @@ pub struct ResourceUseModel<'a> {
     stream_ordinal: usize,
     ordinal: usize,
     use_fact: ResourceUse,
+    resolved: ResolvedResourceUse,
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
@@ -3862,6 +4222,7 @@ impl<'a> ResourceUseModel<'a> {
         stream_ordinal: usize,
         ordinal: usize,
         use_fact: ResourceUse,
+        resolved: ResolvedResourceUse,
     ) -> Self {
         Self {
             document,
@@ -3870,6 +4231,7 @@ impl<'a> ResourceUseModel<'a> {
             stream_ordinal,
             ordinal,
             use_fact,
+            resolved,
             object_type: ObjectTypeName::unchecked("resourceUse"),
             supertypes: vec![ObjectTypeName::unchecked("object")],
             links: Vec::new(),
@@ -3911,6 +4273,19 @@ impl ModelObject for ResourceUseModel<'_> {
                 self.use_fact.operator.as_str(),
             ))),
             "location" => Ok(location_model_value(&self.use_fact.location)),
+            "status" => Ok(ModelValue::String(BoundedText::unchecked(
+                self.resolved.status.as_str(),
+            ))),
+            "resolvedFamily" => Ok(self
+                .resolved
+                .object_family
+                .map_or(ModelValue::Null, |family| {
+                    ModelValue::String(BoundedText::unchecked(family))
+                })),
+            "resolvedObject" => Ok(self
+                .resolved
+                .object
+                .map_or(ModelValue::Null, ModelValue::ObjectKey)),
             _ => Err(crate::ProfileError::UnknownProperty {
                 property: BoundedText::unchecked(name.as_str()),
             }
@@ -3964,6 +4339,139 @@ fn resolve_dictionary_value<'a>(
     }
 }
 
+fn effective_page_resources<'a>(
+    document: &'a ParsedDocument,
+    page: &PageModel<'a>,
+) -> Result<EffectiveResources<'a>> {
+    effective_resources_for_page_key(document, page.key, page.limits)
+}
+
+fn effective_resources_for_page_key<'a>(
+    document: &'a ParsedDocument,
+    page_key: ObjectKey,
+    limits: &ResourceLimits,
+) -> Result<EffectiveResources<'a>> {
+    let mut current = Some(page_key);
+    let mut visited = HashSet::new();
+    let mut dictionaries = Vec::new();
+    let mut cyclic = false;
+    while let Some(key) = current {
+        if !visited.insert(key) {
+            cyclic = true;
+            break;
+        }
+        if u64::try_from(visited.len()).map_err(|_| ValidationError::LimitExceeded {
+            limit: "max_resource_contexts",
+        })? > limits.max_resource_contexts
+        {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_resource_contexts",
+            }
+            .into());
+        }
+        let Some(dictionary) = page_dictionary(document, key) else {
+            break;
+        };
+        if let Some(resources) = resolve_dictionary_value(document, dictionary.get("Resources")) {
+            dictionaries.push(resources);
+        }
+        current = match dictionary.get("Parent") {
+            Some(crate::CosObject::Reference(parent)) => Some(*parent),
+            _ => None,
+        };
+    }
+    dictionaries.reverse();
+    Ok(EffectiveResources {
+        dictionaries,
+        cyclic,
+    })
+}
+
+fn resolve_resource_use(
+    document: &ParsedDocument,
+    resources: &EffectiveResources<'_>,
+    use_fact: &ResourceUse,
+) -> ResolvedResourceUse {
+    if resources.cyclic {
+        return ResolvedResourceUse {
+            status: ResourceResolutionStatus::Cyclic,
+            family: use_fact.family,
+            object: None,
+            object_family: None,
+        };
+    }
+    let Some(value) = resources
+        .dictionaries
+        .iter()
+        .rev()
+        .find_map(|dictionary| resource_value(dictionary, use_fact.family, &use_fact.name))
+    else {
+        return ResolvedResourceUse {
+            status: ResourceResolutionStatus::Missing,
+            family: use_fact.family,
+            object: None,
+            object_family: None,
+        };
+    };
+    let object = match value {
+        crate::CosObject::Reference(key) => Some(*key),
+        _ => None,
+    };
+    let object_family = resolved_resource_family(document, use_fact.family, value);
+    ResolvedResourceUse {
+        status: if object_family.is_some() {
+            ResourceResolutionStatus::Resolved
+        } else {
+            ResourceResolutionStatus::WrongType
+        },
+        family: use_fact.family,
+        object,
+        object_family,
+    }
+}
+
+fn resource_value<'a>(
+    resources: &'a crate::Dictionary,
+    family: ResourceFamily,
+    name: &PdfName,
+) -> Option<&'a crate::CosObject> {
+    let dictionary_name = match family {
+        ResourceFamily::Font => "Font",
+        ResourceFamily::ColorSpace => "ColorSpace",
+        ResourceFamily::ExtGState => "ExtGState",
+        ResourceFamily::Shading => "Shading",
+        ResourceFamily::XObject => "XObject",
+    };
+    let Some(crate::CosObject::Dictionary(collection)) = resources.get(dictionary_name) else {
+        return None;
+    };
+    collection
+        .iter()
+        .find_map(|(key, value)| (key == name).then_some(value))
+}
+
+fn resolved_resource_family(
+    document: &ParsedDocument,
+    expected: ResourceFamily,
+    value: &crate::CosObject,
+) -> Option<&'static str> {
+    match expected {
+        ResourceFamily::Font => {
+            resolve_named_dictionary(document, value).and_then(|(_key, _offset, dictionary)| {
+                classify_font_dictionary(dictionary).or(Some("font"))
+            })
+        }
+        ResourceFamily::ColorSpace => Some("colorSpace"),
+        ResourceFamily::ExtGState => resolve_named_dictionary(document, value)
+            .map(|(_key, _offset, _dictionary)| "extGState"),
+        ResourceFamily::Shading => {
+            resolve_named_dictionary(document, value).map(|(_key, _offset, _dictionary)| "shading")
+        }
+        ResourceFamily::XObject => resolve_named_dictionary(document, value)
+            .and_then(|(_key, _offset, dictionary)| classify_xobject(dictionary)),
+    }
+}
+
 fn inherited_page_value<'a>(
     document: &'a ParsedDocument,
     page_key: ObjectKey,
@@ -3999,14 +4507,147 @@ fn inherited_page_value<'a>(
     Ok(None)
 }
 
-fn page_resources_dictionary<'a>(
+fn classify_font_dictionary(dictionary: &crate::Dictionary) -> Option<&'static str> {
+    match dictionary.get("Subtype") {
+        Some(crate::CosObject::Name(name)) if name.matches("Type0") => Some("type0"),
+        Some(crate::CosObject::Name(name)) if name.matches("Type1") => Some("type1"),
+        Some(crate::CosObject::Name(name)) if name.matches("MMType1") => Some("mmType1"),
+        Some(crate::CosObject::Name(name)) if name.matches("TrueType") => Some("trueType"),
+        Some(crate::CosObject::Name(name)) if name.matches("Type3") => Some("type3"),
+        Some(crate::CosObject::Name(name)) if name.matches("CIDFontType0") => Some("cidFontType0"),
+        Some(crate::CosObject::Name(name)) if name.matches("CIDFontType2") => Some("cidFontType2"),
+        _ => None,
+    }
+}
+
+fn font_embedded(document: &ParsedDocument, dictionary: &crate::Dictionary) -> bool {
+    font_program_stream(document, dictionary).is_some()
+}
+
+fn font_program_bytes(document: &ParsedDocument, dictionary: &crate::Dictionary) -> Result<u64> {
+    font_program_stream(document, dictionary).map_or(Ok(0), |stream| {
+        Ok(stream.declared_length.unwrap_or(stream.discovered_length))
+    })
+}
+
+fn font_program_stream<'a>(
     document: &'a ParsedDocument,
-    page: &PageModel<'a>,
-) -> Result<Option<&'a crate::Dictionary>> {
-    Ok(resolve_dictionary_value(
-        document,
-        inherited_page_value(document, page.key, "Resources", page.limits)?,
-    ))
+    dictionary: &'a crate::Dictionary,
+) -> Option<&'a crate::StreamObject> {
+    let descriptor =
+        resolve_dictionary_value(document, dictionary.get("FontDescriptor")).or_else(|| {
+            descendant_font_dictionary(document, dictionary).and_then(|descendant| {
+                resolve_dictionary_value(document, descendant.get("FontDescriptor"))
+            })
+        })?;
+    ["FontFile", "FontFile2", "FontFile3"]
+        .iter()
+        .find_map(|name| stream_from_value(document, descriptor.get(name)))
+}
+
+fn descendant_font_dictionary<'a>(
+    document: &'a ParsedDocument,
+    dictionary: &'a crate::Dictionary,
+) -> Option<&'a crate::Dictionary> {
+    let Some(crate::CosObject::Array(descendants)) = dictionary.get("DescendantFonts") else {
+        return None;
+    };
+    descendants
+        .first()
+        .and_then(|value| resolve_named_dictionary(document, value))
+        .map(|(_key, _offset, dictionary)| dictionary)
+}
+
+fn stream_from_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&'a crate::CosObject>,
+) -> Option<&'a crate::StreamObject> {
+    match value? {
+        crate::CosObject::Stream(stream) => Some(stream),
+        crate::CosObject::Reference(key) => match &document.objects.get(key)?.object {
+            crate::CosObject::Stream(stream) => Some(stream),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn icc_stream_from_dictionary<'a>(
+    document: &'a ParsedDocument,
+    dictionary: &'a crate::Dictionary,
+) -> Option<&'a crate::StreamObject> {
+    stream_from_value(document, dictionary.get("DestOutputProfile"))
+}
+
+fn output_intent_icc_header(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    limits: &ResourceLimits,
+) -> Result<Option<IccHeader>> {
+    let Some(stream) = icc_stream_from_dictionary(document, dictionary) else {
+        return Ok(None);
+    };
+    if stream.discovered_length > limits.max_icc_profile_bytes {
+        return Ok(None);
+    }
+    let bytes = stream.decoded_bytes(limits)?;
+    Ok(parse_icc_header(&bytes))
+}
+
+fn parse_icc_header(bytes: &[u8]) -> Option<IccHeader> {
+    if bytes.len() < 132 {
+        return None;
+    }
+    let profile_size = u32::from_be_bytes(bytes.get(0..4)?.try_into().ok()?);
+    let major = *bytes.get(8)?;
+    let minor = *bytes.get(9)? >> 4;
+    let bugfix = *bytes.get(9)? & 0x0f;
+    let rendering_intent = u32::from_be_bytes(bytes.get(64..68)?.try_into().ok()?);
+    let tag_count = u32::from_be_bytes(bytes.get(128..132)?.try_into().ok()?);
+    Some(IccHeader {
+        profile_size: u64::from(profile_size),
+        version: format!("{major}.{minor}.{bugfix}"),
+        device_class: ascii_tag(bytes.get(12..16)?),
+        color_space: ascii_tag(bytes.get(16..20)?),
+        pcs: ascii_tag(bytes.get(20..24)?),
+        rendering_intent: u64::from(rendering_intent),
+        tag_count: u64::from(tag_count),
+    })
+}
+
+fn ascii_tag(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_owned()
+}
+
+fn color_space_family(dictionary: &crate::Dictionary) -> String {
+    if let Some(crate::CosObject::Name(name)) = dictionary.get("Family") {
+        return String::from_utf8_lossy(name.as_bytes()).into_owned();
+    }
+    if dictionary.get("N").is_some() {
+        return String::from("ICCBased");
+    }
+    if dictionary.get("HiVal").is_some() || dictionary.get("Lookup").is_some() {
+        return String::from("Indexed");
+    }
+    if dictionary.get("TintTransform").is_some() && dictionary.get("Colorants").is_some() {
+        return String::from("DeviceN");
+    }
+    if dictionary.get("TintTransform").is_some() {
+        return String::from("Separation");
+    }
+    String::from("unknown")
+}
+
+fn color_space_component_count(dictionary: &crate::Dictionary) -> Option<u64> {
+    match dictionary.get("N") {
+        Some(crate::CosObject::Integer(value)) => u64::try_from(*value).ok(),
+        _ => match color_space_family(dictionary).as_str() {
+            "DeviceGray" | "CalGray" => Some(1),
+            "DeviceRGB" | "CalRGB" | "Lab" => Some(3),
+            "DeviceCMYK" => Some(4),
+            _ => None,
+        },
+    }
 }
 
 fn page_dictionary(document: &ParsedDocument, key: ObjectKey) -> Option<&crate::Dictionary> {
@@ -4094,6 +4735,9 @@ fn push_content_stream<'a>(
     streams.push(ContentStreamModel {
         document,
         limits: page.limits,
+        page_key: Some(page.key),
+        resource_context: None,
+        context_prefix: format!("root/page[{}]", page.ordinal),
         page_ordinal: page.ordinal,
         ordinal,
         key,
@@ -4416,6 +5060,42 @@ impl ModelObject for GenericModel<'_> {
                 &PropertyName::unchecked("Height"),
                 IMAGE_DIRECT_PROPERTIES,
             ),
+            ("colorSpace", "family") => Ok(ModelValue::String(BoundedText::unchecked(
+                color_space_family(&self.dictionary),
+            ))),
+            ("colorSpace", "componentCount") => {
+                optional_u64_model_value(color_space_component_count(&self.dictionary))
+            }
+            ("colorSpace", "hasAlternate") => {
+                Ok(ModelValue::Bool(self.dictionary.get("Alternate").is_some()))
+            }
+            ("colorSpace", "hasTintTransform") => Ok(ModelValue::Bool(
+                self.dictionary.get("TintTransform").is_some(),
+            )),
+            ("colorSpace", "hasICCProfile") => Ok(ModelValue::Bool(
+                color_space_family(&self.dictionary) == "ICCBased"
+                    || self.object_type.as_str() == "iccProfile",
+            )),
+            ("extGState", "hasSoftMask") => {
+                Ok(ModelValue::Bool(self.dictionary.get("SMask").is_some_and(
+                    |value| !matches!(value, crate::CosObject::Name(name) if name.matches("None")),
+                )))
+            }
+            ("extGState", "hasBlendMode") => {
+                Ok(ModelValue::Bool(self.dictionary.get("BM").is_some()))
+            }
+            ("extGState", "alphaSource") => Ok(self
+                .dictionary
+                .get("AIS")
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from)),
+            ("cMap", "hasCIDSystemInfo") => Ok(ModelValue::Bool(
+                self.dictionary.get("CIDSystemInfo").is_some(),
+            )),
+            ("cMap", "hasUseCMap") => {
+                Ok(ModelValue::Bool(self.dictionary.get("UseCMap").is_some()))
+            }
+            ("cMap", "embedded") => Ok(ModelValue::Bool(self.key.is_some())),
             ("contentStream", "operatorCount" | "markedContentCount") => {
                 Ok(ModelValue::Number(0.0))
             }
@@ -4481,8 +5161,59 @@ fn generic_linked_objects<'a>(
         "outline" => outline_linked_objects(model, graph, max_objects),
         "names" => names_linked_objects(model, graph, max_objects),
         "destination" => destination_linked_objects(model, graph, max_objects),
+        "xObject" | "formXObject" => xobject_linked_objects(model, graph, max_objects),
         _ => Ok(Vec::new()),
     }
+}
+
+fn xobject_linked_objects<'a>(
+    model: &GenericModel<'a>,
+    graph: &ModelGraph<'a>,
+    max_objects: usize,
+) -> Result<Vec<ModelObjectRef<'a>>> {
+    if !graph.materializes("contentStream") {
+        return Ok(Vec::new());
+    }
+    let Some(key) = model.key else {
+        return Ok(Vec::new());
+    };
+    let Some(object) = graph.document.objects.get(&key) else {
+        return Ok(Vec::new());
+    };
+    let crate::CosObject::Stream(stream) = &object.object else {
+        return Ok(Vec::new());
+    };
+    let resource_context =
+        resolve_dictionary_value(graph.document, model.dictionary.get("Resources")).cloned();
+    let model = ContentStreamModel {
+        document: graph.document,
+        limits: graph.limits,
+        page_key: None,
+        resource_context,
+        context_prefix: model.context.clone(),
+        page_ordinal: model.ordinal,
+        ordinal: 0,
+        key,
+        offset: object.offset,
+        stream,
+        summary_cache: Arc::new(OnceLock::new()),
+        object_type: ObjectTypeName::unchecked("contentStream"),
+        supertypes: vec![
+            ObjectTypeName::unchecked("stream"),
+            ObjectTypeName::unchecked("object"),
+        ],
+        links: CONTENT_STREAM_LINKS
+            .iter()
+            .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
+            .collect(),
+    };
+    let mut objects = Vec::new();
+    push_linked(
+        &mut objects,
+        ModelObjectRef::ContentStream(model),
+        max_objects,
+    )?;
+    Ok(objects)
 }
 
 fn generic_models_from_dictionary_value<'a>(
@@ -4810,12 +5541,18 @@ fn family_direct_properties(family: &str) -> &'static [&'static str] {
         "optionalContentProperties" => OPTIONAL_CONTENT_DIRECT_PROPERTIES,
         "permissions" => PERMISSIONS_PROPERTIES,
         "cMap" => CMAP_DIRECT_PROPERTIES,
+        "fontDescriptor" => FONT_DESCRIPTOR_PROPERTIES,
+        "fontProgram" => FONT_PROGRAM_PROPERTIES,
         "image" => IMAGE_DIRECT_PROPERTIES,
-        "xObject" => XOBJECT_DIRECT_PROPERTIES,
+        "xObject" | "formXObject" | "postScriptXObject" => XOBJECT_DIRECT_PROPERTIES,
+        "pattern" => PATTERN_DIRECT_PROPERTIES,
+        "shading" => SHADING_DIRECT_PROPERTIES,
+        "function" => FUNCTION_DIRECT_PROPERTIES,
         "action" => ACTION_DIRECT_PROPERTIES,
         "formField" => FORM_FIELD_DIRECT_PROPERTIES,
         "fileSpec" => FILE_SPEC_DIRECT_PROPERTIES,
         "colorSpace" => COLOR_SPACE_DIRECT_PROPERTIES,
+        "iccProfile" => ICC_PROFILE_PROPERTIES,
         "extGState" => EXT_GSTATE_DIRECT_PROPERTIES,
         "structureTreeRoot" => STRUCTURE_DIRECT_PROPERTIES,
         "structureElement" => STRUCTURE_ELEMENT_PROPERTIES,
@@ -4836,6 +5573,7 @@ fn family_links(family: &str) -> &'static [(&'static str, &'static str)] {
         "outline" => OUTLINE_LINKS,
         "names" => NAMES_LINKS,
         "destination" => DESTINATION_LINKS,
+        "xObject" | "formXObject" => XOBJECT_LINKS,
         _ => EMPTY_LINK_NAMES,
     }
 }
@@ -4854,6 +5592,7 @@ fn classify_xobject(dictionary: &crate::Dictionary) -> Option<&'static str> {
     match dictionary.get("Subtype") {
         Some(crate::CosObject::Name(name)) if name.matches("Image") => Some("image"),
         Some(crate::CosObject::Name(name)) if name.matches("Form") => Some("xObject"),
+        Some(crate::CosObject::Name(name)) if name.matches("PS") => Some("postScriptXObject"),
         _ => None,
     }
 }
@@ -4864,7 +5603,10 @@ fn classify_dictionary(dictionary: &crate::Dictionary) -> Option<&'static str> {
             return Some("image");
         }
         if name.matches("Form") {
-            return Some("xObject");
+            return Some("formXObject");
+        }
+        if name.matches("PS") {
+            return Some("postScriptXObject");
         }
         if name.matches("Widget") {
             return Some("formField");
@@ -4919,6 +5661,18 @@ fn classify_dictionary(dictionary: &crate::Dictionary) -> Option<&'static str> {
     }
     if dictionary.get("CMapName").is_some() {
         return Some("cMap");
+    }
+    if dictionary.get("ShadingType").is_some() {
+        return Some("shading");
+    }
+    if dictionary.get("FunctionType").is_some() {
+        return Some("function");
+    }
+    if dictionary.get("PatternType").is_some() {
+        return Some("pattern");
+    }
+    if dictionary.get("N").is_some() && dictionary.get("Alternate").is_some() {
+        return Some("iccProfile");
     }
     if dictionary.get("ByteRange").is_some() {
         return Some("signature");
@@ -5706,6 +6460,104 @@ trailer
         pdf
     }
 
+    fn phase16_resource_pdf() -> Vec<u8> {
+        let stream = b"BT /Inherited 12 Tf ET /Local cs /Missing gs /Bad Do /Shade sh";
+        let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OutputIntents [10 0 R] >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 /Resources << /Font << /Inherited 5 0 R >> /Shading << /Shade 11 0 R >> >> >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /ColorSpace << /Local 7 0 R >> /XObject << /Bad 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length "
+            .to_vec();
+        pdf.extend(stream.len().to_string().as_bytes());
+        pdf.extend(
+            br" >>
+stream
+",
+        );
+        pdf.extend(stream);
+        pdf.extend(
+            br"
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /Faux /DescendantFonts [8 0 R] /ToUnicode 12 0 R >>
+endobj
+6 0 obj
+<< /NotAnXObject true >>
+endobj
+7 0 obj
+<< /N 3 /Alternate /DeviceRGB /Range [0 1 0 1 0 1] >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 9 0 R >>
+endobj
+9 0 obj
+<< /Type /FontDescriptor /FontName /Faux /FontFile2 13 0 R >>
+endobj
+10 0 obj
+<< /Type /OutputIntent /S /GTS_PDFA1 /DestOutputProfile 14 0 R >>
+endobj
+11 0 obj
+<< /ShadingType 2 /ColorSpace /DeviceRGB /Function 15 0 R >>
+endobj
+12 0 obj
+<< /Type /CMap /CMapName /Identity-H /WMode 0 >>
+endobj
+13 0 obj
+<< /Length 4 /Length1 4 >>
+stream
+font
+endstream
+endobj
+14 0 obj
+<< /N 3 /Length 132 >>
+stream
+",
+        );
+        let mut icc = vec![0_u8; 132];
+        write_fixture_bytes(&mut icc, 0, &132_u32.to_be_bytes());
+        write_fixture_byte(&mut icc, 8, 4);
+        write_fixture_byte(&mut icc, 9, 0x30);
+        write_fixture_bytes(&mut icc, 12, b"mntr");
+        write_fixture_bytes(&mut icc, 16, b"RGB ");
+        write_fixture_bytes(&mut icc, 20, b"XYZ ");
+        write_fixture_bytes(&mut icc, 64, &1_u32.to_be_bytes());
+        pdf.extend(icc);
+        pdf.extend(
+            br"
+endstream
+endobj
+15 0 obj
+<< /FunctionType 2 /Domain [0 1] /Range [0 1] >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+",
+        );
+        pdf
+    }
+
+    fn write_fixture_bytes(target: &mut [u8], start: usize, bytes: &[u8]) {
+        let end = start.saturating_add(bytes.len());
+        if let Some(slot) = target.get_mut(start..end) {
+            slot.copy_from_slice(bytes);
+        }
+    }
+
+    fn write_fixture_byte(target: &mut [u8], index: usize, byte: u8) {
+        if let Some(slot) = target.get_mut(index) {
+            *slot = byte;
+        }
+    }
+
     #[test]
     fn test_should_materialize_m1_model_wrappers() -> crate::Result<()> {
         let document = Parser::default().parse(Cursor::new(m1_model_pdf()))?;
@@ -5724,7 +6576,7 @@ trailer
         })?;
         let fonts = FontModel::from_page(&document, page, 16)?;
         let annotations = AnnotationModel::from_page(&document, page, 16)?;
-        let output_intents = OutputIntentModel::from_catalog(&document, &catalog, 16)?;
+        let output_intents = OutputIntentModel::from_catalog(&document, &catalog, &limits, 16)?;
         let content_streams = ContentStreamModel::from_page(&document, page, 16)?;
 
         assert_eq!(pages.len(), 1);
@@ -5845,6 +6697,143 @@ trailer
                 .filter(|object| object.family.as_str() == "operator")
                 .all(|object| !object.properties.contains_key(&raw_text))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_resolve_content_resource_uses_with_effective_resources() -> crate::Result<()> {
+        let options = ValidationOptions::builder()
+            .feature_selection(FeatureSelection::All)
+            .build();
+        let validator = Validator::new(options)?;
+        let report =
+            validator.validate_reader(Cursor::new(phase16_resource_pdf()), InputName::memory())?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+        let status = PropertyName::new("status")?;
+        let name = PropertyName::new("name")?;
+        let resolved_family = PropertyName::new("resolvedFamily")?;
+        let uses = features
+            .objects
+            .iter()
+            .filter(|object| object.family.as_str() == "resourceUse")
+            .collect::<Vec<_>>();
+
+        assert!(uses.iter().any(|object| {
+            matches!(
+                object.properties.get(&name),
+                Some(crate::FeatureValue::String(value)) if value.as_str() == "Inherited"
+            ) && matches!(
+                object.properties.get(&status),
+                Some(crate::FeatureValue::String(value)) if value.as_str() == "resolved"
+            )
+        }));
+        assert!(uses.iter().any(|object| {
+            matches!(
+                object.properties.get(&name),
+                Some(crate::FeatureValue::String(value)) if value.as_str() == "Missing"
+            ) && matches!(
+                object.properties.get(&status),
+                Some(crate::FeatureValue::String(value)) if value.as_str() == "missing"
+            )
+        }));
+        assert!(uses.iter().any(|object| {
+            matches!(
+                object.properties.get(&name),
+                Some(crate::FeatureValue::String(value)) if value.as_str() == "Bad"
+            ) && matches!(
+                object.properties.get(&status),
+                Some(crate::FeatureValue::String(value)) if value.as_str() == "wrongType"
+            )
+        }));
+        assert!(uses.iter().any(|object| {
+            matches!(
+                object.properties.get(&resolved_family),
+                Some(crate::FeatureValue::String(value)) if value.as_str() == "colorSpace"
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_extract_font_color_output_intent_and_function_summaries() -> crate::Result<()> {
+        let options = ValidationOptions::builder()
+            .feature_selection(FeatureSelection::All)
+            .build();
+        let validator = Validator::new(options)?;
+        let report =
+            validator.validate_reader(Cursor::new(phase16_resource_pdf()), InputName::memory())?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+        let family = PropertyName::new("family")?;
+        let has_cid_system_info = PropertyName::new("hasCIDSystemInfo")?;
+        let icc_color_space = PropertyName::new("iccColorSpace")?;
+
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "font"
+                && matches!(
+                    object.properties.get(&has_cid_system_info),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "colorSpace"
+                && matches!(
+                    object.properties.get(&family),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "ICCBased"
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "outputIntent"
+                && matches!(
+                    object.properties.get(&icc_color_space),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "RGB"
+                )
+        }));
+        assert!(
+            features
+                .objects
+                .iter()
+                .any(|object| object.family.as_str() == "shading")
+        );
+        assert!(
+            features
+                .objects
+                .iter()
+                .any(|object| object.family.as_str() == "function")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_materialize_form_xobject_content_stream_context() -> crate::Result<()> {
+        let options = ValidationOptions::builder()
+            .feature_selection(FeatureSelection::All)
+            .build();
+        let validator = Validator::new(options)?;
+        let report = validator.validate_reader(Cursor::new(m6_model_pdf()), InputName::memory())?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "contentStream"
+                && object
+                    .context
+                    .as_str()
+                    .contains("/xObject[Fm1]/contentStream[0]")
+        }));
         Ok(())
     }
 
