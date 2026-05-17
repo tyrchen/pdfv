@@ -54,6 +54,12 @@ jobs:
         run: cargo clippy --all-targets --all-features --tests --benches -- -D warnings
       - name: Execute rust tests
         run: cargo nextest run --all-features
+      - name: Generate parity profile report
+        run: make parity-profile-report
+      - name: Generate parity model schema
+        run: make parity-model-schema
+      - name: Check parity corpus agreement
+        run: make parity-corpus
       - name: Generate a changelog
         uses: orhun/git-cliff-action@v4
         id: git-cliff
