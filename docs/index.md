@@ -27,3 +27,4 @@
 ## Reviews
 
 - [Review: veraPDF Vendor vs pdfv Core Drift](reviews/verapdf-pdfv-core-drift-review.md)
+- [Parity Snapshot Instructions](reviews/parity-snapshot-instructions.md)

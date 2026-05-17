@@ -1953,6 +1953,19 @@ impl ModelRegistry {
             .map(|family| u64::try_from(family.link_schema().len()).unwrap_or(u64::MAX))
             .fold(0_u64, u64::saturating_add)
     }
+
+    pub(crate) fn family_schema_counts(&self) -> Vec<(ObjectTypeName, u64, u64)> {
+        self.families
+            .iter()
+            .map(|(name, family)| {
+                (
+                    name.clone(),
+                    u64::try_from(family.property_schema().len()).unwrap_or(u64::MAX),
+                    u64::try_from(family.link_schema().len()).unwrap_or(u64::MAX),
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug)]
@@ -8309,6 +8322,13 @@ trailer
         assert!(report.registered_families > 20);
         assert!(report.registered_properties > 100);
         assert!(report.registered_links > 20);
+        assert_eq!(
+            report.model_families.len(),
+            usize::try_from(report.registered_families).unwrap_or(usize::MAX)
+        );
+        assert!(report.model_families.iter().any(|family| {
+            family.family.as_str() == "accessibilityDocument" && family.properties > 0
+        }));
         assert!(!report.profiles.is_empty());
         assert!(
             report
@@ -8330,6 +8350,38 @@ trailer
                 .unsupported_by_reason
                 .contains_key("missingSemanticFamily")
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_report_profile_coverage_and_primary_unsupported_reasons() -> crate::Result<()> {
+        let coverage = crate::profile_coverage_parity_report()?;
+        let unsupported = crate::unsupported_rules_parity_report()?;
+
+        assert!(!coverage.profiles.is_empty());
+        assert!(coverage.profiles.iter().any(|profile| {
+            profile.flavour.as_str() == "pdfa-1b"
+                && profile.total_rules > 0
+                && profile.lowered_rules > 0
+                && profile.bound_rules > 0
+        }));
+        assert!(!unsupported.rules.is_empty());
+        assert!(unsupported.rules.iter().all(|rule| {
+            matches!(
+                rule.primary_reason.as_str(),
+                "missingLink"
+                    | "missingObjectType"
+                    | "missingProperty"
+                    | "missingSemanticFamily"
+                    | "unsupportedExpression"
+            )
+        }));
+        assert!(
+            unsupported
+                .rules
+                .iter()
+                .any(|rule| { rule.primary_reason.as_str() == "missingSemanticFamily" })
+        );
         Ok(())
     }
 

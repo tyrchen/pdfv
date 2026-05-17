@@ -17,6 +17,7 @@
 mod accessibility;
 mod content;
 mod generated_profiles;
+mod parity;
 mod parser;
 mod profile;
 mod validation;
@@ -31,6 +32,10 @@ use std::{
     time::Duration,
 };
 
+pub use parity::{
+    CorpusAgreement, CorpusAgreementReport, CorpusAgreementRow, CorpusAgreementSummary,
+    CorpusFixtureSource, CorpusOutcome, corpus_agreement_report,
+};
 pub use parser::{
     CosObject, DecodeParams, DecoderRegistry, Dictionary, IndirectObject, ObjectStore,
     ParseOptions, ParsedDocument, Parser, PdfName, PdfSource, PdfString, SourceStorage,
@@ -39,11 +44,13 @@ pub use parser::{
 #[cfg(feature = "custom-profiles")]
 pub use profile::CustomProfileRepository;
 pub use profile::{
-    BinaryOp, BuiltinFunction, BuiltinProfileRepository, ErrorTemplate, ModelSchemaParityReport,
-    ModelSchemaProfileReport, ModelValue, ObjectTypeName, ProfileCatalogEntry,
-    ProfileImportSummary, ProfileRepository, PropertyName, PropertyPath, Rule, RuleEvaluator,
-    RuleExpr, RuleOutcome, UnaryOp, ValidationProfile, display_flavour, import_verapdf_profile_xml,
-    model_schema_parity_report,
+    BinaryOp, BuiltinFunction, BuiltinProfileRepository, ErrorTemplate, ModelFamilySchemaReport,
+    ModelSchemaParityReport, ModelSchemaProfileReport, ModelValue, ObjectTypeName,
+    ProfileCatalogEntry, ProfileCoverageParityReport, ProfileImportSummary, ProfileRepository,
+    PropertyName, PropertyPath, Rule, RuleEvaluator, RuleExpr, RuleOutcome, UnaryOp,
+    UnsupportedRuleParityEntry, UnsupportedRulesParityReport, ValidationProfile, display_flavour,
+    import_verapdf_profile_xml, model_schema_parity_report, profile_coverage_parity_report,
+    unsupported_rules_parity_report,
 };
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};

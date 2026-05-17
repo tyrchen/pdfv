@@ -43,4 +43,10 @@ generate-profiles:
 parity-model-schema:
 	@cargo run -p pdfv-core --example parity_model_schema
 
-.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema
+parity-profile-report:
+	@cargo run -p pdfv-core --example parity_profile_report
+
+parity-corpus:
+	@cargo run -p pdfv-core --example parity_corpus
+
+.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus

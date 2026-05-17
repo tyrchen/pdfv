@@ -22,6 +22,13 @@ const MAX_PROFILE_XML_DEPTH: u32 = 32;
 const MAX_PROFILE_XML_ATTRIBUTES: usize = 16;
 const MAX_PROFILE_RULES: usize = 10_000;
 const MAX_PROFILE_STRING_BYTES: usize = 4096;
+const UNSUPPORTED_REASON_CATEGORIES: &[&str] = &[
+    "missingLink",
+    "missingObjectType",
+    "missingProperty",
+    "missingSemanticFamily",
+    "unsupportedExpression",
+];
 
 /// Repository that resolves validation profiles for a caller selection.
 pub trait ProfileRepository {
@@ -182,8 +189,23 @@ pub struct ModelSchemaParityReport {
     pub registered_properties: u64,
     /// Number of registered model links across families.
     pub registered_links: u64,
+    /// Per-family model schema counts in deterministic family-name order.
+    pub model_families: Vec<ModelFamilySchemaReport>,
     /// Per-profile model-schema coverage.
     pub profiles: Vec<ModelSchemaProfileReport>,
+}
+
+/// Per-family model schema counters.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelFamilySchemaReport {
+    /// Validation model family name.
+    pub family: ObjectTypeName,
+    /// Registered property count for this family.
+    pub properties: u64,
+    /// Registered link count for this family.
+    pub links: u64,
 }
 
 /// Per-profile model-schema coverage counters.
@@ -203,6 +225,49 @@ pub struct ModelSchemaProfileReport {
     pub bound_rules: u64,
     /// Unsupported rules grouped by primary reason category.
     pub unsupported_by_reason: BTreeMap<String, u64>,
+}
+
+/// Profile-coverage parity report for generated built-in profiles.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileCoverageParityReport {
+    /// Vendor pins used by the generated profile catalog.
+    pub vendor_pins: BTreeMap<String, String>,
+    /// Per-profile coverage counters.
+    pub profiles: Vec<ModelSchemaProfileReport>,
+}
+
+/// Unsupported-rule parity report for generated built-in profiles.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedRulesParityReport {
+    /// Vendor pins used by the generated profile catalog.
+    pub vendor_pins: BTreeMap<String, String>,
+    /// Unsupported rules in deterministic profile/rule/object/reason order.
+    pub rules: Vec<UnsupportedRuleParityEntry>,
+}
+
+/// One generated-profile rule that has exactly one primary unsupported reason.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnsupportedRuleParityEntry {
+    /// CLI/catalog flavour spelling.
+    pub flavour: BoundedText,
+    /// Vendored XML source file.
+    pub source: BoundedText,
+    /// Unsupported rule id.
+    pub rule_id: RuleId,
+    /// Object type targeted by the rule.
+    pub object_type: ObjectTypeName,
+    /// Primary unsupported reason category.
+    pub primary_reason: BoundedText,
+    /// Bounded detailed reason.
+    pub reason: BoundedText,
+    /// Bounded expression fragment.
+    pub expression_fragment: BoundedText,
 }
 
 /// Builds a deterministic model-schema parity report for generated profiles.
@@ -232,8 +297,78 @@ pub fn model_schema_parity_report() -> Result<ModelSchemaParityReport> {
         registered_families: registry.registered_family_count(),
         registered_properties: registry.registered_property_count(),
         registered_links: registry.registered_link_count(),
+        model_families: registry
+            .family_schema_counts()
+            .into_iter()
+            .map(|(family, properties, links)| ModelFamilySchemaReport {
+                family,
+                properties,
+                links,
+            })
+            .collect(),
         profiles,
     })
+}
+
+/// Builds a deterministic profile-coverage parity report for generated profiles.
+///
+/// # Errors
+///
+/// Returns [`crate::PdfvError`] if generated profile XML cannot be imported or
+/// bounded report fields cannot be constructed.
+pub fn profile_coverage_parity_report() -> Result<ProfileCoverageParityReport> {
+    let schema = model_schema_parity_report()?;
+    Ok(ProfileCoverageParityReport {
+        vendor_pins: schema.vendor_pins,
+        profiles: schema.profiles,
+    })
+}
+
+/// Builds a deterministic unsupported-rule parity report for generated profiles.
+///
+/// # Errors
+///
+/// Returns [`crate::PdfvError`] if generated profile XML cannot be imported or
+/// bounded report fields cannot be constructed.
+pub fn unsupported_rules_parity_report() -> Result<UnsupportedRulesParityReport> {
+    let mut rules = Vec::new();
+    for source in GENERATED_PROFILE_SOURCES {
+        let import = import_generated_profile(source)?;
+        for rule in import.profile.rules {
+            let RuleExpr::Unsupported { fragment, reason } = rule.test else {
+                continue;
+            };
+            rules.push(UnsupportedRuleParityEntry {
+                flavour: BoundedText::new(source.display_flavour, 128)?,
+                source: BoundedText::new(source.source_file, 512)?,
+                rule_id: rule.id,
+                object_type: rule.object_type,
+                primary_reason: BoundedText::unchecked(unsupported_primary_reason(reason.as_str())),
+                reason,
+                expression_fragment: fragment,
+            });
+        }
+    }
+    rules.sort_by(|left, right| {
+        (
+            left.flavour.as_str(),
+            left.rule_id.0.as_str(),
+            left.object_type.as_str(),
+            left.primary_reason.as_str(),
+        )
+            .cmp(&(
+                right.flavour.as_str(),
+                right.rule_id.0.as_str(),
+                right.object_type.as_str(),
+                right.primary_reason.as_str(),
+            ))
+    });
+    let mut vendor_pins = BTreeMap::new();
+    vendor_pins.insert(
+        String::from("veraPDF-library"),
+        String::from(VERA_PDF_LIBRARY_PIN),
+    );
+    Ok(UnsupportedRulesParityReport { vendor_pins, rules })
 }
 
 impl ProfileCatalogEntry {
@@ -1182,8 +1317,15 @@ fn model_schema_profile_report(
         total_rules: u64::try_from(profile.rules.len()).unwrap_or(u64::MAX),
         lowered_rules,
         bound_rules,
-        unsupported_by_reason,
+        unsupported_by_reason: complete_reason_counts(unsupported_by_reason),
     })
+}
+
+fn complete_reason_counts(mut reasons: BTreeMap<String, u64>) -> BTreeMap<String, u64> {
+    for reason in UNSUPPORTED_REASON_CATEGORIES {
+        reasons.entry(String::from(*reason)).or_insert(0);
+    }
+    reasons
 }
 
 fn unsupported_reason_category(reason: &str) -> &'static str {
@@ -1195,6 +1337,14 @@ fn unsupported_reason_category(reason: &str) -> &'static str {
         "missingObjectType"
     } else {
         "unsupportedExpression"
+    }
+}
+
+fn unsupported_primary_reason(reason: &str) -> &'static str {
+    if reason == "missingSemanticFamily" {
+        "missingSemanticFamily"
+    } else {
+        unsupported_reason_category(reason)
     }
 }
 

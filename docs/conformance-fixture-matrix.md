@@ -22,6 +22,19 @@ annotation, output-intent, and page-content-stream objects. Those fixtures keep
 advanced object coverage local to the model graph tests until a licensed public
 PDF/A corpus is added.
 
+## Phase 19 Semantic Corpus Rows
+
+`make parity-corpus` writes `target/parity/corpus-agreement.json` without Java
+or external corpus inputs. The generated and checked-in rows cover parser,
+profile, operator, resource/font/color, XMP, and accessibility semantic
+families. Rows compare pdfv against the expected semantic outcome for the local
+fixture and record any missing feature families as `unexpectedDrift`.
+
+`make parity-profile-report` writes `target/parity/profile-coverage.json` and
+`target/parity/unsupported-rules.json`. The unsupported-rule artifact records
+one `primaryReason` per unsupported rule so coverage can be compared across
+phases without interpreting free-form diagnostics.
+
 ## Encrypted Fixtures
 
 Password/decryption coverage is generated in unit and CLI tests rather than
