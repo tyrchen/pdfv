@@ -342,6 +342,10 @@ pub(crate) struct MarkedContentSpan {
     pub properties: Option<ObjectKey>,
     /// Optional named property-list resource.
     pub properties_name: Option<PdfName>,
+    /// Whether text-show operators appeared inside this span.
+    pub has_text: bool,
+    /// Whether image or `XObject` invocation operators appeared inside this span.
+    pub has_image: bool,
     /// Deterministic location.
     pub location: ObjectLocation,
 }
@@ -437,6 +441,7 @@ pub(crate) fn summarize_content_stream(
     };
     let mut graphics_depth = 0_u32;
     let mut marked_depth = 0_u32;
+    let mut marked_stack = Vec::new();
 
     while let Some(token) = parser.next_token()? {
         match token {
@@ -470,6 +475,7 @@ pub(crate) fn summarize_content_stream(
                     &mut parser,
                     &mut graphics_depth,
                     &mut marked_depth,
+                    &mut marked_stack,
                     &mut summary,
                     limits,
                 )?;
@@ -528,6 +534,7 @@ fn classify_operator(
     parser: &mut ContentTokenizer<'_>,
     graphics_depth: &mut u32,
     marked_depth: &mut u32,
+    marked_stack: &mut Vec<usize>,
     summary: &mut ContentStreamSummary,
     limits: &ResourceLimits,
 ) -> Result<(), ParseError> {
@@ -535,6 +542,7 @@ fn classify_operator(
     match op_name {
         "BI" => {
             let inline = parser.parse_inline_image(limits)?;
+            mark_active_spans(summary, marked_stack, MarkedSpanFact::Image);
             summary.facts.push(OperatorFact::InlineImage {
                 width: inline.width,
                 height: inline.height,
@@ -565,13 +573,16 @@ fn classify_operator(
                 .facts
                 .push(OperatorFact::TextPosition { op, location });
         }
-        "Tj" | "TJ" | "'" | "\"" => summary.facts.push(OperatorFact::TextShow {
-            op,
-            bytes: BoundedBytes {
-                bytes: operand_bytes,
-            },
-            location,
-        }),
+        "Tj" | "TJ" | "'" | "\"" => {
+            mark_active_spans(summary, marked_stack, MarkedSpanFact::Text);
+            summary.facts.push(OperatorFact::TextShow {
+                op,
+                bytes: BoundedBytes {
+                    bytes: operand_bytes,
+                },
+                location,
+            });
+        }
         "BMC" | "BDC" | "MP" | "DP" => {
             let tag = match first_name_operand(operands) {
                 Some(tag) => tag,
@@ -582,14 +593,18 @@ fn classify_operator(
             let mcid = inline_mcid(operands);
             if matches!(op_name, "BMC" | "BDC") {
                 *marked_depth = marked_depth.saturating_add(1);
+                let span_index = summary.marked_content.len();
                 summary.marked_content.push(MarkedContentSpan {
                     tag: tag.clone(),
                     nesting_depth: *marked_depth,
                     mcid,
                     properties,
                     properties_name,
+                    has_text: false,
+                    has_image: false,
                     location: location.clone(),
                 });
+                marked_stack.push(span_index);
             }
             summary.facts.push(OperatorFact::MarkedContent {
                 tag,
@@ -599,6 +614,7 @@ fn classify_operator(
         }
         "EMC" => {
             *marked_depth = marked_depth.saturating_sub(1);
+            let _ = marked_stack.pop();
             summary.facts.push(OperatorFact::MarkedContent {
                 tag: PdfName::new(b"EMC".to_vec(), limits)?,
                 properties: None,
@@ -668,6 +684,7 @@ fn classify_operator(
         }
         "Do" => {
             if let Some(name) = first_name_operand(operands) {
+                mark_active_spans(summary, marked_stack, MarkedSpanFact::Image);
                 summary.resource_uses.push(ResourceUse {
                     family: ResourceFamily::XObject,
                     name: name.clone(),
@@ -691,6 +708,27 @@ fn classify_operator(
         _ => push_unknown(summary, op, operands, location)?,
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MarkedSpanFact {
+    Text,
+    Image,
+}
+
+fn mark_active_spans(
+    summary: &mut ContentStreamSummary,
+    marked_stack: &[usize],
+    fact: MarkedSpanFact,
+) {
+    for index in marked_stack {
+        if let Some(span) = summary.marked_content.get_mut(*index) {
+            match fact {
+                MarkedSpanFact::Text => span.has_text = true,
+                MarkedSpanFact::Image => span.has_image = true,
+            }
+        }
+    }
 }
 
 fn push_color_fact(

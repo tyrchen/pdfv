@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     BoundedText, CosObject, Dictionary, ObjectKey, ObjectLocation, ParsedDocument, PdfName,
-    ResourceLimits, Result, ValidationError, ValidationWarning, content::OperatorFact,
+    ResourceLimits, Result, ValidationError, ValidationWarning,
 };
 
 const DEFAULT_MAX_STRUCTURE_NODES: u64 = 100_000;
@@ -107,6 +107,10 @@ pub(crate) struct AccessibilityGraph {
     pub class_map_present: bool,
     /// Number of bounded ID-tree entries observed.
     pub id_tree_entries: u64,
+    /// Bounded ID-tree mappings.
+    pub id_tree: BTreeMap<String, ObjectKey>,
+    /// Number of bounded `/ClassMap` entries observed.
+    pub class_map_entries: u64,
     /// Number of bounded parent-tree entries observed.
     pub parent_tree_entries: u64,
     /// Next parent-tree key declared by the structure tree root.
@@ -168,6 +172,8 @@ pub(crate) struct AccessibilityNode {
     pub has_class: bool,
     /// Whether `/ID` exists.
     pub has_id: bool,
+    /// Whether this element's `/ID` resolves through `/IDTree`.
+    pub id_tree_resolved: bool,
     /// Whether `/P` exists.
     pub contains_parent: bool,
     /// Whether traversal observed an object reference under `/K`.
@@ -176,6 +182,8 @@ pub(crate) struct AccessibilityNode {
     pub non_standard_role: bool,
     /// Whether role-map normalization detected a cycle.
     pub circular_role_mapping: bool,
+    /// Whether `/C` class references resolve through `/ClassMap`.
+    pub class_map_resolved: bool,
 }
 
 /// Structure content item.
@@ -256,6 +264,23 @@ struct TraversalItem<'a> {
 struct NumberTree {
     entries: u64,
     mcid_refs: BTreeMap<(ObjectKey, i64), ObjectKey>,
+    object_refs: BTreeMap<ObjectKey, ObjectKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParentTreeOwnerKind {
+    Page,
+    Annotation,
+    Image,
+    Form,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ParentTreeOwner {
+    object: ObjectKey,
+    page_ordinal: Option<usize>,
+    kind: ParentTreeOwnerKind,
 }
 
 #[derive(Debug)]
@@ -263,6 +288,7 @@ struct KidCollector<'a, 'g> {
     document: &'a ParsedDocument,
     node_id: AccessibilityNodeId,
     page: Option<ObjectKey>,
+    page_ordinals: &'g BTreeMap<ObjectKey, usize>,
     graph: &'g mut AccessibilityGraph,
     stack: &'g mut Vec<TraversalItem<'a>>,
     depth: u32,
@@ -290,6 +316,7 @@ pub(crate) fn build_accessibility_graph(
         .iter()
         .map(|page| (page.key, page.ordinal))
         .collect::<BTreeMap<_, _>>();
+    let parent_tree_owners = collect_parent_tree_owners(document, &pages);
     let catalog = catalog_dictionary(document);
     let tagged = catalog.is_some_and(|catalog| catalog_marked(document, catalog));
     let language = catalog.and_then(|catalog| text_string(catalog.get("Lang")));
@@ -303,6 +330,8 @@ pub(crate) fn build_accessibility_graph(
             role_map_present: false,
             class_map_present: false,
             id_tree_entries: 0,
+            id_tree: BTreeMap::new(),
+            class_map_entries: 0,
             parent_tree_entries: 0,
             parent_tree_next_key: None,
             nodes: Vec::new(),
@@ -316,13 +345,27 @@ pub(crate) fn build_accessibility_graph(
 
     let role_map = role_map(struct_tree);
     let mut warnings = Vec::new();
-    let id_tree_entries = struct_tree.get("IDTree").map_or(Ok(0), |value| {
-        count_name_tree_entries(document, value, limits, &mut warnings)
-    })?;
+    let id_tree = struct_tree
+        .get("IDTree")
+        .map_or_else(BTreeMap::new, |value| {
+            collect_id_tree(document, value, limits, &mut warnings)
+        });
+    let id_tree_entries =
+        u64::try_from(id_tree.len()).map_err(|_| ValidationError::LimitExceeded {
+            limit: "max_parent_tree_entries",
+        })?;
+    let class_map_entries = class_map_entry_count(struct_tree, limits, &mut warnings)?;
     let parent_tree = struct_tree
         .get("ParentTree")
         .map_or_else(NumberTree::default, |value| {
-            collect_parent_tree(document, value, limits, &page_ordinals, &mut warnings)
+            collect_parent_tree(
+                document,
+                value,
+                limits,
+                &page_ordinals,
+                &parent_tree_owners,
+                &mut warnings,
+            )
         });
     let parent_tree_next_key = integer_value(struct_tree.get("ParentTreeNextKey"));
     let mut graph = AccessibilityGraph {
@@ -332,6 +375,8 @@ pub(crate) fn build_accessibility_graph(
         role_map_present: struct_tree.get("RoleMap").is_some(),
         class_map_present: struct_tree.get("ClassMap").is_some(),
         id_tree_entries,
+        id_tree,
+        class_map_entries,
         parent_tree_entries: parent_tree.entries,
         parent_tree_next_key,
         nodes: Vec::new(),
@@ -347,12 +392,19 @@ pub(crate) fn build_accessibility_graph(
             document,
             kids,
             limits,
+            struct_tree,
             &role_map,
             &page_ordinals,
             &mut graph,
         )?;
     }
     collect_content_associations(document, limits, &pages, &parent_tree, &mut graph);
+    collect_parent_tree_object_associations(
+        document,
+        &parent_tree,
+        &parent_tree_owners,
+        &mut graph,
+    );
     collect_artifacts(&mut graph);
     Ok(graph)
 }
@@ -366,6 +418,7 @@ fn traverse_structure_tree(
     document: &ParsedDocument,
     root: &CosObject,
     limits: &ResourceLimits,
+    struct_tree: &Dictionary,
     role_map: &BTreeMap<String, String>,
     page_ordinals: &BTreeMap<ObjectKey, usize>,
     graph: &mut AccessibilityGraph,
@@ -458,16 +511,24 @@ fn traverse_structure_tree(
                     has_attributes: dictionary.get("A").is_some(),
                     has_class: dictionary.get("C").is_some(),
                     has_id: dictionary.get("ID").is_some(),
+                    id_tree_resolved: element_id(dictionary).is_some_and(|id| {
+                        graph
+                            .id_tree
+                            .get(&id)
+                            .is_some_and(|mapped| Some(*mapped) == key)
+                    }),
                     contains_parent: dictionary.get("P").is_some(),
                     contains_ref: false,
                     non_standard_role: false,
                     circular_role_mapping,
+                    class_map_resolved: class_references_resolve(struct_tree, dictionary),
                 };
                 node.non_standard_role = !is_standard_role(&node.normalized_role);
                 let mut collector = KidCollector {
                     document,
                     node_id: id,
                     page,
+                    page_ordinals,
                     graph,
                     stack: &mut stack,
                     depth: item.depth,
@@ -542,14 +603,8 @@ fn collect_kid_value<'a>(
             .push(AccessibilityObjectReference {
                 node: collector.node_id,
                 object,
-                page_ordinal: item_page.and_then(|page| {
-                    collector
-                        .graph
-                        .nodes
-                        .iter()
-                        .find(|existing| existing.page == Some(page))
-                        .and_then(|existing| existing.page_ordinal)
-                }),
+                page_ordinal: item_page
+                    .and_then(|page| collector.page_ordinals.get(&page).copied()),
                 is_link_annotation: object
                     .and_then(|key| collector.document.objects.get(&key))
                     .and_then(|object| object.object.as_dictionary())
@@ -613,13 +668,6 @@ fn collect_content_associations(
                     continue;
                 }
             };
-            let has_image = summary.facts.iter().any(|fact| {
-                matches!(
-                    fact,
-                    OperatorFact::InlineImage { .. } | OperatorFact::XObjectInvoke { .. }
-                )
-            });
-            let has_text = summary.has_text();
             for span in summary.marked_content {
                 let mcid = span
                     .mcid
@@ -655,8 +703,8 @@ fn collect_content_associations(
                     stream: stream_key,
                     tag: name_to_string(&span.tag),
                     mcid,
-                    has_text,
-                    has_image: has_image
+                    has_text: span.has_text,
+                    has_image: span.has_image
                         || node.is_some_and(|node| {
                             graph
                                 .nodes
@@ -742,6 +790,7 @@ fn collect_parent_tree(
     value: &CosObject,
     limits: &ResourceLimits,
     page_ordinals: &BTreeMap<ObjectKey, usize>,
+    owners: &BTreeMap<i64, ParentTreeOwner>,
     warnings: &mut Vec<ValidationWarning>,
 ) -> NumberTree {
     let mut tree = NumberTree::default();
@@ -775,7 +824,14 @@ fn collect_parent_tree(
                     continue;
                 };
                 tree.entries = tree.entries.saturating_add(1);
-                collect_parent_tree_value(document, *parent_key, value, page_ordinals, &mut tree);
+                collect_parent_tree_value(
+                    document,
+                    *parent_key,
+                    value,
+                    page_ordinals,
+                    owners,
+                    &mut tree,
+                );
             }
         }
     }
@@ -787,8 +843,17 @@ fn collect_parent_tree_value(
     parent_key: i64,
     value: &CosObject,
     page_ordinals: &BTreeMap<ObjectKey, usize>,
+    owners: &BTreeMap<i64, ParentTreeOwner>,
     tree: &mut NumberTree,
 ) {
+    if let Some(owner) = owners.get(&parent_key)
+        && owner.kind != ParentTreeOwnerKind::Page
+    {
+        if let Some(element_key) = object_ref(value) {
+            tree.object_refs.insert(owner.object, element_key);
+        }
+        return;
+    }
     let page_key = page_ordinals
         .keys()
         .find(|page| {
@@ -822,13 +887,169 @@ fn collect_parent_tree_value(
     }
 }
 
-fn count_name_tree_entries(
+fn collect_parent_tree_owners(
+    document: &ParsedDocument,
+    pages: &[PageContent<'_>],
+) -> BTreeMap<i64, ParentTreeOwner> {
+    let mut owners = BTreeMap::new();
+    for page in pages {
+        if let Some(parent) = integer_value(page.dictionary.get("StructParents")) {
+            owners.insert(
+                parent,
+                ParentTreeOwner {
+                    object: page.key,
+                    page_ordinal: Some(page.ordinal),
+                    kind: ParentTreeOwnerKind::Page,
+                },
+            );
+        }
+        for annotation in page
+            .dictionary
+            .get("Annots")
+            .into_iter()
+            .flat_map(annotation_refs)
+        {
+            insert_parent_tree_owner(
+                document,
+                &mut owners,
+                annotation,
+                Some(page.ordinal),
+                ParentTreeOwnerKind::Annotation,
+            );
+        }
+        for xobject in page_xobject_refs(document, page.dictionary) {
+            let kind = document
+                .objects
+                .get(&xobject)
+                .and_then(|object| object.object.as_dictionary())
+                .map_or(ParentTreeOwnerKind::Other, xobject_owner_kind);
+            insert_parent_tree_owner(document, &mut owners, xobject, Some(page.ordinal), kind);
+        }
+    }
+    owners
+}
+
+fn insert_parent_tree_owner(
+    document: &ParsedDocument,
+    owners: &mut BTreeMap<i64, ParentTreeOwner>,
+    object: ObjectKey,
+    page_ordinal: Option<usize>,
+    kind: ParentTreeOwnerKind,
+) {
+    let Some(dictionary) = document
+        .objects
+        .get(&object)
+        .and_then(|object| object.object.as_dictionary())
+    else {
+        return;
+    };
+    let parent = integer_value(dictionary.get("StructParent"))
+        .or_else(|| integer_value(dictionary.get("StructParents")));
+    if let Some(parent) = parent {
+        owners.insert(
+            parent,
+            ParentTreeOwner {
+                object,
+                page_ordinal,
+                kind,
+            },
+        );
+    }
+}
+
+fn collect_parent_tree_object_associations(
+    document: &ParsedDocument,
+    parent_tree: &NumberTree,
+    owners: &BTreeMap<i64, ParentTreeOwner>,
+    graph: &mut AccessibilityGraph,
+) {
+    let node_by_key = graph
+        .nodes
+        .iter()
+        .filter_map(|node| node.key.map(|key| (key, node.id)))
+        .collect::<BTreeMap<_, _>>();
+    let owners_by_object = owners
+        .values()
+        .map(|owner| (owner.object, *owner))
+        .collect::<BTreeMap<_, _>>();
+    for (object, element) in &parent_tree.object_refs {
+        let Some(node) = node_by_key.get(element).copied() else {
+            graph.warnings.push(warning(
+                "parent tree object reference targets unknown structure element",
+            ));
+            continue;
+        };
+        let owner = owners_by_object.get(object).copied();
+        let dictionary = document
+            .objects
+            .get(object)
+            .and_then(|object| object.object.as_dictionary());
+        let kind = owner
+            .map(|owner| owner.kind)
+            .or_else(|| dictionary.map(xobject_owner_kind))
+            .unwrap_or(ParentTreeOwnerKind::Other);
+        if kind == ParentTreeOwnerKind::Image {
+            let role = graph.node(node).map_or_else(
+                || String::from("Figure"),
+                |node| node.normalized_role.clone(),
+            );
+            graph.marked_content.push(AccessibilityMarkedContent {
+                node: Some(node),
+                page_ordinal: owner.and_then(|owner| owner.page_ordinal).unwrap_or(0),
+                stream: *object,
+                tag: role,
+                mcid: None,
+                has_text: false,
+                has_image: true,
+                location: object_location(document, *object, "root/accessibility/imageObject"),
+            });
+        } else {
+            graph.object_references.push(AccessibilityObjectReference {
+                node,
+                object: Some(*object),
+                page_ordinal: owner.and_then(|owner| owner.page_ordinal),
+                is_link_annotation: dictionary.is_some_and(is_link_annotation),
+            });
+        }
+    }
+}
+
+fn annotation_refs(value: &CosObject) -> Vec<ObjectKey> {
+    match value {
+        CosObject::Reference(key) => vec![*key],
+        CosObject::Array(values) => values.iter().filter_map(object_ref).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn page_xobject_refs(document: &ParsedDocument, page: &Dictionary) -> Vec<ObjectKey> {
+    let Some(resources) = dictionary_from_value(document, page.get("Resources")) else {
+        return Vec::new();
+    };
+    let Some(CosObject::Dictionary(xobjects)) = resources.get("XObject") else {
+        return Vec::new();
+    };
+    xobjects
+        .iter()
+        .filter_map(|(_name, value)| object_ref(value))
+        .collect()
+}
+
+fn xobject_owner_kind(dictionary: &Dictionary) -> ParentTreeOwnerKind {
+    match dictionary.get("Subtype").and_then(name_value).as_deref() {
+        Some("Image") => ParentTreeOwnerKind::Image,
+        Some("Form") => ParentTreeOwnerKind::Form,
+        _ => ParentTreeOwnerKind::Other,
+    }
+}
+
+fn collect_id_tree(
     document: &ParsedDocument,
     value: &CosObject,
     limits: &ResourceLimits,
     warnings: &mut Vec<ValidationWarning>,
-) -> Result<u64> {
-    let mut entries = 0_u64;
+) -> BTreeMap<String, ObjectKey> {
+    let mut mappings = BTreeMap::new();
     let mut stack = Vec::from([value]);
     let mut visited = HashSet::new();
     while let Some(value) = stack.pop() {
@@ -847,18 +1068,85 @@ fn count_name_tree_entries(
             }
         }
         if let Some(CosObject::Array(names)) = dictionary.get("Names") {
-            let pairs =
-                u64::try_from(names.len() / 2).map_err(|_| ValidationError::LimitExceeded {
-                    limit: "max_parent_tree_entries",
-                })?;
-            entries = entries.saturating_add(pairs);
-            if entries > limits.max_parent_tree_entries {
-                warnings.push(warning("ID tree entry cap reached"));
-                return Ok(limits.max_parent_tree_entries);
+            for pair in names.chunks(2) {
+                if u64::try_from(mappings.len()).unwrap_or(u64::MAX)
+                    >= limits.max_parent_tree_entries
+                {
+                    warnings.push(warning("ID tree entry cap reached"));
+                    return mappings;
+                }
+                let Some(id) = pair.first().and_then(|value| text_string(Some(value))) else {
+                    warnings.push(warning("ID tree entry with non-string key skipped"));
+                    continue;
+                };
+                let Some(element) = pair.get(1).and_then(object_ref) else {
+                    warnings.push(warning("ID tree entry with non-reference value skipped"));
+                    continue;
+                };
+                if mappings.insert(id, element).is_some() {
+                    warnings.push(warning("duplicate ID tree entry replaced"));
+                }
             }
         }
     }
+    mappings
+}
+
+fn class_map_entry_count(
+    struct_tree: &Dictionary,
+    limits: &ResourceLimits,
+    warnings: &mut Vec<ValidationWarning>,
+) -> Result<u64> {
+    let Some(CosObject::Dictionary(class_map)) = struct_tree.get("ClassMap") else {
+        return Ok(0);
+    };
+    let entries = u64::try_from(class_map.len()).map_err(|_| ValidationError::LimitExceeded {
+        limit: "max_parent_tree_entries",
+    })?;
+    if entries > limits.max_parent_tree_entries {
+        warnings.push(warning("ClassMap entry cap reached"));
+        return Ok(limits.max_parent_tree_entries);
+    }
     Ok(entries)
+}
+
+fn element_id(dictionary: &Dictionary) -> Option<String> {
+    text_string(dictionary.get("ID"))
+}
+
+fn class_references_resolve(struct_tree: &Dictionary, dictionary: &Dictionary) -> bool {
+    let Some(class_ref) = dictionary.get("C") else {
+        return false;
+    };
+    let Some(CosObject::Dictionary(class_map)) = struct_tree.get("ClassMap") else {
+        return false;
+    };
+    match class_ref {
+        CosObject::Array(values) => {
+            let mut saw_class = false;
+            for value in values {
+                let Some(class_name) = class_name_from_value(value) else {
+                    return false;
+                };
+                saw_class = true;
+                if class_map.get(class_name.as_str()).is_none() {
+                    return false;
+                }
+            }
+            saw_class
+        }
+        value => class_name_from_value(value)
+            .and_then(|class_name| class_map.get(class_name.as_str()))
+            .is_some(),
+    }
+}
+
+fn class_name_from_value(value: &CosObject) -> Option<String> {
+    match value {
+        CosObject::Name(name) => Some(name_to_string(name)),
+        CosObject::String(_) => text_string(Some(value)),
+        _ => None,
+    }
 }
 
 fn collect_pages<'a>(
@@ -1136,6 +1424,17 @@ fn warning(message: &str) -> ValidationWarning {
     ValidationWarning::General {
         message: BoundedText::new(message, 512)
             .unwrap_or_else(|_| BoundedText::unchecked("accessibility warning exceeded cap")),
+    }
+}
+
+fn object_location(document: &ParsedDocument, object: ObjectKey, context: &str) -> ObjectLocation {
+    ObjectLocation {
+        object: Some(object),
+        offset: document.objects.get(&object).map(|object| object.offset),
+        path: Some(BoundedText::unchecked(format!(
+            "{context}[{}]",
+            object.number
+        ))),
     }
 }
 

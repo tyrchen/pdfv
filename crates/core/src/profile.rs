@@ -1119,17 +1119,20 @@ fn apply_model_schema_checks(import: &mut ProfileImportSummary) -> Result<()> {
             unsupported_rules = unsupported_rules.saturating_add(1);
             continue;
         }
-        let unsupported_reason = if registry.has_family(&rule.object_type) {
-            unsupported_property_reason(&registry, &rule.object_type, &rule.test)?
-        } else {
-            Some(BoundedText::new(
-                format!(
-                    "unknown validation model family {}",
-                    rule.object_type.as_str()
-                ),
-                512,
-            )?)
-        };
+        let unsupported_reason =
+            if let Some(reason) = missing_semantic_family_reason(&rule.object_type, &rule.test) {
+                Some(BoundedText::unchecked(reason))
+            } else if registry.has_family(&rule.object_type) {
+                unsupported_property_reason(&registry, &rule.object_type, &rule.test)?
+            } else {
+                Some(BoundedText::new(
+                    format!(
+                        "unknown validation model family {}",
+                        rule.object_type.as_str()
+                    ),
+                    512,
+                )?)
+            };
         if let Some(reason) = unsupported_reason {
             let fragment = BoundedText::new(format!("{:?}", rule.test), MAX_PROFILE_STRING_BYTES)
                 .unwrap_or_else(|_| BoundedText::unchecked("rule expression exceeds limit"));
@@ -1210,6 +1213,12 @@ fn missing_semantic_family_reason(
                     "numberOfColumnWithWrongRowSpan"
                         | "numberOfRowWithWrongColumnSpan"
                         | "wrongColumnSpan"
+                        | "hasIntersection"
+                        | "ListNumbering"
+                        | "NoteType"
+                        | "orphanRefs"
+                        | "ghostRefs"
+                        | "differentTargetAnnotObjectKey"
                 )
             })
         })

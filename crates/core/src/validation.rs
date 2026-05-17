@@ -680,6 +680,7 @@ const ACCESSIBILITY_DOCUMENT_PROPERTIES: &[&str] = &[
     "hasStructTreeRoot",
     "roleMapPresent",
     "classMapPresent",
+    "classMapEntries",
     "idTreeEntries",
     "parentTreeEntries",
     "parentTreeNextKey",
@@ -700,6 +701,7 @@ const STRUCTURE_PROPERTIES: &[&str] = &[
     "isTagged",
     "roleMapPresent",
     "classMapPresent",
+    "classMapEntries",
     "parentTreeEntries",
     "idTreeEntries",
     "truncated",
@@ -721,6 +723,8 @@ const STRUCTURE_ELEMENT_PROPERTIES: &[&str] = &[
     "hasAttributes",
     "hasClass",
     "hasId",
+    "idTreeResolved",
+    "classMapResolved",
     "Type",
     "S",
     "P",
@@ -744,10 +748,6 @@ const STRUCTURE_ELEMENT_PROPERTIES: &[&str] = &[
     "kidsStandardTypes",
     "hasContentItems",
     "containsLabels",
-    "ListNumbering",
-    "NoteType",
-    "orphanRefs",
-    "ghostRefs",
     "isArtifact",
     "isTaggedContent",
     "parentsTags",
@@ -755,11 +755,6 @@ const STRUCTURE_ELEMENT_PROPERTIES: &[&str] = &[
     "circularMappingExist",
     "roleMapToSameNamespaceTag",
     "remappedStandardType",
-    "hasIntersection",
-    "numberOfColumnWithWrongRowSpan",
-    "numberOfRowWithWrongColumnSpan",
-    "wrongColumnSpan",
-    "differentTargetAnnotObjectKey",
 ];
 const TEXT_CHUNK_PROPERTIES: &[&str] = &[
     "tag",
@@ -797,16 +792,12 @@ const TABLE_PROPERTIES: &[&str] = &[
     "pageIndex",
     "childCount",
     "hasAttributes",
-    "numberOfColumnWithWrongRowSpan",
-    "numberOfRowWithWrongColumnSpan",
-    "wrongColumnSpan",
 ];
 const LIST_PROPERTIES: &[&str] = &[
     "role",
     "normalizedRole",
     "pageIndex",
     "childCount",
-    "ListNumbering",
     "containsLabels",
 ];
 const HEADING_PROPERTIES: &[&str] = &["role", "normalizedRole", "pageIndex", "level"];
@@ -815,7 +806,6 @@ const LINK_PROPERTIES: &[&str] = &[
     "normalizedRole",
     "pageIndex",
     "associatedAnnotationCount",
-    "differentTargetAnnotObjectKey",
 ];
 const SIGNATURE_PROPERTIES: &[&str] = SIGNATURE_DIRECT_PROPERTIES;
 const SECURITY_PROPERTIES: &[&str] = SECURITY_DIRECT_PROPERTIES;
@@ -4811,7 +4801,9 @@ impl ModelObject for AccessibilityModel<'_> {
                 artifact_property(&self.graph, self.artifact(*ordinal)?, name)
             }
             AccessibilityModelKind::Table(node) => table_property(self.node(*node)?, name),
-            AccessibilityModelKind::List(node) => list_property(self.node(*node)?, name),
+            AccessibilityModelKind::List(node) => {
+                list_property(&self.graph, self.node(*node)?, name)
+            }
             AccessibilityModelKind::Heading(node) => heading_property(self.node(*node)?, name),
             AccessibilityModelKind::Link(node) => {
                 link_property(&self.graph, self.node(*node)?, name)
@@ -4962,6 +4954,7 @@ fn accessibility_document_property(
         "hasStructTreeRoot" => Ok(ModelValue::Bool(graph.has_structure_tree_root)),
         "roleMapPresent" | "RoleMap" => Ok(ModelValue::Bool(graph.role_map_present)),
         "classMapPresent" | "ClassMap" => Ok(ModelValue::Bool(graph.class_map_present)),
+        "classMapEntries" => Ok(ModelValue::Number(u64_to_f64(graph.class_map_entries)?)),
         "idTreeEntries" | "IDTree" => Ok(ModelValue::Number(u64_to_f64(graph.id_tree_entries)?)),
         "parentTreeEntries" | "ParentTree" => {
             Ok(ModelValue::Number(u64_to_f64(graph.parent_tree_entries)?))
@@ -5019,6 +5012,8 @@ fn structure_element_property(
         "hasAttributes" => Ok(ModelValue::Bool(node.has_attributes)),
         "hasClass" => Ok(ModelValue::Bool(node.has_class)),
         "hasId" => Ok(ModelValue::Bool(node.has_id)),
+        "idTreeResolved" => Ok(ModelValue::Bool(node.id_tree_resolved)),
+        "classMapResolved" => Ok(ModelValue::Bool(node.class_map_resolved)),
         "Alt" | "ActualText" | "Lang" | "A" | "C" | "ID" => {
             Ok(ModelValue::Bool(match name.as_str() {
                 "Alt" => node.has_alt_text,
@@ -5034,9 +5029,7 @@ fn structure_element_property(
         "containsRef" => Ok(ModelValue::Bool(node.contains_ref)),
         "parentStandardTypeNamespaceURL"
         | "parentNamespaceURL"
-        | "firstChildStandardTypeNamespaceURL"
-        | "ListNumbering"
-        | "NoteType" => Ok(ModelValue::Null),
+        | "firstChildStandardTypeNamespaceURL" => Ok(ModelValue::Null),
         "kidsStandardTypes" => Ok(ModelValue::List(
             node.children
                 .iter()
@@ -5054,20 +5047,12 @@ fn structure_element_property(
                 .node(*child)
                 .is_some_and(|child| child.normalized_role == "Lbl")
         }))),
-        "orphanRefs"
-        | "ghostRefs"
-        | "hasIntersection"
-        | "wrongColumnSpan"
-        | "differentTargetAnnotObjectKey" => Ok(ModelValue::Bool(false)),
         "isArtifact" => Ok(ModelValue::Bool(node.normalized_role == "Artifact")),
         "parentsTags" => Ok(parent_tags(graph, node)),
         "isNotMappedToStandardType" => Ok(ModelValue::Bool(node.non_standard_role)),
         "circularMappingExist" => Ok(ModelValue::Bool(node.circular_role_mapping)),
         "roleMapToSameNamespaceTag" => Ok(ModelValue::Bool(node.role == node.normalized_role)),
         "remappedStandardType" => Ok(ModelValue::Bool(node.role != node.normalized_role)),
-        "numberOfColumnWithWrongRowSpan" | "numberOfRowWithWrongColumnSpan" => {
-            Ok(ModelValue::Number(0.0))
-        }
         "Type" => Ok(ModelValue::String(BoundedText::unchecked("StructElem"))),
         _ => unknown_property(name),
     }
@@ -5165,15 +5150,15 @@ fn table_property(node: &AccessibilityNode, name: &PropertyName) -> Result<Model
         "pageIndex" => optional_usize_model_value(node.page_ordinal),
         "childCount" => Ok(ModelValue::Number(usize_to_f64(node.children.len())?)),
         "hasAttributes" => Ok(ModelValue::Bool(node.has_attributes)),
-        "numberOfColumnWithWrongRowSpan" | "numberOfRowWithWrongColumnSpan" => {
-            Ok(ModelValue::Number(0.0))
-        }
-        "wrongColumnSpan" => Ok(ModelValue::Bool(false)),
         _ => unknown_property(name),
     }
 }
 
-fn list_property(node: &AccessibilityNode, name: &PropertyName) -> Result<ModelValue> {
+fn list_property(
+    graph: &AccessibilityGraph,
+    node: &AccessibilityNode,
+    name: &PropertyName,
+) -> Result<ModelValue> {
     match name.as_str() {
         "role" => Ok(ModelValue::String(BoundedText::unchecked(
             node.role.clone(),
@@ -5183,8 +5168,11 @@ fn list_property(node: &AccessibilityNode, name: &PropertyName) -> Result<ModelV
         ))),
         "pageIndex" => optional_usize_model_value(node.page_ordinal),
         "childCount" => Ok(ModelValue::Number(usize_to_f64(node.children.len())?)),
-        "ListNumbering" => Ok(ModelValue::Null),
-        "containsLabels" => Ok(ModelValue::Bool(false)),
+        "containsLabels" => Ok(ModelValue::Bool(node.children.iter().any(|child| {
+            graph
+                .node(*child)
+                .is_some_and(|child| child.normalized_role == "Lbl")
+        }))),
         _ => unknown_property(name),
     }
 }
@@ -5223,7 +5211,6 @@ fn link_property(
                 .filter(|reference| reference.node == node.id)
                 .count(),
         )?)),
-        "differentTargetAnnotObjectKey" => Ok(ModelValue::Bool(false)),
         _ => unknown_property(name),
     }
 }
@@ -7605,13 +7592,13 @@ stream
 endstream
 endobj
 6 0 obj
-<< /Type /Annot /Subtype /Link >>
+<< /Type /Annot /Subtype /Link /StructParent 6 >>
 endobj
 8 0 obj
-<< /Type /StructTreeRoot /K [9 0 R 10 0 R 11 0 R 12 0 R] /RoleMap << /CustomH /H1 >> /ClassMap << /Important << >> >> /IDTree << /Names [(heading) 9 0 R] >> /ParentTree << /Nums [0 [9 0 R 10 0 R]] >> /ParentTreeNextKey 1 >>
+<< /Type /StructTreeRoot /K [9 0 R 10 0 R 11 0 R 12 0 R] /RoleMap << /CustomH /H1 >> /ClassMap << /Important << >> >> /IDTree << /Names [(heading) 9 0 R] >> /ParentTree << /Nums [0 [9 0 R 10 0 R] 6 11 0 R] >> /ParentTreeNextKey 7 >>
 endobj
 9 0 obj
-<< /Type /StructElem /S /CustomH /Pg 3 0 R /K 0 /ID (heading) >>
+<< /Type /StructElem /S /CustomH /Pg 3 0 R /K 0 /ID (heading) /C /Important >>
 endobj
 10 0 obj
 << /Type /StructElem /S /Figure /Pg 3 0 R /K << /Type /MCR /Pg 3 0 R /MCID 1 >> /Alt (chart alternative text) >>
@@ -7937,12 +7924,38 @@ trailer
             assert!(families.contains(family), "missing {family}: {families:?}");
         }
 
+        assert_eq!(
+            features
+                .objects
+                .iter()
+                .filter(|object| object.family.as_str() == "textChunk")
+                .count(),
+            1
+        );
+        assert_eq!(
+            features
+                .objects
+                .iter()
+                .filter(|object| object.family.as_str() == "imageChunk")
+                .count(),
+            1
+        );
         let normalized_role = PropertyName::new("normalizedRole")?;
+        let id_tree_resolved = PropertyName::new("idTreeResolved")?;
+        let class_map_resolved = PropertyName::new("classMapResolved")?;
         assert!(features.objects.iter().any(|object| {
             object.family.as_str() == "structureElement"
                 && matches!(
                     object.properties.get(&normalized_role),
                     Some(crate::FeatureValue::String(value)) if value.as_str() == "H1"
+                )
+                && matches!(
+                    object.properties.get(&id_tree_resolved),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+                && matches!(
+                    object.properties.get(&class_map_resolved),
+                    Some(crate::FeatureValue::Bool(true))
                 )
         }));
         let has_alt_text = PropertyName::new("hasAltText")?;
@@ -7952,6 +7965,14 @@ trailer
                 && matches!(
                     object.properties.get(&has_alt_text),
                     Some(crate::FeatureValue::Bool(true))
+                )
+        }));
+        let page_index = PropertyName::new("pageIndex")?;
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "accessibilityAnnotation"
+                && matches!(
+                    object.properties.get(&page_index),
+                    Some(crate::FeatureValue::Number(value)) if (*value - 0.0).abs() < f64::EPSILON
                 )
         }));
         assert!(features.objects.iter().all(|object| {
