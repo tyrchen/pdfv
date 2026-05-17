@@ -1,6 +1,6 @@
 # Roadmap — Incremental Delivery
 
-Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
+Status: draft v1 · Owner: pdfv · Last updated: 2026-05-17
 
 ## 0. Principles
 
@@ -121,6 +121,20 @@ Exit criteria:
 - Raw XML and static HTML report formats are available.
 - CLI compatibility documentation lists supported, intentionally different, and out-of-scope veraPDF flags.
 
+### M9 — veraPDF-grade PDF/A/PDF/UA readiness
+
+User-visible result: pdfv can make a bounded, evidence-backed readiness claim for in-scope PDF/A and PDF/UA validation workflows on arbitrary real-world PDFs.
+
+Specs touched: [25-verapdf-grade-validation-prd.md](./25-verapdf-grade-validation-prd.md), [26-unsupported-rule-burn-down-design.md](./26-unsupported-rule-burn-down-design.md), [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md), [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md), plus the semantic subsystem specs from M5-M8.
+
+Exit criteria:
+
+- No release-blocking unsupported-rule cluster remains for in-scope PDF/A and PDF/UA profiles.
+- PDF/A profiles reach at least 95% bound official rules or every remaining unbound required rule is explicitly out-of-scope for the readiness release.
+- PDF/UA-1 and PDF/UA-2 reach at least 90% bound official rules with no untriaged structure, chunk, annotation, or metadata semantic family gap.
+- Live veraPDF oracle comparison reaches at least 95% outcome-class match on the release real-world corpus, with 100% mismatch classification and zero false-compliant rows.
+- Release snapshots under `docs/reviews/` cite vendor pins, corpus tier counts, known expected drift, and supported profile scope.
+
 ## 2. Calendar estimate
 
 For one focused developer:
@@ -134,6 +148,7 @@ For one focused developer:
 - M6: 10-20 weeks, driven by validation registry, content-stream operators, and resource/font/color semantics.
 - M7: 8-16 weeks, driven by XMP, structure/accessibility reconstruction, and parity metric/corpus gates.
 - M8: 6-12 weeks, depending on policy language and metadata repair scope.
+- M9: 16-32 weeks after the M5-M8 foundation exists, driven by unsupported-rule burn-down, derived semantic properties, and oracle drift triage.
 
 ## 3. Cross-references
 

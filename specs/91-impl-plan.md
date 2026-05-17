@@ -1,6 +1,6 @@
 # Implementation Plan — Dependency-Ordered Build
 
-Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
+Status: draft v1 · Owner: pdfv · Last updated: 2026-05-17
 
 ## 0. Readiness assessment
 
@@ -282,3 +282,16 @@ Exit criteria: feature extraction is read-only, bounded, and deterministic; poli
 | 21.4 | Publish CLI compatibility documentation for supported, intentionally different, and out-of-scope veraPDF flags. | 19, 50, 72 | 2-4 days |
 
 Exit criteria: metadata repair never modifies inputs in place and removes failed outputs; raw and HTML reports pass golden tests; CLI docs explain deviations from veraPDF, including no literal password argument; standard gates pass.
+
+## 26. Phase 22 — M9 veraPDF-grade readiness
+
+Detailed tasks live in [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md). This phase is intentionally separated from the base engine plan because it is driven by unsupported-rule clusters and live oracle agreement rather than by component construction.
+
+| # | Task | Spec | Effort |
+| --- | --- | --- | --- |
+| 22.1 | Produce the baseline unsupported-rule burn-down snapshot and classify release-blocking clusters. | 25, 26 | 3-7 days |
+| 22.2 | Close expression, derived-property, font/CMap, resource/color/image/XObject, XMP RDF, and accessibility clusters in the order defined by the readiness plan. | 26, 28 | 12-24 weeks |
+| 22.3 | Add live veraPDF oracle corpus execution, manifests, agreement summaries, and drift classification. | 27, 28 | 4-8 weeks |
+| 22.4 | Publish readiness release snapshots and documentation with supported profiles, corpus evidence, and known drift. | 25, 27, 28 | 1 week |
+
+Exit criteria: all release gates in [25-verapdf-grade-validation-prd.md](./25-verapdf-grade-validation-prd.md#8-release-gate) pass; the oracle gates in [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md#6-release-gates) pass; standard repository gates pass.

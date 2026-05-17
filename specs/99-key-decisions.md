@@ -1,6 +1,6 @@
 # Key Decisions
 
-Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
+Status: draft v1 · Owner: pdfv · Last updated: 2026-05-17
 
 ## D1 — Build library-first, CLI second
 
@@ -136,3 +136,12 @@ Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
 - Why: generated XML can make the catalog look complete while rules remain unsupported by missing expression features or model semantics. The project needs a reviewable signal that points engineers to the next missing object, property, link, or semantic family.
 - Pinned by: [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md), [72-testing-strategy.md](./72-testing-strategy.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [../docs/reviews/verapdf-pdfv-core-drift-review.md](../docs/reviews/verapdf-pdfv-core-drift-review.md)
 - Date: 2026-05-16
+
+## D16 — Gate veraPDF-grade claims on oracle evidence and zero false-compliant drift
+
+- Context: readiness to use pdfv for production PDF/A/PDF/UA validation on arbitrary real-world PDFs.
+- Alternatives considered: claim readiness from aggregate bound-rule percentage; require 100% byte-identical veraPDF reports; require decision-grade oracle agreement plus unsupported-rule burn-down; defer any readiness claim indefinitely.
+- Decision: a veraPDF-grade claim requires in-scope PDF/A/PDF/UA rule coverage thresholds, unsupported-rule cluster closure, live oracle corpus agreement, 100% mismatch classification, and zero false-compliant rows. Byte-identical report output is not required.
+- Why: aggregate bound-rule counts can hide weak PDF/A coverage, while byte-identical report parity would overfit report formatting instead of validation decisions. The real production risk is returning `Valid` when veraPDF would reject or when required semantics are unsupported. Oracle agreement plus zero false-compliant drift targets that risk directly.
+- Pinned by: [25-verapdf-grade-validation-prd.md](./25-verapdf-grade-validation-prd.md), [26-unsupported-rule-burn-down-design.md](./26-unsupported-rule-burn-down-design.md), [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md), [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md), [90-roadmap.md](./90-roadmap.md)
+- Date: 2026-05-17

@@ -1,6 +1,6 @@
 # pdfv Spec Index
 
-Status: draft v1 · Owner: pdfv · Last updated: 2026-05-16
+Status: draft v1 · Owner: pdfv · Last updated: 2026-05-17
 
 ## Reading order
 
@@ -20,11 +20,15 @@ Read in this order when implementing:
 12. [18-xmp-metadata-flavour-design.md](./18-xmp-metadata-flavour-design.md) — XMP parsing and PDF/A/PDF/UA/WTPDF auto flavour detection.
 13. [23-structure-accessibility-design.md](./23-structure-accessibility-design.md) — structure tree, marked content, and PDF/UA/WTPDF semantic accessibility facts.
 14. [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md) — profile/model/corpus parity metrics and gates.
-15. [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md) — feature extraction, policy, repair, raw/HTML reports, and CLI parity surfaces.
-16. [20-reporting-design.md](./20-reporting-design.md) — JSON/text/XML output and batch summaries.
-17. [50-cli-design.md](./50-cli-design.md) — CLI UX, config, exit codes, concurrency.
-18. Cross-cuts: [61-crates-and-features.md](./61-crates-and-features.md), [70-security.md](./70-security.md), [71-performance-budgets.md](./71-performance-budgets.md), [72-testing-strategy.md](./72-testing-strategy.md).
-19. [80-glossary.md](./80-glossary.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [93-improvements-review.md](./93-improvements-review.md), [99-key-decisions.md](./99-key-decisions.md).
+15. [25-verapdf-grade-validation-prd.md](./25-verapdf-grade-validation-prd.md) — release-readiness definition for veraPDF-grade PDF/A/PDF/UA validation.
+16. [26-unsupported-rule-burn-down-design.md](./26-unsupported-rule-burn-down-design.md) — unsupported-rule clustering, priority, and closure gates.
+17. [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md) — live veraPDF oracle corpus tiers, agreement classification, and release gates.
+18. [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md) — dependency-ordered implementation plan for readiness.
+19. [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md) — feature extraction, policy, repair, raw/HTML reports, and CLI parity surfaces.
+20. [20-reporting-design.md](./20-reporting-design.md) — JSON/text/XML output and batch summaries.
+21. [50-cli-design.md](./50-cli-design.md) — CLI UX, config, exit codes, concurrency.
+22. Cross-cuts: [61-crates-and-features.md](./61-crates-and-features.md), [70-security.md](./70-security.md), [71-performance-budgets.md](./71-performance-budgets.md), [72-testing-strategy.md](./72-testing-strategy.md).
+23. [80-glossary.md](./80-glossary.md), [90-roadmap.md](./90-roadmap.md), [91-impl-plan.md](./91-impl-plan.md), [93-improvements-review.md](./93-improvements-review.md), [99-key-decisions.md](./99-key-decisions.md).
 
 ## Build-order graph
 
@@ -43,6 +47,10 @@ Read in this order when implementing:
                                           -> 18-xmp-metadata-flavour-design
                                               -> 23-structure-accessibility-design
                                                   -> 24-parity-metrics-verification-plan
+                                                      -> 25-verapdf-grade-validation-prd
+                                                          -> 26-unsupported-rule-burn-down-design
+                                                              -> 27-oracle-corpus-verification-plan
+                                                                  -> 28-verapdf-grade-validation-impl-plan
                                                       -> 19-verapdf-product-surface-parity-design
                                                           -> 20-reporting-design
                                                               -> 50-cli-design
@@ -74,6 +82,10 @@ Read in this order when implementing:
 | [22-resource-font-color-semantics-design.md](./22-resource-font-color-semantics-design.md) | Component design | Designs effective resources, font/CMap summaries, color spaces, ICC profile facts, XObjects, graphics state, patterns, and shadings. |
 | [23-structure-accessibility-design.md](./23-structure-accessibility-design.md) | Component design | Designs structure/accessibility semantic reconstruction for PDF/UA and WTPDF parity. |
 | [24-parity-metrics-verification-plan.md](./24-parity-metrics-verification-plan.md) | Verification plan | Defines parity metrics, profile coverage artifacts, model schema gates, and corpus agreement reporting. |
+| [25-verapdf-grade-validation-prd.md](./25-verapdf-grade-validation-prd.md) | PRD | Defines what "veraPDF-grade" means for PDF/A/PDF/UA readiness, including success metrics and release gates. |
+| [26-unsupported-rule-burn-down-design.md](./26-unsupported-rule-burn-down-design.md) | Component design | Defines unsupported-rule clustering, prioritization, acceptance gates, and burn-down reports. |
+| [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md) | Verification plan | Defines generated, public, real-world, adversarial, and live veraPDF oracle corpus gates. |
+| [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md) | Implementation plan | Defines the dependency-ordered readiness phases after the base engine exists. |
 | [50-cli-design.md](./50-cli-design.md) | CLI design | Defines CLI commands, config loading, exit codes, and bounded parallelism. |
 | [61-crates-and-features.md](./61-crates-and-features.md) | Workspace design | Defines crate layout, feature flags, and dependency policy. |
 | [70-security.md](./70-security.md) | Cross-cut | Threat model, resource limits, hostile input handling, and unsafe policy. |
@@ -93,3 +105,4 @@ Read in this order when implementing:
 - [../docs/research/spike-mrr-compatibility.md](../docs/research/spike-mrr-compatibility.md) — XML/MRR compatibility naming and report-surface decisions.
 - [../docs/research/spike-policy-language.md](../docs/research/spike-policy-language.md) — bounded FeatureReport-only policy language for Phase 20.
 - [../docs/reviews/verapdf-pdfv-core-drift-review.md](../docs/reviews/verapdf-pdfv-core-drift-review.md) — post-M4 drift review that splits parity work into model, operator, resource/font/color, accessibility, XMP, feature, and metrics tracks.
+- [../docs/reviews/verapdf-feature-parity-gaps-review.md](../docs/reviews/verapdf-feature-parity-gaps-review.md) — current gap review that defines the release-blocking clusters for veraPDF-grade PDF/A/PDF/UA readiness.
