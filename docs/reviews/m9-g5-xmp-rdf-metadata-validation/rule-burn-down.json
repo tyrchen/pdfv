@@ -1,0 +1,1399 @@
+{
+  "schemaVersion": "phase22-rule-burn-down-v1",
+  "currentSummary": {
+    "totalRules": 238,
+    "totalClusters": 28,
+    "releaseBlockingRules": 93,
+    "releaseBlockingClusters": 19
+  },
+  "previousSummary": {
+    "totalRules": 469,
+    "totalClusters": 59,
+    "releaseBlockingRules": 322,
+    "releaseBlockingClusters": 49
+  },
+  "clusters": [
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "E",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-23",
+          "reason": "unknown validation model property E on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"E\"))]) }, right: Null }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"containsLang\"))]) }, right: Bool { value: true } } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"parentLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "containsLang",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-21",
+          "reason": "unknown validation model property containsLang on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"ActualText\"))]) }, right: Null }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"containsLang\"))]) }, right: Bool { value: true } } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"parentLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-22",
+          "reason": "unknown validation model property containsLang on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"containsLang\"))]) }, right: Bool { value: true } } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"parentLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "gContainsCatalogLang",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-34",
+          "reason": "unknown validation model property gContainsCatalogLang on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Lang\"))]) }, right: Null } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "hasConnectedHeader",
+      "currentRules": 4,
+      "previousRules": 4,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-5-1",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-5-2",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-26-5",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "hasCorrectNestingLevel",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-4-2-1",
+          "reason": "unknown validation model property hasCorrectNestingLevel on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasCorrectNestingLevel\"))]) }, right: Bool { value: true } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "hasDuplicateNoteID",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-9-2",
+          "reason": "unknown validation model property hasDuplicateNoteID on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasDuplicateNoteID\"))]) }, right: Bool { value: false } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "hasParentFormulaOrMathML",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-29-1",
+          "reason": "unknown validation model property hasParentFormulaOrMathML on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasParentFormulaOrMathML\"))]) }, right: Bool { value: true } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "isGrouping",
+      "currentRules": 55,
+      "previousRules": 55,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--annot-aside-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: true } }, right: Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Aside\") }] }] }, right: Number { value: 0.0 } } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--annot-blockquote-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: true } }, right: Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"BlockQuote\") }] }] }, right: Number { value: 0.0 } } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--annot-caption-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: false } }, right: Binary { op: Le, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Caption\") }] }] }, right: Number { value: 1.0 } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "isSignature",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-10-3-5-1",
+          "reason": "unknown validation model property isSignature on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isSignature\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "noteID",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-9-1",
+          "reason": "unknown validation model property noteID on structureElement",
+          "expressionFragment": "Binary { op: And, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"noteID\"))]) }, right: Null }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"noteID\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "roleAttribute",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-18-4-2",
+          "reason": "unknown validation model property roleAttribute on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"roleAttribute\"))]) }, right: Null }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasOneInteractiveChild\"))]) }, right: Bool { value: true } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "tag",
+      "currentRules": 4,
+      "previousRules": 4,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-1-1",
+          "reason": "unknown validation model property tag on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"tag\"))]) }, right: String { value: BoundedText(\"Artifact\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isTaggedContent\"))]) }, right: Bool { value: false } } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-30",
+          "reason": "unknown validation model property tag on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"tag\"))]) }, right: String { value: BoundedText(\"Span\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"ActualText\"))]) }, right: Null } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Lang\"))]) }, right: Null } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"inheritedLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-31",
+          "reason": "unknown validation model property tag on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"tag\"))]) }, right: String { value: BoundedText(\"Span\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Lang\"))]) }, right: Null } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"inheritedLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "usesH",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-4-4-3",
+          "reason": "unknown validation model property usesH on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"usesH\"))]) }, right: Bool { value: false } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "usesHn",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-4-4-2",
+          "reason": "unknown validation model property usesHn on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"usesHn\"))]) }, right: Bool { value: false } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "widgetAnnotsCount",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-10-1-2",
+          "reason": "unknown validation model property widgetAnnotsCount on structureElement",
+          "expressionFragment": "Binary { op: Le, left: Property { path: PropertyPath([PropertyName(Identifier(\"widgetAnnotsCount\"))]) }, right: Number { value: 1.0 } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureTreeRoot",
+      "property": "hasContentItems",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--structtreeroot-content-1",
+          "reason": "unknown validation model property hasContentItems on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasContentItems\"))]) }, right: Bool { value: false } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureTreeRoot",
+      "property": "kidsStandardTypes",
+      "currentRules": 3,
+      "previousRules": 3,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-2-1",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, right: String { value: BoundedText(\"Document\") } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-2-2",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, right: String { value: BoundedText(\"Document\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"firstChildStandardTypeNamespaceURL\"))]) }, right: String { value: BoundedText(\"http://iso.org/pdf2/ssn\") } } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--structtreeroot-document-1",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Document\") }] }] }, right: Number { value: 1.0 } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "hasConnectedHeader",
+      "currentRules": 4,
+      "previousRules": 4,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-26-5",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-26-6",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "wtpdf-1-0-8-2-5-26-5",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "hasParentFormulaOrMathML",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-29-1",
+          "reason": "unknown validation model property hasParentFormulaOrMathML on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasParentFormulaOrMathML\"))]) }, right: Bool { value: true } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "isGrouping",
+      "currentRules": 110,
+      "previousRules": 110,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--annot-aside-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: true } }, right: Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Aside\") }] }] }, right: Number { value: 0.0 } } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--annot-blockquote-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: true } }, right: Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"BlockQuote\") }] }] }, right: Number { value: 0.0 } } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--annot-caption-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: false } }, right: Binary { op: Le, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Caption\") }] }] }, right: Number { value: 1.0 } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "isSignature",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-10-3-5-1",
+          "reason": "unknown validation model property isSignature on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isSignature\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "wtpdf-1-0-8-10-3-5-1",
+          "reason": "unknown validation model property isSignature on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isSignature\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "widgetAnnotsCount",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-10-1-2",
+          "reason": "unknown validation model property widgetAnnotsCount on structureElement",
+          "expressionFragment": "Binary { op: Le, left: Property { path: PropertyPath([PropertyName(Identifier(\"widgetAnnotsCount\"))]) }, right: Number { value: 1.0 } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "wtpdf-1-0-8-10-1-2",
+          "reason": "unknown validation model property widgetAnnotsCount on structureElement",
+          "expressionFragment": "Binary { op: Le, left: Property { path: PropertyPath([PropertyName(Identifier(\"widgetAnnotsCount\"))]) }, right: Number { value: 1.0 } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureTreeRoot",
+      "property": "hasContentItems",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--structtreeroot-content-1",
+          "reason": "unknown validation model property hasContentItems on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasContentItems\"))]) }, right: Bool { value: false } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "iso-32005-table-5--structtreeroot-content-1",
+          "reason": "unknown validation model property hasContentItems on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasContentItems\"))]) }, right: Bool { value: false } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureTreeRoot",
+      "property": "kidsStandardTypes",
+      "currentRules": 6,
+      "previousRules": 6,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--structtreeroot-document-1",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Document\") }] }] }, right: Number { value: 1.0 } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-2-1",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, right: String { value: BoundedText(\"Document\") } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-2-2",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, right: String { value: BoundedText(\"Document\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"firstChildStandardTypeNamespaceURL\"))]) }, right: String { value: BoundedText(\"http://iso.org/pdf2/ssn\") } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingSemanticFamily",
+      "profileFamily": "pdfua",
+      "objectType": "annotation",
+      "semanticFamily": "accessibility",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-20-2",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"differentTargetAnnotObjectKey\"))]) }, right: Null }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingSemanticFamily",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "semanticFamily": "accessibility",
+      "currentRules": 12,
+      "previousRules": 12,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-15",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasIntersection\"))]) }, right: Bool { value: true } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-41",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"numberOfColumnWithWrongRowSpan\"))]) }, right: Null }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-42",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"numberOfRowWithWrongColumnSpan\"))]) }, right: Null }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"wrongColumnSpan\"))]) }, right: Null } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingSemanticFamily",
+      "profileFamily": "wtpdf",
+      "objectType": "annotation",
+      "semanticFamily": "accessibility",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-20-2",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"differentTargetAnnotObjectKey\"))]) }, right: Null }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "wtpdf-1-0-8-2-5-20-2",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"differentTargetAnnotObjectKey\"))]) }, right: Null }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingSemanticFamily",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "semanticFamily": "accessibility",
+      "currentRules": 16,
+      "previousRules": 16,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-14-2",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"orphanRefs\"))]) }, right: Null }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-14-3",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"ghostRefs\"))]) }, right: Null }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-14-4",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"NoteType\"))]) }, right: String { value: BoundedText(\"Footnote\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"NoteType\"))]) }, right: String { value: BoundedText(\"Endnote\") } } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"NoteType\"))]) }, right: String { value: BoundedText(\"None\") } } }"
+        }
+      ]
+    }
+  ],
+  "largestClusters": [
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "isGrouping",
+      "currentRules": 110,
+      "previousRules": 110,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--annot-aside-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: true } }, right: Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Aside\") }] }] }, right: Number { value: 0.0 } } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--annot-blockquote-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: true } }, right: Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"BlockQuote\") }] }] }, right: Number { value: 0.0 } } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--annot-caption-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: false } }, right: Binary { op: Le, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Caption\") }] }] }, right: Number { value: 1.0 } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "isGrouping",
+      "currentRules": 55,
+      "previousRules": 55,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--annot-aside-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: true } }, right: Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Aside\") }] }] }, right: Number { value: 0.0 } } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--annot-blockquote-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: true } }, right: Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"BlockQuote\") }] }] }, right: Number { value: 0.0 } } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--annot-caption-1",
+          "reason": "unknown validation model property isGrouping on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isGrouping\"))]) }, right: Bool { value: false } }, right: Binary { op: Le, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Caption\") }] }] }, right: Number { value: 1.0 } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingSemanticFamily",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "semanticFamily": "accessibility",
+      "currentRules": 16,
+      "previousRules": 16,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-14-2",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"orphanRefs\"))]) }, right: Null }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-14-3",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"ghostRefs\"))]) }, right: Null }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-14-4",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"NoteType\"))]) }, right: String { value: BoundedText(\"Footnote\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"NoteType\"))]) }, right: String { value: BoundedText(\"Endnote\") } } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"NoteType\"))]) }, right: String { value: BoundedText(\"None\") } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingSemanticFamily",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "semanticFamily": "accessibility",
+      "currentRules": 12,
+      "previousRules": 12,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-15",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasIntersection\"))]) }, right: Bool { value: true } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-41",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"numberOfColumnWithWrongRowSpan\"))]) }, right: Null }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-42",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"numberOfRowWithWrongColumnSpan\"))]) }, right: Null }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"wrongColumnSpan\"))]) }, right: Null } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureTreeRoot",
+      "property": "kidsStandardTypes",
+      "currentRules": 6,
+      "previousRules": 6,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--structtreeroot-document-1",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Document\") }] }] }, right: Number { value: 1.0 } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-2-1",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, right: String { value: BoundedText(\"Document\") } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-2-2",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, right: String { value: BoundedText(\"Document\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"firstChildStandardTypeNamespaceURL\"))]) }, right: String { value: BoundedText(\"http://iso.org/pdf2/ssn\") } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "hasConnectedHeader",
+      "currentRules": 4,
+      "previousRules": 4,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-5-1",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-5-2",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-26-5",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "tag",
+      "currentRules": 4,
+      "previousRules": 4,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-1-1",
+          "reason": "unknown validation model property tag on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"tag\"))]) }, right: String { value: BoundedText(\"Artifact\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isTaggedContent\"))]) }, right: Bool { value: false } } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-30",
+          "reason": "unknown validation model property tag on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"tag\"))]) }, right: String { value: BoundedText(\"Span\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"ActualText\"))]) }, right: Null } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Lang\"))]) }, right: Null } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"inheritedLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-31",
+          "reason": "unknown validation model property tag on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"tag\"))]) }, right: String { value: BoundedText(\"Span\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Lang\"))]) }, right: Null } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"inheritedLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "hasConnectedHeader",
+      "currentRules": 4,
+      "previousRules": 4,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-26-5",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-26-6",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "wtpdf-1-0-8-2-5-26-5",
+          "reason": "unknown validation model property hasConnectedHeader on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasConnectedHeader\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"unknownHeaders\"))]) }, right: String { value: BoundedText(\"\") } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureTreeRoot",
+      "property": "kidsStandardTypes",
+      "currentRules": 3,
+      "previousRules": 3,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-2-1",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, right: String { value: BoundedText(\"Document\") } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-2-2",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, right: String { value: BoundedText(\"Document\") } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"firstChildStandardTypeNamespaceURL\"))]) }, right: String { value: BoundedText(\"http://iso.org/pdf2/ssn\") } } }"
+        },
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-32005-table-5--structtreeroot-document-1",
+          "reason": "unknown validation model property kidsStandardTypes on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Call { function: Size, args: [Call { function: FilterEquals, args: [Call { function: Split, args: [Property { path: PropertyPath([PropertyName(Identifier(\"kidsStandardTypes\"))]) }, String { value: BoundedText(\"&\") }] }, String { value: BoundedText(\"Document\") }] }] }, right: Number { value: 1.0 } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "containsLang",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-21",
+          "reason": "unknown validation model property containsLang on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"ActualText\"))]) }, right: Null }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"containsLang\"))]) }, right: Bool { value: true } } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"parentLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        },
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-22",
+          "reason": "unknown validation model property containsLang on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"containsLang\"))]) }, right: Bool { value: true } } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"parentLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "isSignature",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-10-3-5-1",
+          "reason": "unknown validation model property isSignature on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isSignature\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "wtpdf-1-0-8-10-3-5-1",
+          "reason": "unknown validation model property isSignature on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isSignature\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureElement",
+      "property": "widgetAnnotsCount",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-10-1-2",
+          "reason": "unknown validation model property widgetAnnotsCount on structureElement",
+          "expressionFragment": "Binary { op: Le, left: Property { path: PropertyPath([PropertyName(Identifier(\"widgetAnnotsCount\"))]) }, right: Number { value: 1.0 } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "wtpdf-1-0-8-10-1-2",
+          "reason": "unknown validation model property widgetAnnotsCount on structureElement",
+          "expressionFragment": "Binary { op: Le, left: Property { path: PropertyPath([PropertyName(Identifier(\"widgetAnnotsCount\"))]) }, right: Number { value: 1.0 } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "wtpdf",
+      "objectType": "structureTreeRoot",
+      "property": "hasContentItems",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "iso-32005-table-5--structtreeroot-content-1",
+          "reason": "unknown validation model property hasContentItems on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasContentItems\"))]) }, right: Bool { value: false } }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "iso-32005-table-5--structtreeroot-content-1",
+          "reason": "unknown validation model property hasContentItems on structureTreeRoot",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasContentItems\"))]) }, right: Bool { value: false } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingSemanticFamily",
+      "profileFamily": "wtpdf",
+      "objectType": "annotation",
+      "semanticFamily": "accessibility",
+      "currentRules": 2,
+      "previousRules": 2,
+      "deltaRules": 0,
+      "releaseBlocking": false,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "wtpdf-1-0-accessibility",
+          "ruleId": "wtpdf-1-0-8-2-5-20-2",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"differentTargetAnnotObjectKey\"))]) }, right: Null }"
+        },
+        {
+          "flavour": "wtpdf-1-0-reuse",
+          "ruleId": "wtpdf-1-0-8-2-5-20-2",
+          "reason": "missingSemanticFamily",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"differentTargetAnnotObjectKey\"))]) }, right: Null }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "E",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-23",
+          "reason": "unknown validation model property E on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Or, left: Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"E\"))]) }, right: Null }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"containsLang\"))]) }, right: Bool { value: true } } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"parentLang\"))]) }, right: Null } }, right: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "gContainsCatalogLang",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-2-34",
+          "reason": "unknown validation model property gContainsCatalogLang on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"gContainsCatalogLang\"))]) }, right: Bool { value: true } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Lang\"))]) }, right: Null } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "hasCorrectNestingLevel",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-4-2-1",
+          "reason": "unknown validation model property hasCorrectNestingLevel on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasCorrectNestingLevel\"))]) }, right: Bool { value: true } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "hasDuplicateNoteID",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-1",
+          "ruleId": "iso-14289-1-7-9-2",
+          "reason": "unknown validation model property hasDuplicateNoteID on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasDuplicateNoteID\"))]) }, right: Bool { value: false } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "hasParentFormulaOrMathML",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-2-5-29-1",
+          "reason": "unknown validation model property hasParentFormulaOrMathML on structureElement",
+          "expressionFragment": "Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"hasParentFormulaOrMathML\"))]) }, right: Bool { value: true } }"
+        }
+      ]
+    },
+    {
+      "primaryReason": "missingProperty",
+      "profileFamily": "pdfua",
+      "objectType": "structureElement",
+      "property": "isSignature",
+      "currentRules": 1,
+      "previousRules": 1,
+      "deltaRules": 0,
+      "releaseBlocking": true,
+      "ownerSpec": {
+        "specification": "23-structure-accessibility-design.md",
+        "clause": "Accessibility semantics"
+      },
+      "expectedPhase": "G6",
+      "examples": [
+        {
+          "flavour": "pdfua-2-iso32005",
+          "ruleId": "iso-14289-2-8-10-3-5-1",
+          "reason": "unknown validation model property isSignature on structureElement",
+          "expressionFragment": "Binary { op: Or, left: Binary { op: Eq, left: Property { path: PropertyPath([PropertyName(Identifier(\"isSignature\"))]) }, right: Bool { value: false } }, right: Binary { op: Ne, left: Property { path: PropertyPath([PropertyName(Identifier(\"Alt\"))]) }, right: Null } }"
+        }
+      ]
+    }
+  ]
+}

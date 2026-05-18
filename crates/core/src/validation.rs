@@ -467,6 +467,18 @@ const DOCUMENT_PROPERTIES: &[&str] = &[
     "firstPageID",
     "containsInfo",
     "ModDate",
+    "CreationDate",
+    "XMPTitle",
+    "XMPCreator",
+    "XMPCreatorSize",
+    "XMPDescription",
+    "XMPKeywords",
+    "XMPCreatorTool",
+    "XMPProducer",
+    "XMPCreateDate",
+    "XMPModifyDate",
+    "doCreationDatesMatch",
+    "doModDatesMatch",
     "spacingCompliesPDFA",
     "subsectionHeaderSpaceSeparated",
     "xrefEOLMarkersComplyPDFA",
@@ -515,6 +527,45 @@ const METADATA_PROPERTIES: &[&str] = &[
     "amdPrefix",
     "corrPrefix",
     "declarations",
+    "actualEncoding",
+    "bytes",
+    "encoding",
+    "isSerializationValid",
+    "isPredefinedInXMP2004",
+    "isPredefinedInXMP2005",
+    "isDefinedInMainPackage",
+    "isDefinedInCurrentPackage",
+    "isValueTypeCorrect",
+    "containsUndefinedFields",
+    "undefinedFields",
+    "isValidBag",
+    "prefix",
+    "isSchemaValidText",
+    "schemaPrefix",
+    "isNamespaceURIValidURI",
+    "namespaceURIPrefix",
+    "isPrefixValidText",
+    "prefixPrefix",
+    "isPropertyValidSeq",
+    "propertyPrefix",
+    "isValueTypeValidSeq",
+    "valueTypePrefix",
+    "isDescriptionValidText",
+    "descriptionPrefix",
+    "isFieldValidSeq",
+    "fieldPrefix",
+    "isTypeValidText",
+    "typePrefix",
+    "isCategoryValidText",
+    "category",
+    "categoryPrefix",
+    "isNameValidText",
+    "namePrefix",
+    "isValueTypeValidText",
+    "isValueTypeDefined",
+    "dc_title",
+    "xDefault",
+    "gContainsCatalogLang",
     "Type",
     "Subtype",
     "Filter",
@@ -2405,24 +2456,7 @@ fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvide
     if family == "page" && PAGE_INHERITED_PROPERTIES.contains(&property) {
         return PropertySourceEvidence::InheritedCos;
     }
-    if matches!(family, "metadata" | "document")
-        && matches!(
-            property,
-            "containsPDFUAIdentification"
-                | "containsPDFAIdentification"
-                | "part"
-                | "partPrefix"
-                | "conformance"
-                | "conformancePrefix"
-                | "rev"
-                | "revPrefix"
-                | "amdPrefix"
-                | "corrPrefix"
-                | "declarations"
-                | "doModDatesMatch"
-                | "doCreationDatesMatch"
-        )
-    {
+    if matches!(family, "metadata" | "document") && is_xmp_rdf_property(property) {
         return PropertySourceEvidence::XmpRdf;
     }
     if matches!(
@@ -2473,6 +2507,73 @@ fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvide
         return PropertySourceEvidence::ExpectedDrift;
     }
     PropertySourceEvidence::SemanticGraph
+}
+
+fn is_xmp_rdf_property(property: &str) -> bool {
+    matches!(
+        property,
+        "containsPDFUAIdentification"
+            | "containsPDFAIdentification"
+            | "part"
+            | "partPrefix"
+            | "conformance"
+            | "conformancePrefix"
+            | "rev"
+            | "revPrefix"
+            | "amdPrefix"
+            | "corrPrefix"
+            | "declarations"
+            | "doModDatesMatch"
+            | "doCreationDatesMatch"
+            | "XMPTitle"
+            | "XMPCreator"
+            | "XMPCreatorSize"
+            | "XMPDescription"
+            | "XMPKeywords"
+            | "XMPCreatorTool"
+            | "XMPProducer"
+            | "XMPCreateDate"
+            | "XMPModifyDate"
+            | "actualEncoding"
+            | "bytes"
+            | "encoding"
+            | "isSerializationValid"
+            | "isPredefinedInXMP2004"
+            | "isPredefinedInXMP2005"
+            | "isDefinedInMainPackage"
+            | "isDefinedInCurrentPackage"
+            | "isValueTypeCorrect"
+            | "containsUndefinedFields"
+            | "undefinedFields"
+            | "isValidBag"
+            | "prefix"
+            | "isSchemaValidText"
+            | "schemaPrefix"
+            | "isNamespaceURIValidURI"
+            | "namespaceURIPrefix"
+            | "isPrefixValidText"
+            | "prefixPrefix"
+            | "isPropertyValidSeq"
+            | "propertyPrefix"
+            | "isValueTypeValidSeq"
+            | "valueTypePrefix"
+            | "isDescriptionValidText"
+            | "descriptionPrefix"
+            | "isFieldValidSeq"
+            | "fieldPrefix"
+            | "isTypeValidText"
+            | "typePrefix"
+            | "isCategoryValidText"
+            | "category"
+            | "categoryPrefix"
+            | "isNameValidText"
+            | "namePrefix"
+            | "isValueTypeValidText"
+            | "isValueTypeDefined"
+            | "dc_title"
+            | "xDefault"
+            | "gContainsCatalogLang"
+    )
 }
 
 fn direct_properties_for_family(family: &str) -> &'static [&'static str] {
@@ -3678,26 +3779,94 @@ impl<'a> DocumentModel<'a> {
     }
 
     fn metadata_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        let metadata = catalog_metadata_key(self.document);
         match name {
             "containsPDFUAIdentification" => Some(Ok(ModelValue::Bool(contains_xmp_family(
                 self.document,
+                metadata,
                 "pdfua",
             )))),
             "containsPDFAIdentification" => Some(Ok(ModelValue::Bool(contains_xmp_family(
                 self.document,
+                metadata,
                 "pdfa",
             )))),
+            "XMPTitle" => Some(Ok(optional_xmp_text(
+                self.document,
+                metadata,
+                XMP_NS_DC,
+                "title",
+                XmpTextSelection::First,
+            ))),
+            "XMPCreator" => Some(Ok(xmp_creator(self.document, metadata))),
+            "XMPCreatorSize" => Some(
+                xmp_creator_size(self.document, metadata)
+                    .map(|value| value.map_or(ModelValue::Null, ModelValue::Number)),
+            ),
+            "XMPDescription" => Some(Ok(optional_xmp_text(
+                self.document,
+                metadata,
+                XMP_NS_DC,
+                "description",
+                XmpTextSelection::First,
+            ))),
+            "XMPKeywords" => Some(Ok(optional_xmp_text(
+                self.document,
+                metadata,
+                XMP_NS_PDF,
+                "Keywords",
+                XmpTextSelection::First,
+            ))),
+            "XMPCreatorTool" => Some(Ok(optional_xmp_text(
+                self.document,
+                metadata,
+                XMP_NS_XMP,
+                "CreatorTool",
+                XmpTextSelection::First,
+            ))),
+            "XMPProducer" => Some(Ok(optional_xmp_text(
+                self.document,
+                metadata,
+                XMP_NS_PDF,
+                "Producer",
+                XmpTextSelection::First,
+            ))),
+            "XMPCreateDate" => Some(Ok(optional_xmp_text(
+                self.document,
+                metadata,
+                XMP_NS_XMP,
+                "CreateDate",
+                XmpTextSelection::First,
+            ))),
+            "XMPModifyDate" => Some(Ok(optional_xmp_text(
+                self.document,
+                metadata,
+                XMP_NS_XMP,
+                "ModifyDate",
+                XmpTextSelection::First,
+            ))),
+            "doCreationDatesMatch" => Some(Ok(xmp_info_date_match(
+                self.document,
+                metadata,
+                "CreationDate",
+                "CreateDate",
+            ))),
+            "doModDatesMatch" => Some(Ok(xmp_info_date_match(
+                self.document,
+                metadata,
+                "ModDate",
+                "ModifyDate",
+            ))),
             _ => None,
         }
     }
 
     fn info_property(&self, name: &str) -> Option<Result<ModelValue>> {
         match name {
-            "Title" | "Author" | "Creator" | "Producer" | "Keywords" | "Subject" | "ModDate" => {
-                Some(Ok(document_info_value(self.document, name)
-                    .cloned()
-                    .map_or(ModelValue::Null, ModelValue::from)))
-            }
+            "Title" | "Author" | "Creator" | "Producer" | "Keywords" | "Subject" | "ModDate"
+            | "CreationDate" => Some(Ok(document_info_value(self.document, name)
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from))),
             _ => None,
         }
     }
@@ -4019,6 +4188,253 @@ impl<'a> MetadataModel<'a> {
             links: Vec::new(),
         })
     }
+
+    fn xmp_rdf_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        self.xmp_packet_property(name)
+            .or_else(|| self.xmp_extension_prefix_property(name))
+            .or_else(|| self.xmp_extension_value_property(name))
+            .or_else(|| self.xmp_document_metadata_property(name))
+    }
+
+    fn xmp_packet_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        match name {
+            "actualEncoding" => Some(Ok(xmp_packet_actual_encoding(self.document, self.key))),
+            "bytes" => Some(Ok(xmp_packet_header_attr(
+                self.document,
+                self.key,
+                XmpPacketHeaderAttr::Bytes,
+            ))),
+            "encoding" => Some(Ok(xmp_packet_header_attr(
+                self.document,
+                self.key,
+                XmpPacketHeaderAttr::Encoding,
+            ))),
+            "isSerializationValid" => Some(Ok(ModelValue::Bool(xmp_serialization_valid(
+                self.document,
+                self.key,
+            )))),
+            "isPredefinedInXMP2004" | "isPredefinedInXMP2005" => Some(Ok(ModelValue::Bool(
+                !xmp_contains_custom_fields(self.document, self.key),
+            ))),
+            "isValueTypeCorrect" => Some(Ok(ModelValue::Bool(
+                xmp_extension_value_type_defined(self.document, self.key)
+                    && !xmp_contains_undefined_fields(self.document, self.key),
+            ))),
+            "containsUndefinedFields" => Some(Ok(ModelValue::Bool(xmp_contains_undefined_fields(
+                self.document,
+                self.key,
+            )))),
+            "undefinedFields" => {
+                Some(xmp_undefined_fields(self.document, self.key).map(ModelValue::String))
+            }
+            _ => None,
+        }
+    }
+
+    fn xmp_extension_prefix_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        match name {
+            "isDefinedInMainPackage" | "isDefinedInCurrentPackage" => Some(Ok(ModelValue::Bool(
+                !xmp_contains_undefined_fields(self.document, self.key),
+            ))),
+            "isValidBag" => Some(Ok(ModelValue::Bool(xmp_extension_bag_valid(
+                self.document,
+                self.key,
+            )))),
+            "prefix" => Some(Ok(xmp_extension_prefix(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_EXTENSION,
+                "schemas",
+            ))),
+            "schemaPrefix" => Some(Ok(xmp_extension_prefix(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_SCHEMA,
+                "schema",
+            ))),
+            "namespaceURIPrefix" => Some(Ok(xmp_first_present_prefix(
+                self.document,
+                self.key,
+                &[
+                    (XMP_NS_PDFA_SCHEMA, "namespaceURI"),
+                    (XMP_NS_PDFA_TYPE, "namespaceURI"),
+                ],
+            ))),
+            "prefixPrefix" => Some(Ok(xmp_extension_prefix(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_SCHEMA,
+                "prefix",
+            ))),
+            "propertyPrefix" => Some(Ok(xmp_extension_prefix(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_SCHEMA,
+                "property",
+            ))),
+            "valueTypePrefix" => Some(Ok(xmp_first_present_prefix(
+                self.document,
+                self.key,
+                &[
+                    (XMP_NS_PDFA_PROPERTY, "valueType"),
+                    (XMP_NS_PDFA_FIELD, "valueType"),
+                ],
+            ))),
+            "fieldPrefix" => Some(Ok(xmp_extension_prefix(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_TYPE,
+                "field",
+            ))),
+            "typePrefix" => Some(Ok(xmp_extension_prefix(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_TYPE,
+                "type",
+            ))),
+            "categoryPrefix" => Some(Ok(xmp_extension_prefix(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_PROPERTY,
+                "category",
+            ))),
+            "descriptionPrefix" => Some(Ok(xmp_first_present_prefix(
+                self.document,
+                self.key,
+                &[
+                    (XMP_NS_PDFA_PROPERTY, "description"),
+                    (XMP_NS_PDFA_TYPE, "description"),
+                    (XMP_NS_PDFA_FIELD, "description"),
+                ],
+            ))),
+            "namePrefix" => Some(Ok(xmp_first_present_prefix(
+                self.document,
+                self.key,
+                &[(XMP_NS_PDFA_PROPERTY, "name"), (XMP_NS_PDFA_FIELD, "name")],
+            ))),
+            _ => None,
+        }
+    }
+
+    fn xmp_extension_value_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        match name {
+            "isSchemaValidText" => Some(Ok(ModelValue::Bool(xmp_extension_text_valid(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_SCHEMA,
+                "schema",
+            )))),
+            "isNamespaceURIValidURI" => Some(Ok(ModelValue::Bool(xmp_extension_text_valid(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_SCHEMA,
+                "namespaceURI",
+            )))),
+            "isPrefixValidText" => Some(Ok(ModelValue::Bool(xmp_extension_text_valid(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_SCHEMA,
+                "prefix",
+            )))),
+            "isPropertyValidSeq" => Some(Ok(ModelValue::Bool(xmp_extension_sequence_valid(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_SCHEMA,
+                "property",
+            )))),
+            "isValueTypeValidSeq" => Some(Ok(ModelValue::Bool(xmp_extension_sequence_valid(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_SCHEMA,
+                "valueType",
+            )))),
+            "isFieldValidSeq" => Some(Ok(ModelValue::Bool(xmp_extension_sequence_valid(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_TYPE,
+                "field",
+            )))),
+            "isTypeValidText" => Some(Ok(ModelValue::Bool(xmp_extension_text_valid(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_TYPE,
+                "type",
+            )))),
+            "isCategoryValidText" => Some(Ok(ModelValue::Bool(xmp_extension_text_valid(
+                self.document,
+                self.key,
+                XMP_NS_PDFA_PROPERTY,
+                "category",
+            )))),
+            "category" => Some(Ok(optional_xmp_text(
+                self.document,
+                Some(self.key),
+                XMP_NS_PDFA_PROPERTY,
+                "category",
+                XmpTextSelection::First,
+            ))),
+            "isDescriptionValidText" => Some(Ok(ModelValue::Bool(
+                xmp_extension_text_valid(
+                    self.document,
+                    self.key,
+                    XMP_NS_PDFA_PROPERTY,
+                    "description",
+                ) || xmp_extension_text_valid(
+                    self.document,
+                    self.key,
+                    XMP_NS_PDFA_TYPE,
+                    "description",
+                ) || xmp_extension_text_valid(
+                    self.document,
+                    self.key,
+                    XMP_NS_PDFA_FIELD,
+                    "description",
+                ),
+            ))),
+            "isNameValidText" => Some(Ok(ModelValue::Bool(
+                xmp_extension_text_valid(self.document, self.key, XMP_NS_PDFA_PROPERTY, "name")
+                    || xmp_extension_text_valid(self.document, self.key, XMP_NS_PDFA_FIELD, "name"),
+            ))),
+            "isValueTypeValidText" => Some(Ok(ModelValue::Bool(
+                xmp_extension_text_valid(
+                    self.document,
+                    self.key,
+                    XMP_NS_PDFA_PROPERTY,
+                    "valueType",
+                ) || xmp_extension_text_valid(
+                    self.document,
+                    self.key,
+                    XMP_NS_PDFA_FIELD,
+                    "valueType",
+                ),
+            ))),
+            "isValueTypeDefined" => Some(Ok(ModelValue::Bool(xmp_extension_value_type_defined(
+                self.document,
+                self.key,
+            )))),
+            _ => None,
+        }
+    }
+
+    fn xmp_document_metadata_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        match name {
+            "dc_title" => Some(Ok(optional_xmp_text(
+                self.document,
+                Some(self.key),
+                XMP_NS_DC,
+                "title",
+                XmpTextSelection::RequireDcPrefix,
+            ))),
+            "xDefault" => Some(Ok(ModelValue::Bool(xmp_title_is_single_x_default(
+                self.document,
+                self.key,
+            )))),
+            "gContainsCatalogLang" => Some(Ok(ModelValue::Bool(
+                catalog_value(self.document, "Lang").is_some(),
+            ))),
+            _ => None,
+        }
+    }
 }
 
 impl ModelObject for MetadataModel<'_> {
@@ -4042,52 +4458,75 @@ impl ModelObject for MetadataModel<'_> {
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         let family = self.active_family.as_ref().map(Identifier::as_str);
+        if let Some(value) = self.xmp_rdf_property(name.as_str()) {
+            return value;
+        }
         match name.as_str() {
             "present" | "catalogMetadata" => Ok(ModelValue::Bool(true)),
-            "containsPDFAIdentification" => {
-                Ok(ModelValue::Bool(contains_xmp_family(self.document, "pdfa")))
-            }
+            "containsPDFAIdentification" => Ok(ModelValue::Bool(contains_xmp_family(
+                self.document,
+                Some(self.key),
+                "pdfa",
+            ))),
             "containsPDFUAIdentification" => Ok(ModelValue::Bool(contains_xmp_family(
                 self.document,
+                Some(self.key),
                 "pdfua",
             ))),
             "part" => Ok(ModelValue::Number(
-                xmp_part(self.document, family).unwrap_or(0.0),
+                xmp_part(self.document, Some(self.key), family).unwrap_or(0.0),
             )),
-            "partPrefix" => Ok(xmp_prefix(self.document, family, XmpPrefixProperty::Part)
-                .map_or(ModelValue::Null, |prefix| {
-                    ModelValue::String(BoundedText::unchecked(prefix))
-                })),
-            "conformance" => Ok(xmp_conformance(self.document, family)
+            "partPrefix" => Ok(xmp_prefix(
+                self.document,
+                Some(self.key),
+                family,
+                XmpPrefixProperty::Part,
+            )
+            .map_or(ModelValue::Null, |prefix| {
+                ModelValue::String(BoundedText::unchecked(prefix))
+            })),
+            "conformance" => Ok(xmp_conformance(self.document, Some(self.key), family)
                 .map_or(ModelValue::Null, |value| {
                     ModelValue::String(BoundedText::unchecked(value))
                 })),
-            "conformancePrefix" => {
-                Ok(
-                    xmp_prefix(self.document, family, XmpPrefixProperty::Conformance)
-                        .map_or(ModelValue::Null, |prefix| {
-                            ModelValue::String(BoundedText::unchecked(prefix))
-                        }),
-                )
-            }
-            "revPrefix" => Ok(xmp_prefix(self.document, family, XmpPrefixProperty::Rev)
-                .map_or(ModelValue::Null, |prefix| {
-                    ModelValue::String(BoundedText::unchecked(prefix))
-                })),
-            "amdPrefix" | "corrPrefix" => Ok(xmp_identification_claim(self.document, family)
-                .map_or(ModelValue::Null, |claim| {
-                    let prefix = match claim.family.as_str() {
-                        "pdfua" => "pdfuaid",
-                        _ => "pdfaid",
-                    };
-                    ModelValue::String(BoundedText::unchecked(prefix))
-                })),
-            "rev" => Ok(
-                xmp_rev(self.document, family).map_or(ModelValue::Null, |rev| {
+            "conformancePrefix" => Ok(xmp_prefix(
+                self.document,
+                Some(self.key),
+                family,
+                XmpPrefixProperty::Conformance,
+            )
+            .map_or(ModelValue::Null, |prefix| {
+                ModelValue::String(BoundedText::unchecked(prefix))
+            })),
+            "revPrefix" => Ok(xmp_prefix(
+                self.document,
+                Some(self.key),
+                family,
+                XmpPrefixProperty::Rev,
+            )
+            .map_or(ModelValue::Null, |prefix| {
+                ModelValue::String(BoundedText::unchecked(prefix))
+            })),
+            "amdPrefix" | "corrPrefix" => Ok(xmp_identification_claim(
+                self.document,
+                Some(self.key),
+                family,
+            )
+            .map_or(ModelValue::Null, |claim| {
+                let prefix = match claim.family.as_str() {
+                    "pdfua" => "pdfuaid",
+                    _ => "pdfaid",
+                };
+                ModelValue::String(BoundedText::unchecked(prefix))
+            })),
+            "rev" => Ok(xmp_rev(self.document, Some(self.key), family)
+                .map_or(ModelValue::Null, |rev| {
                     ModelValue::String(BoundedText::unchecked(rev))
-                }),
-            ),
-            "declarations" => Ok(ModelValue::List(xmp_declarations(self.document))),
+                })),
+            "declarations" => Ok(ModelValue::List(xmp_declarations(
+                self.document,
+                Some(self.key),
+            ))),
             _ => self.document.objects.get(&self.key).map_or_else(
                 || unknown_property(name),
                 |object| match &object.object {
@@ -9726,20 +10165,475 @@ fn contains_xref_stream(document: &ParsedDocument) -> bool {
     })
 }
 
-fn contains_xmp_family(document: &ParsedDocument, family: &str) -> bool {
+const XMP_NS_DC: &str = "http://purl.org/dc/elements/1.1/";
+const XMP_NS_PDF: &str = "http://ns.adobe.com/pdf/1.3/";
+const XMP_NS_XMP: &str = "http://ns.adobe.com/xap/1.0/";
+const XMP_NS_PDFA_ID: &str = "http://www.aiim.org/pdfa/ns/id/";
+const XMP_NS_PDFUA_ID: &str = "http://www.aiim.org/pdfua/ns/id/";
+const XMP_NS_PDFD: &str = "http://pdfa.org/declarations/";
+const XMP_NS_PDFA_EXTENSION: &str = "http://www.aiim.org/pdfa/ns/extension/";
+const XMP_NS_PDFA_SCHEMA: &str = "http://www.aiim.org/pdfa/ns/schema#";
+const XMP_NS_PDFA_PROPERTY: &str = "http://www.aiim.org/pdfa/ns/property#";
+const XMP_NS_PDFA_TYPE: &str = "http://www.aiim.org/pdfa/ns/type#";
+const XMP_NS_PDFA_FIELD: &str = "http://www.aiim.org/pdfa/ns/field#";
+
+const XMP_PREDEFINED_NAMESPACES: &[&str] = &[
+    XMP_NS_DC,
+    XMP_NS_PDF,
+    XMP_NS_XMP,
+    XMP_NS_PDFA_ID,
+    XMP_NS_PDFUA_ID,
+    XMP_NS_PDFD,
+    XMP_NS_PDFA_EXTENSION,
+    XMP_NS_PDFA_SCHEMA,
+    XMP_NS_PDFA_PROPERTY,
+    XMP_NS_PDFA_TYPE,
+    XMP_NS_PDFA_FIELD,
+    "http://ns.adobe.com/xap/1.0/mm/",
+    "http://ns.adobe.com/xap/1.0/rights/",
+    "http://ns.adobe.com/xap/1.0/sType/ResourceEvent#",
+    "http://ns.adobe.com/xap/1.0/sType/ResourceRef#",
+    "http://ns.adobe.com/xap/1.0/sType/Dimensions#",
+    "http://ns.adobe.com/xap/1.0/sType/Font#",
+    "http://ns.adobe.com/photoshop/1.0/",
+    "http://ns.adobe.com/tiff/1.0/",
+    "http://ns.adobe.com/exif/1.0/",
+];
+
+#[derive(Clone, Copy, Debug)]
+enum XmpTextSelection {
+    First,
+    RequireDcPrefix,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum XmpPacketHeaderAttr {
+    Bytes,
+    Encoding,
+}
+
+#[derive(Clone, Debug)]
+struct XmpRdfPropertyView<'a> {
+    namespace_uri: &'a BoundedText,
+    prefix: &'a Identifier,
+    name: &'a Identifier,
+    value: Option<&'a BoundedText>,
+    array_kind: Option<&'a Identifier>,
+    xml_lang: Option<&'a BoundedText>,
+}
+
+fn catalog_metadata_key(document: &ParsedDocument) -> Option<ObjectKey> {
+    let catalog_key = document.catalog?;
+    let catalog = document.objects.get(&catalog_key)?;
+    let dictionary = catalog.object.as_dictionary()?;
+    match dictionary.get("Metadata") {
+        Some(crate::CosObject::Reference(key)) => Some(*key),
+        _ => None,
+    }
+}
+
+fn contains_xmp_family(document: &ParsedDocument, object: Option<ObjectKey>, family: &str) -> bool {
     document.parse_facts.iter().any(|fact| {
         matches!(
             fact,
             crate::ParseFact::Xmp {
+                object: fact_object,
                 fact:
                     crate::XmpFact::FlavourClaim {
                         family: claim_family,
                         ..
                     },
-                ..
-            } if claim_family.as_str() == family
+            } if object.is_none_or(|object| object == *fact_object)
+                && claim_family.as_str() == family
         )
     })
+}
+
+fn xmp_rdf_properties(
+    document: &ParsedDocument,
+    object: Option<ObjectKey>,
+) -> impl Iterator<Item = XmpRdfPropertyView<'_>> {
+    document.parse_facts.iter().filter_map(move |fact| {
+        let crate::ParseFact::Xmp {
+            object: fact_object,
+            fact:
+                crate::XmpFact::RdfProperty {
+                    namespace_uri,
+                    prefix,
+                    name,
+                    value,
+                    array_kind,
+                    xml_lang,
+                },
+        } = fact
+        else {
+            return None;
+        };
+        if object.is_some_and(|object| object != *fact_object) {
+            return None;
+        }
+        Some(XmpRdfPropertyView {
+            namespace_uri,
+            prefix,
+            name,
+            value: value.as_ref(),
+            array_kind: array_kind.as_ref(),
+            xml_lang: xml_lang.as_ref(),
+        })
+    })
+}
+
+fn xmp_property_values<'a>(
+    document: &'a ParsedDocument,
+    object: Option<ObjectKey>,
+    namespace: &'static str,
+    name: &'static str,
+) -> Vec<XmpRdfPropertyView<'a>> {
+    xmp_rdf_properties(document, object)
+        .filter(|property| {
+            property.namespace_uri.as_str() == namespace
+                && property.name.as_str() == name
+                && property.value.is_some()
+        })
+        .collect()
+}
+
+fn optional_xmp_text(
+    document: &ParsedDocument,
+    object: Option<ObjectKey>,
+    namespace: &'static str,
+    name: &'static str,
+    selection: XmpTextSelection,
+) -> ModelValue {
+    let mut values = xmp_property_values(document, object, namespace, name);
+    if matches!(selection, XmpTextSelection::RequireDcPrefix) {
+        values.retain(|property| property.prefix.as_str() == "dc");
+    }
+    values
+        .iter()
+        .find(|property| {
+            property
+                .xml_lang
+                .is_some_and(|language| language.as_str() == "x-default")
+        })
+        .or_else(|| values.iter().find(|property| property.value.is_some()))
+        .and_then(|property| property.value.cloned())
+        .map_or(ModelValue::Null, ModelValue::String)
+}
+
+fn xmp_creator(document: &ParsedDocument, object: Option<ObjectKey>) -> ModelValue {
+    let creators = xmp_property_values(document, object, XMP_NS_DC, "creator")
+        .into_iter()
+        .filter_map(|property| property.value.cloned())
+        .filter(|value| !value.as_str().trim().is_empty())
+        .collect::<Vec<_>>();
+    match creators.as_slice() {
+        [] => ModelValue::Null,
+        [single] => ModelValue::String(single.clone()),
+        many => ModelValue::String(
+            BoundedText::new(
+                format!(
+                    "[{}]",
+                    many.iter()
+                        .map(BoundedText::as_str)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+                512,
+            )
+            .unwrap_or_else(|_| BoundedText::unchecked("[xmp-creators]")),
+        ),
+    }
+}
+
+fn xmp_creator_size(document: &ParsedDocument, object: Option<ObjectKey>) -> Result<Option<f64>> {
+    let count = xmp_property_values(document, object, XMP_NS_DC, "creator")
+        .into_iter()
+        .filter(|property| {
+            property
+                .value
+                .is_some_and(|value| !value.as_str().trim().is_empty())
+        })
+        .count();
+    if count == 0 {
+        Ok(None)
+    } else {
+        usize_to_f64(count).map(Some)
+    }
+}
+
+fn xmp_info_date_match(
+    document: &ParsedDocument,
+    object: Option<ObjectKey>,
+    info_key: &str,
+    xmp_name: &'static str,
+) -> ModelValue {
+    let Some(info_date) = document_info_value(document, info_key).and_then(object_direct_text)
+    else {
+        return ModelValue::Null;
+    };
+    let Some(xmp_date) = xmp_property_values(document, object, XMP_NS_XMP, xmp_name)
+        .into_iter()
+        .find_map(|property| property.value.map(BoundedText::as_str))
+    else {
+        return ModelValue::Bool(false);
+    };
+    ModelValue::Bool(normalized_date_digits(&info_date) == normalized_date_digits(xmp_date))
+}
+
+fn normalized_date_digits(value: &str) -> String {
+    value
+        .strip_prefix("D:")
+        .unwrap_or(value)
+        .chars()
+        .filter(char::is_ascii_digit)
+        .take(14)
+        .collect()
+}
+
+fn xmp_packet_actual_encoding(document: &ParsedDocument, object: ObjectKey) -> ModelValue {
+    document
+        .parse_facts
+        .iter()
+        .find_map(|fact| {
+            let crate::ParseFact::Xmp {
+                object: fact_object,
+                fact:
+                    crate::XmpFact::PacketHeader {
+                        actual_encoding, ..
+                    },
+            } = fact
+            else {
+                return None;
+            };
+            if *fact_object != object {
+                return None;
+            }
+            Some(ModelValue::String(BoundedText::unchecked(
+                actual_encoding.as_str(),
+            )))
+        })
+        .unwrap_or(ModelValue::Null)
+}
+
+fn xmp_packet_header_attr(
+    document: &ParsedDocument,
+    object: ObjectKey,
+    attr: XmpPacketHeaderAttr,
+) -> ModelValue {
+    document
+        .parse_facts
+        .iter()
+        .find_map(|fact| {
+            let crate::ParseFact::Xmp {
+                object: fact_object,
+                fact:
+                    crate::XmpFact::PacketHeader {
+                        bytes, encoding, ..
+                    },
+            } = fact
+            else {
+                return None;
+            };
+            if *fact_object != object {
+                return None;
+            }
+            match attr {
+                XmpPacketHeaderAttr::Bytes => bytes.clone(),
+                XmpPacketHeaderAttr::Encoding => encoding.clone(),
+            }
+        })
+        .map_or(ModelValue::Null, ModelValue::String)
+}
+
+fn xmp_serialization_valid(document: &ParsedDocument, object: ObjectKey) -> bool {
+    document.parse_facts.iter().any(|fact| {
+        matches!(
+            fact,
+            crate::ParseFact::Xmp {
+                object: fact_object,
+                fact: crate::XmpFact::PacketParsed { .. },
+            } if *fact_object == object
+        )
+    }) && !document.parse_facts.iter().any(|fact| {
+        matches!(
+            fact,
+            crate::ParseFact::Xmp {
+                object: fact_object,
+                fact: crate::XmpFact::Malformed { .. } | crate::XmpFact::HostileXmlRejected { .. },
+            } if *fact_object == object
+        )
+    })
+}
+
+fn xmp_extension_bag_valid(document: &ParsedDocument, object: ObjectKey) -> bool {
+    let mut saw_schemas = false;
+    for property in xmp_rdf_properties(document, Some(object)).filter(|property| {
+        property.namespace_uri.as_str() == XMP_NS_PDFA_EXTENSION
+            && property.name.as_str() == "schemas"
+    }) {
+        saw_schemas = true;
+        if property
+            .array_kind
+            .is_some_and(|kind| kind.as_str() == "Bag")
+        {
+            return true;
+        }
+    }
+    !saw_schemas
+}
+
+fn xmp_extension_text_valid(
+    document: &ParsedDocument,
+    object: ObjectKey,
+    namespace: &'static str,
+    name: &'static str,
+) -> bool {
+    let values = xmp_property_values(document, Some(object), namespace, name);
+    values.is_empty()
+        || values.iter().all(|property| {
+            property
+                .value
+                .is_some_and(|value| !value.as_str().trim().is_empty())
+        })
+}
+
+fn xmp_extension_sequence_valid(
+    document: &ParsedDocument,
+    object: ObjectKey,
+    namespace: &'static str,
+    name: &'static str,
+) -> bool {
+    let values = xmp_property_values(document, Some(object), namespace, name);
+    values.is_empty()
+        || values.iter().any(|property| {
+            property
+                .array_kind
+                .is_some_and(|kind| kind.as_str() == "Seq")
+        })
+}
+
+fn xmp_extension_prefix(
+    document: &ParsedDocument,
+    object: ObjectKey,
+    namespace: &'static str,
+    name: &'static str,
+) -> ModelValue {
+    xmp_rdf_properties(document, Some(object))
+        .find(|property| {
+            property.namespace_uri.as_str() == namespace && property.name.as_str() == name
+        })
+        .map_or(ModelValue::Null, |property| {
+            ModelValue::String(BoundedText::unchecked(property.prefix.as_str()))
+        })
+}
+
+fn xmp_first_present_prefix(
+    document: &ParsedDocument,
+    object: ObjectKey,
+    properties: &[(&'static str, &'static str)],
+) -> ModelValue {
+    properties
+        .iter()
+        .find_map(|(namespace, name)| {
+            xmp_rdf_properties(document, Some(object))
+                .find(|property| {
+                    property.namespace_uri.as_str() == *namespace && property.name.as_str() == *name
+                })
+                .map(|property| {
+                    ModelValue::String(BoundedText::unchecked(property.prefix.as_str()))
+                })
+        })
+        .unwrap_or(ModelValue::Null)
+}
+
+fn xmp_extension_value_type_defined(document: &ParsedDocument, object: ObjectKey) -> bool {
+    let defined_types = xmp_property_values(document, Some(object), XMP_NS_PDFA_TYPE, "type")
+        .iter()
+        .filter_map(|property| property.value.map(BoundedText::as_str))
+        .collect::<Vec<_>>();
+    let values = xmp_property_values(document, Some(object), XMP_NS_PDFA_PROPERTY, "valueType")
+        .into_iter()
+        .chain(xmp_property_values(
+            document,
+            Some(object),
+            XMP_NS_PDFA_FIELD,
+            "valueType",
+        ))
+        .filter_map(|property| property.value.map(BoundedText::as_str))
+        .collect::<Vec<_>>();
+    values.is_empty()
+        || values.iter().all(|value| {
+            matches!(
+                *value,
+                "Text"
+                    | "URI"
+                    | "URL"
+                    | "XPath"
+                    | "Boolean"
+                    | "Integer"
+                    | "Real"
+                    | "Date"
+                    | "AgentName"
+                    | "ProperName"
+                    | "MIMEType"
+                    | "Lang Alt"
+                    | "Seq"
+                    | "Bag"
+            ) || defined_types.iter().any(|defined| defined == value)
+        })
+}
+
+fn xmp_declared_extension_namespaces(
+    document: &ParsedDocument,
+    object: ObjectKey,
+) -> BTreeSet<String> {
+    xmp_property_values(document, Some(object), XMP_NS_PDFA_SCHEMA, "namespaceURI")
+        .into_iter()
+        .filter_map(|property| property.value.map(|value| value.as_str().to_owned()))
+        .collect()
+}
+
+fn xmp_contains_custom_fields(document: &ParsedDocument, object: ObjectKey) -> bool {
+    xmp_rdf_properties(document, Some(object))
+        .any(|property| !XMP_PREDEFINED_NAMESPACES.contains(&property.namespace_uri.as_str()))
+}
+
+fn xmp_contains_undefined_fields(document: &ParsedDocument, object: ObjectKey) -> bool {
+    let declared = xmp_declared_extension_namespaces(document, object);
+    xmp_rdf_properties(document, Some(object)).any(|property| {
+        let namespace = property.namespace_uri.as_str();
+        !XMP_PREDEFINED_NAMESPACES.contains(&namespace) && !declared.contains(namespace)
+    })
+}
+
+fn xmp_undefined_fields(document: &ParsedDocument, object: ObjectKey) -> Result<BoundedText> {
+    let declared = xmp_declared_extension_namespaces(document, object);
+    let mut undefined = BTreeSet::new();
+    for property in xmp_rdf_properties(document, Some(object)) {
+        let namespace = property.namespace_uri.as_str();
+        if !XMP_PREDEFINED_NAMESPACES.contains(&namespace) && !declared.contains(namespace) {
+            undefined.insert(format!("{}({namespace})", property.name.as_str()));
+        }
+    }
+    BoundedText::new(undefined.into_iter().collect::<Vec<_>>().join(","), 512).map_err(Into::into)
+}
+
+fn xmp_title_is_single_x_default(document: &ParsedDocument, object: ObjectKey) -> bool {
+    let titles = xmp_property_values(document, Some(object), XMP_NS_DC, "title")
+        .into_iter()
+        .filter(|property| {
+            property
+                .value
+                .is_some_and(|value| !value.as_str().trim().is_empty())
+        })
+        .collect::<Vec<_>>();
+    titles.len() == 1
+        && titles.first().is_some_and(|property| {
+            property
+                .xml_lang
+                .is_some_and(|language| language.as_str() == "x-default")
+        })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -9762,10 +10656,12 @@ struct XmpClaimView<'a> {
 
 fn xmp_identification_claim<'a>(
     document: &'a ParsedDocument,
+    object: Option<ObjectKey>,
     expected_family: Option<&str>,
 ) -> Option<XmpClaimView<'a>> {
     document.parse_facts.iter().find_map(|fact| {
         let crate::ParseFact::Xmp {
+            object: fact_object,
             fact:
                 crate::XmpFact::FlavourClaim {
                     family,
@@ -9778,11 +10674,13 @@ fn xmp_identification_claim<'a>(
                     conformance_prefix,
                     ..
                 },
-            ..
         } = fact
         else {
             return None;
         };
+        if object.is_some_and(|object| object != *fact_object) {
+            return None;
+        }
         if family.as_str() == "wtpdf" {
             return None;
         }
@@ -9803,16 +10701,21 @@ fn xmp_identification_claim<'a>(
     })
 }
 
-fn xmp_part(document: &ParsedDocument, family: Option<&str>) -> Option<f64> {
-    xmp_identification_claim(document, family).map(|claim| f64::from(claim.part))
+fn xmp_part(
+    document: &ParsedDocument,
+    object: Option<ObjectKey>,
+    family: Option<&str>,
+) -> Option<f64> {
+    xmp_identification_claim(document, object, family).map(|claim| f64::from(claim.part))
 }
 
 fn xmp_prefix(
     document: &ParsedDocument,
+    object: Option<ObjectKey>,
     family: Option<&str>,
     property: XmpPrefixProperty,
 ) -> Option<String> {
-    xmp_identification_claim(document, family).and_then(|claim| match property {
+    xmp_identification_claim(document, object, family).and_then(|claim| match property {
         XmpPrefixProperty::Part => Some(claim.part_prefix.as_str().to_owned()),
         XmpPrefixProperty::Conformance => claim
             .conformance_prefix
@@ -9821,8 +10724,12 @@ fn xmp_prefix(
     })
 }
 
-fn xmp_conformance(document: &ParsedDocument, family: Option<&str>) -> Option<String> {
-    xmp_identification_claim(document, family).and_then(|claim| {
+fn xmp_conformance(
+    document: &ParsedDocument,
+    object: Option<ObjectKey>,
+    family: Option<&str>,
+) -> Option<String> {
+    xmp_identification_claim(document, object, family).and_then(|claim| {
         if claim.family.as_str() == "pdfa" {
             claim
                 .conformance
@@ -9833,28 +10740,35 @@ fn xmp_conformance(document: &ParsedDocument, family: Option<&str>) -> Option<St
     })
 }
 
-fn xmp_rev(document: &ParsedDocument, family: Option<&str>) -> Option<String> {
-    xmp_identification_claim(document, family)
+fn xmp_rev(
+    document: &ParsedDocument,
+    object: Option<ObjectKey>,
+    family: Option<&str>,
+) -> Option<String> {
+    xmp_identification_claim(document, object, family)
         .and_then(|claim| claim.rev.map(|rev| rev.as_str().to_owned()))
 }
 
-fn xmp_declarations(document: &ParsedDocument) -> Vec<ModelValue> {
+fn xmp_declarations(document: &ParsedDocument, object: Option<ObjectKey>) -> Vec<ModelValue> {
     document
         .parse_facts
         .iter()
         .filter_map(|fact| {
             let crate::ParseFact::Xmp {
+                object: fact_object,
                 fact:
                     crate::XmpFact::FlavourClaim {
                         family,
                         display_flavour,
                         ..
                     },
-                ..
             } = fact
             else {
                 return None;
             };
+            if object.is_some_and(|object| object != *fact_object) {
+                return None;
+            }
             if family.as_str() != "wtpdf" {
                 return None;
             }
@@ -9944,10 +10858,10 @@ mod tests {
     };
     use crate::{
         BinaryOp, BoundedText, ErrorTemplate, FeatureSelection, FlavourSelection, Identifier,
-        InputName, ModelObject, ModelObjectRef, ModelValue, ObjectTypeName, Parser, PdfvError,
-        PolicyOperator, PolicyRule, PolicySet, PolicyValue, ProfileIdentity, ProfileRepository,
-        PropertyName, ResourceLimits, Rule, RuleExpr, RuleId, ValidationFlavour, ValidationOptions,
-        ValidationProfile, Validator,
+        InputName, ModelObject, ModelObjectRef, ModelValue, ObjectKey, ObjectTypeName, ParseFact,
+        Parser, PdfvError, PolicyOperator, PolicyRule, PolicySet, PolicyValue, ProfileIdentity,
+        ProfileRepository, PropertyName, ResourceLimits, Rule, RuleExpr, RuleId, ValidationFlavour,
+        ValidationOptions, ValidationProfile, Validator, XmpFact,
     };
 
     #[derive(Debug)]
@@ -9997,6 +10911,75 @@ trailer
 << /Root 1 0 R >>
 %%EOF
 "
+    }
+
+    fn phase22_xmp_metadata_pdf() -> Vec<u8> {
+        let xmp = br#"<?xpacket begin=""?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/"
+                     xmlns:pdf="http://ns.adobe.com/pdf/1.3/"
+                     xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+                     xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+                     pdfaid:part="2"
+                     pdfaid:conformance="B"
+                     pdf:Producer="pdfv"
+                     xmp:CreatorTool="pdfv-test"
+                     xmp:CreateDate="2026-05-18T10:20:30Z"
+                     xmp:ModifyDate="2026-05-18T10:20:30Z">
+      <dc:title>
+        <rdf:Alt>
+          <rdf:li xml:lang="x-default">Phase 22 XMP</rdf:li>
+        </rdf:Alt>
+      </dc:title>
+      <dc:creator>
+        <rdf:Seq>
+          <rdf:li>Alice</rdf:li>
+        </rdf:Seq>
+      </dc:creator>
+      <dc:description>
+        <rdf:Alt>
+          <rdf:li xml:lang="x-default">Metadata fixture</rdf:li>
+        </rdf:Alt>
+      </dc:description>
+      <pdf:Keywords>pdfv,xmp</pdf:Keywords>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+        let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Metadata 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Metadata /Subtype /XML /Length "
+            .to_vec();
+        pdf.extend(xmp.len().to_string().as_bytes());
+        pdf.extend(
+            br" >>
+stream
+",
+        );
+        pdf.extend(xmp);
+        pdf.extend(
+            br"
+endstream
+endobj
+3 0 obj
+<< /Title (Phase 22 XMP) /Author (Alice) /Subject (Metadata fixture) /Keywords (pdfv,xmp) /Creator (pdfv-test) /Producer (pdfv) /CreationDate (D:20260518102030Z) /ModDate (D:20260518102030Z) >>
+endobj
+trailer
+<< /Root 1 0 R /Info 3 0 R >>
+%%EOF
+",
+        );
+        pdf
+    }
+
+    fn test_object_key(number: u32) -> crate::Result<ObjectKey> {
+        let number = std::num::NonZeroU32::new(number).ok_or(crate::ParseError::MissingObject {
+            message: BoundedText::unchecked("invalid test object number"),
+        })?;
+        Ok(ObjectKey::new(number, 0))
     }
 
     #[allow(
@@ -11115,6 +12098,175 @@ trailer
                 )
             });
         assert!(has_redacted_uri);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_bind_xmp_rdf_metadata_model_properties() -> crate::Result<()> {
+        let mut document = Parser::default().parse(Cursor::new(phase22_xmp_metadata_pdf()))?;
+        let xmp = super::parse_document_xmp(&document, &ResourceLimits::default(), false)?;
+        document.parse_facts.extend(xmp.parse_facts);
+        document.warnings.extend(xmp.warnings);
+
+        let document_model = super::DocumentModel::new(&document);
+        assert_eq!(
+            document_model.property(&PropertyName::new("XMPTitle")?)?,
+            ModelValue::String(BoundedText::unchecked("Phase 22 XMP"))
+        );
+        assert_eq!(
+            document_model.property(&PropertyName::new("XMPCreator")?)?,
+            ModelValue::String(BoundedText::unchecked("Alice"))
+        );
+        assert_eq!(
+            document_model.property(&PropertyName::new("XMPCreatorSize")?)?,
+            ModelValue::Number(1.0)
+        );
+        assert_eq!(
+            document_model.property(&PropertyName::new("doCreationDatesMatch")?)?,
+            ModelValue::Bool(true)
+        );
+        assert_eq!(
+            document_model.property(&PropertyName::new("doModDatesMatch")?)?,
+            ModelValue::Bool(true)
+        );
+
+        let catalog_key = document.catalog.ok_or(crate::ParseError::MissingObject {
+            message: BoundedText::unchecked("missing catalog"),
+        })?;
+        let catalog =
+            CatalogModel::new(&document, catalog_key).ok_or(crate::ParseError::MissingObject {
+                message: BoundedText::unchecked("missing catalog model"),
+            })?;
+        let metadata = super::MetadataModel::new(
+            &document,
+            catalog.metadata,
+            Some(&ValidationFlavour::new(
+                "pdfua",
+                std::num::NonZeroU32::MIN,
+                "none",
+            )?),
+        )
+        .ok_or(crate::ParseError::MissingObject {
+            message: BoundedText::unchecked("missing metadata model"),
+        })?;
+
+        assert_eq!(
+            metadata.property(&PropertyName::new("actualEncoding")?)?,
+            ModelValue::String(BoundedText::unchecked("UTF-8"))
+        );
+        assert_eq!(
+            metadata.property(&PropertyName::new("dc_title")?)?,
+            ModelValue::String(BoundedText::unchecked("Phase 22 XMP"))
+        );
+        assert_eq!(
+            metadata.property(&PropertyName::new("xDefault")?)?,
+            ModelValue::Bool(true)
+        );
+        assert_eq!(
+            metadata.property(&PropertyName::new("containsUndefinedFields")?)?,
+            ModelValue::Bool(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_scope_xmp_metadata_facts_to_source_stream() -> crate::Result<()> {
+        let mut document = Parser::default().parse(Cursor::new(phase22_xmp_metadata_pdf()))?;
+        let xmp = super::parse_document_xmp(&document, &ResourceLimits::default(), false)?;
+        document.parse_facts.extend(xmp.parse_facts);
+        document.parse_facts.push(ParseFact::Xmp {
+            object: test_object_key(99)?,
+            fact: XmpFact::RdfProperty {
+                namespace_uri: BoundedText::unchecked("https://example.test/undeclared/"),
+                prefix: Identifier::unchecked("bad"),
+                name: Identifier::unchecked("field"),
+                value: Some(BoundedText::unchecked("outside catalog metadata")),
+                array_kind: None,
+                xml_lang: None,
+            },
+        });
+
+        let catalog_key = document.catalog.ok_or(crate::ParseError::MissingObject {
+            message: BoundedText::unchecked("missing catalog"),
+        })?;
+        let catalog =
+            CatalogModel::new(&document, catalog_key).ok_or(crate::ParseError::MissingObject {
+                message: BoundedText::unchecked("missing catalog model"),
+            })?;
+        let metadata = super::MetadataModel::new(
+            &document,
+            catalog.metadata,
+            Some(&ValidationFlavour::new(
+                "pdfa",
+                std::num::NonZeroU32::MIN,
+                "b",
+            )?),
+        )
+        .ok_or(crate::ParseError::MissingObject {
+            message: BoundedText::unchecked("missing metadata model"),
+        })?;
+
+        assert_eq!(
+            metadata.property(&PropertyName::new("containsUndefinedFields")?)?,
+            ModelValue::Bool(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_reject_undefined_xmp_fields_for_current_metadata() -> crate::Result<()> {
+        let mut document = Parser::default().parse(Cursor::new(phase22_xmp_metadata_pdf()))?;
+        let xmp = super::parse_document_xmp(&document, &ResourceLimits::default(), false)?;
+        document.parse_facts.extend(xmp.parse_facts);
+
+        let metadata_key =
+            super::catalog_metadata_key(&document).ok_or(crate::ParseError::MissingObject {
+                message: BoundedText::unchecked("missing metadata key"),
+            })?;
+        document.parse_facts.push(ParseFact::Xmp {
+            object: metadata_key,
+            fact: XmpFact::RdfProperty {
+                namespace_uri: BoundedText::unchecked("https://example.test/undeclared/"),
+                prefix: Identifier::unchecked("bad"),
+                name: Identifier::unchecked("namespaceURI"),
+                value: Some(BoundedText::unchecked("inside catalog metadata")),
+                array_kind: None,
+                xml_lang: None,
+            },
+        });
+
+        let catalog_key = document.catalog.ok_or(crate::ParseError::MissingObject {
+            message: BoundedText::unchecked("missing catalog"),
+        })?;
+        let catalog =
+            CatalogModel::new(&document, catalog_key).ok_or(crate::ParseError::MissingObject {
+                message: BoundedText::unchecked("missing catalog model"),
+            })?;
+        let metadata = super::MetadataModel::new(
+            &document,
+            catalog.metadata,
+            Some(&ValidationFlavour::new(
+                "pdfa",
+                std::num::NonZeroU32::MIN,
+                "b",
+            )?),
+        )
+        .ok_or(crate::ParseError::MissingObject {
+            message: BoundedText::unchecked("missing metadata model"),
+        })?;
+
+        assert_eq!(
+            metadata.property(&PropertyName::new("containsUndefinedFields")?)?,
+            ModelValue::Bool(true)
+        );
+        assert_eq!(
+            metadata.property(&PropertyName::new("isDefinedInMainPackage")?)?,
+            ModelValue::Bool(false)
+        );
+        assert_eq!(
+            metadata.property(&PropertyName::new("namespaceURIPrefix")?)?,
+            ModelValue::Null
+        );
         Ok(())
     }
 

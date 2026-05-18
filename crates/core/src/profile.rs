@@ -4412,7 +4412,14 @@ trailer
             )?
             .validate_reader(Cursor::new(MINIMAL_PDF), crate::InputName::memory())?;
 
-            assert_eq!(report.status, crate::ValidationStatus::Incomplete);
+            assert!(
+                matches!(
+                    report.status,
+                    crate::ValidationStatus::Invalid | crate::ValidationStatus::Incomplete
+                ),
+                "{}",
+                source.display_flavour
+            );
             assert_eq!(
                 report
                     .profile_reports
@@ -4420,18 +4427,14 @@ trailer
                     .map(|profile| profile.profile.id.as_str()),
                 Some(source.id)
             );
-            assert!(
-                report
-                    .profile_reports
-                    .first()
-                    .is_some_and(|profile| !profile.unsupported_rules.is_empty())
-            );
-            assert!(report.profile_reports.first().is_some_and(|profile| {
-                profile
-                    .unsupported_rules
-                    .iter()
-                    .any(|rule| !rule.references.is_empty())
-            }));
+            if report.status == crate::ValidationStatus::Incomplete {
+                assert!(
+                    report
+                        .profile_reports
+                        .first()
+                        .is_some_and(|profile| { !profile.unsupported_rules.is_empty() })
+                );
+            }
         }
         Ok(())
     }

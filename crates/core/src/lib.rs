@@ -2032,6 +2032,35 @@ pub enum XmpFact {
         #[serde(skip_serializing_if = "Option::is_none")]
         conformance_prefix: Option<Identifier>,
     },
+    /// XMP packet processing-instruction metadata.
+    PacketHeader {
+        /// `xpacket` bytes attribute when present.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bytes: Option<BoundedText>,
+        /// `xpacket` encoding attribute when present.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encoding: Option<BoundedText>,
+        /// Actual XML input encoding observed by the parser.
+        actual_encoding: Identifier,
+    },
+    /// Bounded RDF property extracted from the XMP packet.
+    RdfProperty {
+        /// Namespace URI.
+        namespace_uri: BoundedText,
+        /// Namespace prefix used in the packet.
+        prefix: Identifier,
+        /// Property name without prefix.
+        name: Identifier,
+        /// Bounded text value when the property has scalar text.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<BoundedText>,
+        /// RDF array container kind when the value came from an array item.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        array_kind: Option<Identifier>,
+        /// `xml:lang` qualifier when present.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        xml_lang: Option<BoundedText>,
+    },
     /// Duplicate identification property was encountered.
     DuplicateClaim {
         /// Source namespace URI.
@@ -3616,6 +3645,32 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
             rev.as_ref().map_or("", BoundedText::as_str),
             rev_prefix.as_ref().map_or("", Identifier::as_str),
             conformance_prefix.as_ref().map_or("", Identifier::as_str)
+        ),
+        XmpFact::PacketHeader {
+            bytes,
+            encoding,
+            actual_encoding,
+        } => format!(
+            "packetHeader bytes={} encoding={} actualEncoding={}",
+            bytes.as_ref().map_or("", BoundedText::as_str),
+            encoding.as_ref().map_or("", BoundedText::as_str),
+            actual_encoding.as_str()
+        ),
+        XmpFact::RdfProperty {
+            namespace_uri,
+            prefix,
+            name,
+            value,
+            array_kind,
+            xml_lang,
+        } => format!(
+            "rdfProperty namespaceUri={} prefix={} name={} value={} arrayKind={} xmlLang={}",
+            namespace_uri.as_str(),
+            prefix.as_str(),
+            name.as_str(),
+            value.as_ref().map_or("", BoundedText::as_str),
+            array_kind.as_ref().map_or("", Identifier::as_str),
+            xml_lang.as_ref().map_or("", BoundedText::as_str)
         ),
         XmpFact::DuplicateClaim {
             namespace_uri,
