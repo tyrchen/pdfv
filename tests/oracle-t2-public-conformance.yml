@@ -1,0 +1,58 @@
+schemaVersion: phase22-oracle-manifest-v1
+corpusRoot: .
+rows:
+  - id: t2-verapdf-cli-pass-a-pdfa-1b
+    path: vendors/veraPDF-apps/cli/src/test/resources/veraPDFtest-pass-a.pdf
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: b
+    expectedFeatures:
+      - parser
+      - profile
+      - metadata
+      - font
+    producer: veraPDF-test-fixture
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: t2-verapdf-parser-valid-document-pdfa-1b
+    path: vendors/veraPDF-parser/src/test/resources/org/verapdf/cos/filters/validDocument.pdf
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: b
+    expectedFeatures:
+      - parser
+      - stream
+      - profile
+    producer: veraPDF-test-fixture
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: t2-verapdf-feature-pages-pdfa-1b
+    path: vendors/veraPDF-validation/feature-reporting/src/test/resources/objects/pdf/Pages.pdf
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: b
+    expectedFeatures:
+      - parser
+      - page
+      - resource
+    producer: veraPDF-feature-fixture
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable

@@ -1,0 +1,217 @@
+{
+  "vendorPins": {
+    "veraPDF-library": "acfcc419a5df444e3e8b2a18266d01e249299957"
+  },
+  "profiles": [
+    {
+      "flavour": "pdfa-1a",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-1A.xml",
+      "totalRules": 135,
+      "loweredRules": 135,
+      "boundRules": 135,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-1b",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-1B.xml",
+      "totalRules": 129,
+      "loweredRules": 129,
+      "boundRules": 129,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-2a",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-2A.xml",
+      "totalRules": 153,
+      "loweredRules": 153,
+      "boundRules": 153,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-2b",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-2B.xml",
+      "totalRules": 144,
+      "loweredRules": 144,
+      "boundRules": 144,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-2u",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-2U.xml",
+      "totalRules": 146,
+      "loweredRules": 146,
+      "boundRules": 146,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-3a",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-3A.xml",
+      "totalRules": 155,
+      "loweredRules": 155,
+      "boundRules": 155,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-3b",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-3B.xml",
+      "totalRules": 146,
+      "loweredRules": 146,
+      "boundRules": 146,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-3u",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-3U.xml",
+      "totalRules": 148,
+      "loweredRules": 148,
+      "boundRules": 148,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-4",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-4.xml",
+      "totalRules": 109,
+      "loweredRules": 109,
+      "boundRules": 109,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-4e",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-4E.xml",
+      "totalRules": 109,
+      "loweredRules": 109,
+      "boundRules": 109,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfa-4f",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFA-4F.xml",
+      "totalRules": 109,
+      "loweredRules": 109,
+      "boundRules": 109,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfua-1",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFUA-1.xml",
+      "totalRules": 106,
+      "loweredRules": 106,
+      "boundRules": 106,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "pdfua-2-iso32005",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/PDFUA-2-ISO32005.xml",
+      "totalRules": 1727,
+      "loweredRules": 1727,
+      "boundRules": 1727,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "wtpdf-1-0-accessibility",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/WTPDF-1-0-Accessibility.xml",
+      "totalRules": 1723,
+      "loweredRules": 1723,
+      "boundRules": 1723,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    },
+    {
+      "flavour": "wtpdf-1-0-reuse",
+      "source": "vendors/veraPDF-library/core/src/main/resources/org/verapdf/pdfa/validation/WTPDF-1-0-Reuse.xml",
+      "totalRules": 1710,
+      "loweredRules": 1710,
+      "boundRules": 1710,
+      "unsupportedByReason": {
+        "missingLink": 0,
+        "missingObjectType": 0,
+        "missingProperty": 0,
+        "missingSemanticFamily": 0,
+        "unsupportedExpression": 0
+      }
+    }
+  ]
+}

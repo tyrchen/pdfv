@@ -30,6 +30,7 @@ quick-xml.workspace = true
 regex.workspace = true
 
 [dev-dependencies]
+config.workspace = true
 criterion.workspace = true
 flate2.workspace = true
 proptest.workspace = true

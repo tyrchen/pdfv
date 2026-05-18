@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "phase22-unsupported-clusters-v1",
+  "vendorPins": {
+    "veraPDF-library": "acfcc419a5df444e3e8b2a18266d01e249299957"
+  },
+  "summary": {
+    "totalRules": 0,
+    "totalClusters": 0,
+    "releaseBlockingRules": 0,
+    "releaseBlockingClusters": 0
+  },
+  "clusters": []
+}

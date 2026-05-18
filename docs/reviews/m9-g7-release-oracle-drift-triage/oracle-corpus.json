@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "phase22-oracle-corpus-v1",
+  "liveOracleEnabled": true,
+  "metadata": {
+    "pdfvVersion": "0.1.1",
+    "pdfvCommit": "ebeb4b53cbefb11ef8fe404e2873aeb6321cedc0",
+    "veraPdfVersion": "veraPDF 1.31.65",
+    "javaVersion": "openjdk version \"25.0.1\" 2025-10-21",
+    "os": "macos",
+    "arch": "aarch64",
+    "vendorPins": {
+      "veraPDF-apps": "c6f3531d81b203e0426e63d60a4080b91b219dd0",
+      "veraPDF-library": "acfcc419a5df444e3e8b2a18266d01e249299957",
+      "veraPDF-parser": "5164caf280a1c24b3d6335f87ee4319ca0443873",
+      "veraPDF-validation": "48b88fbeb8731c5489d9fc3f916bf91a22153508"
+    }
+  },
+  "summary": {
+    "totalRows": 3,
+    "matches": 0,
+    "mismatches": 3,
+    "classifiedMismatches": 3,
+    "unexpectedDrift": 0,
+    "falseCompliant": 0,
+    "releaseBlocking": 0,
+    "timeoutCount": 0,
+    "matchPercentageBasisPoints": 0,
+    "byTier": {
+      "t2PublicConformance": 3
+    },
+    "byProfileFamily": {
+      "pdfa": 3
+    },
+    "byClassification": {
+      "expectedDriftUnsupportedRule": 3
+    },
+    "byVeraPdfOutcome": {
+      "invalid": 1,
+      "valid": 2
+    },
+    "byPdfvOutcome": {
+      "incomplete": 3
+    }
+  },
+  "rows": [
+    {
+      "id": "t2-verapdf-cli-pass-a-pdfa-1b",
+      "path": "vendors/veraPDF-apps/cli/src/test/resources/veraPDFtest-pass-a.pdf",
+      "tier": "t2PublicConformance",
+      "profilePolicy": {
+        "kind": "explicit",
+        "flavour": {
+          "family": "pdfa",
+          "part": 1,
+          "conformance": "b"
+        }
+      },
+      "profileFamily": "pdfa",
+      "expectedFeatures": [
+        "parser",
+        "profile",
+        "metadata",
+        "font"
+      ],
+      "producer": "veraPDF-test-fixture",
+      "sizeBucket": "small",
+      "encryption": "unencrypted",
+      "tagging": "unknown",
+      "license": "redistributable",
+      "veraPdfOutcome": "valid",
+      "pdfvOutcome": "incomplete",
+      "veraPdfStatus": "completed",
+      "pdfvStatus": "completed",
+      "classification": "expectedDriftUnsupportedRule",
+      "falseCompliant": false,
+      "releaseBlocking": false,
+      "pdfvUnsupportedRules": 37,
+      "reason": "veraPDF Valid, pdfv Incomplete"
+    },
+    {
+      "id": "t2-verapdf-parser-valid-document-pdfa-1b",
+      "path": "vendors/veraPDF-parser/src/test/resources/org/verapdf/cos/filters/validDocument.pdf",
+      "tier": "t2PublicConformance",
+      "profilePolicy": {
+        "kind": "explicit",
+        "flavour": {
+          "family": "pdfa",
+          "part": 1,
+          "conformance": "b"
+        }
+      },
+      "profileFamily": "pdfa",
+      "expectedFeatures": [
+        "parser",
+        "stream",
+        "profile"
+      ],
+      "producer": "veraPDF-test-fixture",
+      "sizeBucket": "small",
+      "encryption": "unencrypted",
+      "tagging": "unknown",
+      "license": "redistributable",
+      "veraPdfOutcome": "valid",
+      "pdfvOutcome": "incomplete",
+      "veraPdfStatus": "completed",
+      "pdfvStatus": "completed",
+      "classification": "expectedDriftUnsupportedRule",
+      "falseCompliant": false,
+      "releaseBlocking": false,
+      "pdfvUnsupportedRules": 42,
+      "reason": "veraPDF Valid, pdfv Incomplete"
+    },
+    {
+      "id": "t2-verapdf-feature-pages-pdfa-1b",
+      "path": "vendors/veraPDF-validation/feature-reporting/src/test/resources/objects/pdf/Pages.pdf",
+      "tier": "t2PublicConformance",
+      "profilePolicy": {
+        "kind": "explicit",
+        "flavour": {
+          "family": "pdfa",
+          "part": 1,
+          "conformance": "b"
+        }
+      },
+      "profileFamily": "pdfa",
+      "expectedFeatures": [
+        "parser",
+        "page",
+        "resource"
+      ],
+      "producer": "veraPDF-feature-fixture",
+      "sizeBucket": "small",
+      "encryption": "unencrypted",
+      "tagging": "unknown",
+      "license": "redistributable",
+      "veraPdfOutcome": "invalid",
+      "pdfvOutcome": "incomplete",
+      "veraPdfStatus": "completed",
+      "pdfvStatus": "completed",
+      "classification": "expectedDriftUnsupportedRule",
+      "falseCompliant": false,
+      "releaseBlocking": false,
+      "pdfvUnsupportedRules": 3,
+      "reason": "veraPDF Invalid, pdfv Incomplete"
+    }
+  ]
+}

@@ -17,6 +17,7 @@
 mod accessibility;
 mod content;
 mod generated_profiles;
+mod oracle;
 mod parity;
 mod parser;
 mod profile;
@@ -32,6 +33,13 @@ use std::{
     time::Duration,
 };
 
+pub use oracle::{
+    CorpusLicenseClass, CorpusPath, CorpusRowId, CorpusTier, EncryptionClass, OracleCorpusManifest,
+    OracleCorpusReport, OracleCorpusResultRow, OracleCorpusRow, OracleCorpusSummary,
+    OracleDriftClassification, OracleDriftReport, OracleExecutionStatus, OracleProfilePolicy,
+    OracleReportMetadata, OracleRowObservation, SemanticFamilyName, SizeBucket, TaggingClass,
+    classify_oracle_observation, oracle_drift_report,
+};
 pub use parity::{
     CorpusAgreement, CorpusAgreementReport, CorpusAgreementRow, CorpusAgreementSummary,
     CorpusFixtureSource, CorpusOutcome, corpus_agreement_report,

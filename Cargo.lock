@@ -810,6 +810,7 @@ dependencies = [
  "aes",
  "cbc",
  "cipher",
+ "config",
  "criterion",
  "flate2",
  "md-5",

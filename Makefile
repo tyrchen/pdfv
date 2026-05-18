@@ -54,4 +54,10 @@ parity-unsupported-clusters:
 
 parity-burn-down: parity-unsupported-clusters
 
-.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down
+oracle-corpus:
+	@cargo run -p pdfv-core --example oracle_corpus
+
+oracle-corpus-summary:
+	@cargo run -p pdfv-core --example oracle_corpus_summary
+
+.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down oracle-corpus oracle-corpus-summary

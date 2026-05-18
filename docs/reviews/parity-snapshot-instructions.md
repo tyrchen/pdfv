@@ -10,6 +10,11 @@ make parity-model-schema
 make parity-corpus
 make parity-unsupported-clusters
 make parity-burn-down
+PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
+  PDFV_ORACLE_CORPUS_MANIFEST=tests/oracle-t2-public-conformance.yml \
+  PDFV_ORACLE_CORPUS_ROOT=. \
+  make oracle-corpus
+make oracle-corpus-summary
 ```
 
 Milestone snapshots may be copied into `docs/reviews/` after the milestone gates pass. A snapshot must include the veraPDF vendor pin from the JSON report and the implementation phase that produced it.
@@ -25,3 +30,11 @@ If `PDFV_PARITY_BASELINE_DIR` points to a previous snapshot directory that conta
 `unsupported-rule-clusters.json`, the burn-down report includes previous counts and deltas.
 
 `make parity-corpus` runs only generated and checked-in semantic rows and does not require Java. Live veraPDF corpus checks remain opt-in through `PDFV_VERAPDF_CORPUS_DIR` and `make test-conformance-verapdf`.
+
+`make oracle-corpus` runs the release-oracle manifest named by
+`PDFV_ORACLE_CORPUS_MANIFEST`. The manifest paths are resolved under
+`PDFV_ORACLE_CORPUS_ROOT` when set; otherwise they are resolved under the
+manifest's `corpusRoot`. The target writes `oracle-corpus.json`,
+`oracle-summary.json`, and `oracle-drift.json` under `target/parity/`.
+`make oracle-corpus-summary` rebuilds summary and drift artifacts from an
+existing `oracle-corpus.json`.
