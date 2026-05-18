@@ -4555,18 +4555,18 @@ trailer
     #[test]
     fn test_should_report_imported_derived_property_as_unsupported() -> crate::Result<()> {
         let rule = super::Rule {
-            id: crate::RuleId(crate::Identifier::new("derived-font-name")?),
+            id: crate::RuleId(crate::Identifier::new("derived-font-checksum")?),
             object_type: super::ObjectTypeName::new("font")?,
             deferred: false,
             tags: Vec::new(),
-            description: crate::BoundedText::new("derived font name", 64)?,
+            description: crate::BoundedText::new("derived font checksum", 64)?,
             test: super::RuleExpr::Binary {
                 op: super::BinaryOp::Eq,
-                left: Box::new(super::property_expr("fontName")?),
+                left: Box::new(super::property_expr("fontProgramChecksum")?),
                 right: Box::new(super::RuleExpr::Null),
             },
             error: super::ErrorTemplate {
-                message: crate::BoundedText::new("derived font name", 64)?,
+                message: crate::BoundedText::new("derived font checksum", 64)?,
             },
             references: Vec::new(),
         };

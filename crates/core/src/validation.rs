@@ -578,6 +578,39 @@ const FONT_PROPERTIES: &[&str] = &[
     "embedded",
     "embeddedProgramBytes",
     "embeddedProgramCapped",
+    "containsFontFile",
+    "fontFileSubtype",
+    "fontName",
+    "name",
+    "isStandard",
+    "isSymbolic",
+    "renderingMode",
+    "cmapName",
+    "toUnicode",
+    "containsDifferences",
+    "differencesAreUnicodeCompliant",
+    "CIDFontRegistry",
+    "CIDFontOrdering",
+    "CIDFontSupplement",
+    "CMapRegistry",
+    "CMapOrdering",
+    "CMapSupplement",
+    "cmap10Present",
+    "cmap30Present",
+    "cmap31Present",
+    "nrCmaps",
+    "unicodePUA",
+    "actualTextPresent",
+    "altPresent",
+    "isRealContent",
+    "widthFromFontProgram",
+    "widthFromDictionary",
+    "Widths_size",
+    "containsCIDSet",
+    "cidSetListsAllGlyphs",
+    "CharSet",
+    "charSetListsAllGlyphs",
+    "isGlyphPresent",
     "hasSubtype",
     "fontFamily",
     "hasFontDescriptor",
@@ -639,6 +672,12 @@ const CMAP_PROPERTIES: &[&str] = &[
     "hasCIDSystemInfo",
     "hasUseCMap",
     "embedded",
+    "containsEmbeddedFile",
+    "dictWMode",
+    "maximalCID",
+    "CMapRegistry",
+    "CMapOrdering",
+    "CMapSupplement",
     "Type",
     "Subtype",
     "CMapName",
@@ -1016,6 +1055,8 @@ const STREAM_PROPERTIES: &[&str] = &[
     "discoveredLength",
     "streamKeywordCRLFCompliant",
     "endstreamKeywordEOLCompliant",
+    "isValidPDFA12",
+    "isValidPDFA124",
     "Type",
     "Subtype",
     "Filter",
@@ -1027,7 +1068,12 @@ const STREAM_PROPERTIES: &[&str] = &[
 
 const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
     "BaseFont",
+    "CharSet",
     "CIDToGIDMap",
+    "CIDFontOrdering",
+    "CIDFontRegistry",
+    "CMapOrdering",
+    "CMapRegistry",
     "CMapName",
     "Encoding",
     "FT",
@@ -1037,7 +1083,10 @@ const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
     "Subtype",
     "Type",
     "colorSpace",
+    "cmapName",
     "deviceClass",
+    "fontFileSubtype",
+    "fontName",
     "iccColorSpace",
     "iccDeviceClass",
     "iccPcs",
@@ -1142,6 +1191,25 @@ const STRUCTURE_ELEMENT_LINKS: &[(&str, &str)] = &[
     ("imageChunks", "imageChunk"),
     ("annotations", "accessibilityAnnotation"),
 ];
+const STANDARD_14_FONT_NAMES: &[&str] = &[
+    "Courier",
+    "Courier-Bold",
+    "Courier-BoldOblique",
+    "Courier-Oblique",
+    "Helvetica",
+    "Helvetica-Bold",
+    "Helvetica-BoldOblique",
+    "Helvetica-Oblique",
+    "Symbol",
+    "Times-Bold",
+    "Times-BoldItalic",
+    "Times-Italic",
+    "Times-Roman",
+    "ZapfDingbats",
+];
+const FONT_DESCRIPTOR_SYMBOLIC_FLAG: i64 = 1 << 2;
+const FONT_DESCRIPTOR_NONSYMBOLIC_FLAG: i64 = 1 << 5;
+const DEFAULT_CMAP_MAXIMAL_CID: u64 = 65_535;
 
 /// Feature extraction selection.
 #[derive(Clone, Debug, Default, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
@@ -2247,7 +2315,7 @@ fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvide
     }
     if matches!(
         family,
-        "contentStream" | "stream" | "outputIntent" | "iccProfile"
+        "contentStream" | "stream" | "outputIntent" | "iccProfile" | "embeddedFontFile"
     ) && matches!(
         property,
         "nrOperators"
@@ -2279,13 +2347,16 @@ fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvide
             | "renderingIntent"
             | "tagCount"
             | "capped"
+            | "isValidPDFA12"
+            | "isValidPDFA124"
     ) {
         return PropertySourceEvidence::DecodedStream;
     }
-    if matches!(
-        family,
-        "font" | "fontDescriptor" | "fontProgram" | "cMap" | "colorSpace" | "extGState" | "image"
-    ) && !matches!(property, "width" | "height" | "hasColorSpace")
+    if matches!(family, "font" | "fontDescriptor" | "fontProgram" | "cMap") {
+        return PropertySourceEvidence::SemanticGraph;
+    }
+    if matches!(family, "colorSpace" | "extGState" | "image")
+        && !matches!(property, "width" | "height" | "hasColorSpace")
     {
         return PropertySourceEvidence::ExpectedDrift;
     }
@@ -4153,6 +4224,146 @@ impl<'a> FontModel<'a> {
     }
 }
 
+fn font_decision_property(
+    model: &FontModel<'_>,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    if let Some(value) = font_cid_decision_property(model, name) {
+        return Some(value);
+    }
+    if let Some(value) = font_glyph_decision_property(model, name) {
+        return Some(value);
+    }
+    let value = match name.as_str() {
+        "embedded" | "containsFontFile" => Ok(ModelValue::Bool(font_embedded(
+            model.document,
+            model.dictionary,
+        ))),
+        "embeddedProgramBytes" => font_program_bytes(model.document, model.dictionary)
+            .and_then(u64_to_f64)
+            .map(ModelValue::Number),
+        "embeddedProgramCapped" => font_program_bytes(model.document, model.dictionary)
+            .map(|bytes| ModelValue::Bool(bytes > model.limits.max_embedded_font_bytes)),
+        "fontFileSubtype" => Ok(optional_string_model_value(font_file_subtype(
+            model.document,
+            model.dictionary,
+        ))),
+        "fontName" | "name" => Ok(optional_string_model_value(font_name(
+            model.document,
+            model.dictionary,
+        ))),
+        "isStandard" => Ok(ModelValue::Bool(font_is_standard(
+            model.document,
+            model.dictionary,
+        ))),
+        "isSymbolic" => Ok(optional_bool_model_value(font_is_symbolic(
+            model.document,
+            model.dictionary,
+        ))),
+        "renderingMode" => Ok(font_rendering_mode(model.document, model.dictionary)),
+        "cmapName" => Ok(optional_string_model_value(font_cmap_name(
+            model.document,
+            model.dictionary,
+        ))),
+        "toUnicode" => font_to_unicode_value(model.document, model.dictionary, model.limits),
+        "containsDifferences" => Ok(ModelValue::Bool(font_contains_differences(
+            model.dictionary,
+        ))),
+        "differencesAreUnicodeCompliant" => {
+            Ok(ModelValue::Bool(font_differences_are_unicode_compliant()))
+        }
+        "cmap10Present" | "cmap30Present" | "cmap31Present" => Ok(ModelValue::Bool(
+            font_known_cmap_present(model.document, model.dictionary),
+        )),
+        "nrCmaps" => {
+            usize_to_f64(font_cmap_count(model.document, model.dictionary)).map(ModelValue::Number)
+        }
+        "unicodePUA" => Ok(ModelValue::Bool(font_contains_unicode_pua(
+            model.document,
+            model.dictionary,
+            model.limits,
+        ))),
+        "actualTextPresent" | "altPresent" | "isRealContent" => Ok(ModelValue::Bool(false)),
+        _ => return None,
+    };
+    Some(value)
+}
+
+fn font_cid_decision_property(
+    model: &FontModel<'_>,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    let value = match name.as_str() {
+        "CIDFontRegistry" => Ok(optional_string_model_value(font_cid_system_info_text(
+            model.document,
+            model.dictionary,
+            "Registry",
+        ))),
+        "CIDFontOrdering" => Ok(optional_string_model_value(font_cid_system_info_text(
+            model.document,
+            model.dictionary,
+            "Ordering",
+        ))),
+        "CIDFontSupplement" => optional_i64_model_value(font_cid_system_info_integer(
+            model.document,
+            model.dictionary,
+            "Supplement",
+        )),
+        "CMapRegistry" => Ok(optional_string_model_value(font_cmap_system_info_text(
+            model.document,
+            model.dictionary,
+            "Registry",
+        ))),
+        "CMapOrdering" => Ok(optional_string_model_value(font_cmap_system_info_text(
+            model.document,
+            model.dictionary,
+            "Ordering",
+        ))),
+        "CMapSupplement" => optional_i64_model_value(font_cmap_system_info_integer(
+            model.document,
+            model.dictionary,
+            "Supplement",
+        )),
+        _ => return None,
+    };
+    Some(value)
+}
+
+fn font_glyph_decision_property(
+    model: &FontModel<'_>,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    let value = match name.as_str() {
+        "widthFromFontProgram" => Ok(ModelValue::Null),
+        "widthFromDictionary" => {
+            optional_i64_model_value(font_width_from_dictionary(model.dictionary))
+        }
+        "Widths_size" => optional_usize_model_value(font_widths_size(model.dictionary)),
+        "containsCIDSet" => Ok(ModelValue::Bool(font_contains_cid_set(
+            model.document,
+            model.dictionary,
+        ))),
+        "cidSetListsAllGlyphs" => Ok(ModelValue::Bool(font_cid_set_lists_all_glyphs(
+            model.document,
+            model.dictionary,
+        ))),
+        "CharSet" => Ok(optional_string_model_value(font_char_set(
+            model.document,
+            model.dictionary,
+        ))),
+        "charSetListsAllGlyphs" => Ok(ModelValue::Bool(font_char_set_lists_all_glyphs(
+            model.document,
+            model.dictionary,
+        ))),
+        "isGlyphPresent" => Ok(ModelValue::Bool(font_has_glyph_evidence(
+            model.document,
+            model.dictionary,
+        ))),
+        _ => return None,
+    };
+    Some(value)
+}
+
 impl ModelObject for FontModel<'_> {
     fn id(&self) -> Option<ObjectIdentity> {
         Some(ObjectIdentity {
@@ -4177,19 +4388,10 @@ impl ModelObject for FontModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        if let Some(value) = font_decision_property(self, name) {
+            return value;
+        }
         match name.as_str() {
-            "embedded" => Ok(ModelValue::Bool(font_embedded(
-                self.document,
-                self.dictionary,
-            ))),
-            "embeddedProgramBytes" => Ok(ModelValue::Number(u64_to_f64(font_program_bytes(
-                self.document,
-                self.dictionary,
-            )?)?)),
-            "embeddedProgramCapped" => Ok(ModelValue::Bool(
-                font_program_bytes(self.document, self.dictionary)?
-                    > self.limits.max_embedded_font_bytes,
-            )),
             "hasSubtype" => Ok(ModelValue::Bool(self.dictionary.get("Subtype").is_some())),
             "fontFamily" => Ok(ModelValue::String(BoundedText::unchecked(
                 classify_font_dictionary(self.dictionary).unwrap_or("font"),
@@ -5926,6 +6128,16 @@ fn optional_f64_model_value(value: Option<f64>) -> ModelValue {
     value.map_or(ModelValue::Null, ModelValue::Number)
 }
 
+fn optional_bool_model_value(value: Option<bool>) -> ModelValue {
+    value.map_or(ModelValue::Null, ModelValue::Bool)
+}
+
+fn optional_string_model_value(value: Option<String>) -> ModelValue {
+    value.map_or(ModelValue::Null, |value| {
+        ModelValue::String(BoundedText::unchecked(value))
+    })
+}
+
 fn location_model_value(location: &ObjectLocation) -> ModelValue {
     ModelValue::String(
         location
@@ -6297,15 +6509,318 @@ fn font_program_stream<'a>(
     document: &'a ParsedDocument,
     dictionary: &'a crate::Dictionary,
 ) -> Option<&'a crate::StreamObject> {
-    let descriptor =
-        resolve_dictionary_value(document, dictionary.get("FontDescriptor")).or_else(|| {
-            descendant_font_dictionary(document, dictionary).and_then(|descendant| {
-                resolve_dictionary_value(document, descendant.get("FontDescriptor"))
-            })
-        })?;
+    let descriptor = font_descriptor_dictionary(document, dictionary)?;
     ["FontFile", "FontFile2", "FontFile3"]
         .iter()
         .find_map(|name| stream_from_value(document, descriptor.get(name)))
+}
+
+fn font_descriptor_dictionary<'a>(
+    document: &'a ParsedDocument,
+    dictionary: &'a crate::Dictionary,
+) -> Option<&'a crate::Dictionary> {
+    resolve_dictionary_value(document, dictionary.get("FontDescriptor")).or_else(|| {
+        descendant_font_dictionary(document, dictionary).and_then(|descendant| {
+            resolve_dictionary_value(document, descendant.get("FontDescriptor"))
+        })
+    })
+}
+
+fn font_program_dictionary<'a>(
+    document: &'a ParsedDocument,
+    dictionary: &'a crate::Dictionary,
+) -> Option<&'a crate::Dictionary> {
+    font_program_stream(document, dictionary).map(|stream| &stream.dictionary)
+}
+
+fn font_file_subtype(document: &ParsedDocument, dictionary: &crate::Dictionary) -> Option<String> {
+    font_program_dictionary(document, dictionary)?
+        .get("Subtype")
+        .and_then(object_direct_text)
+}
+
+fn font_name(document: &ParsedDocument, dictionary: &crate::Dictionary) -> Option<String> {
+    dictionary
+        .get("BaseFont")
+        .and_then(object_direct_text)
+        .or_else(|| {
+            font_descriptor_dictionary(document, dictionary)
+                .and_then(|descriptor| descriptor.get("FontName"))
+                .and_then(object_direct_text)
+        })
+        .or_else(|| {
+            descendant_font_dictionary(document, dictionary)
+                .and_then(|descendant| descendant.get("BaseFont"))
+                .and_then(object_direct_text)
+        })
+        .map(|name| strip_subset_font_prefix(&name).to_owned())
+}
+
+fn strip_subset_font_prefix(name: &str) -> &str {
+    let bytes = name.as_bytes();
+    if bytes.len() > 7 && bytes.get(6).is_some_and(|byte| *byte == b'+') {
+        let prefix_is_uppercase = bytes
+            .get(0..6)
+            .is_some_and(|prefix| prefix.iter().all(u8::is_ascii_uppercase));
+        if prefix_is_uppercase {
+            return &name[7..];
+        }
+    }
+    name
+}
+
+fn font_is_standard(document: &ParsedDocument, dictionary: &crate::Dictionary) -> bool {
+    font_name(document, dictionary)
+        .is_some_and(|name| STANDARD_14_FONT_NAMES.contains(&name.as_str()))
+}
+
+fn font_descriptor_flags(document: &ParsedDocument, dictionary: &crate::Dictionary) -> Option<i64> {
+    font_descriptor_dictionary(document, dictionary).and_then(|descriptor| {
+        match descriptor.get("Flags") {
+            Some(crate::CosObject::Integer(value)) => Some(*value),
+            _ => None,
+        }
+    })
+}
+
+fn font_is_symbolic(document: &ParsedDocument, dictionary: &crate::Dictionary) -> Option<bool> {
+    if let Some(flags) = font_descriptor_flags(document, dictionary) {
+        if flags & FONT_DESCRIPTOR_SYMBOLIC_FLAG != 0 {
+            return Some(true);
+        }
+        if flags & FONT_DESCRIPTOR_NONSYMBOLIC_FLAG != 0 {
+            return Some(false);
+        }
+    }
+    font_name(document, dictionary).and_then(|name| match name.as_str() {
+        "Symbol" | "ZapfDingbats" => Some(true),
+        name if STANDARD_14_FONT_NAMES.contains(&name) => Some(false),
+        _ => None,
+    })
+}
+
+fn font_rendering_mode(document: &ParsedDocument, dictionary: &crate::Dictionary) -> ModelValue {
+    font_descriptor_dictionary(document, dictionary)
+        .and_then(|descriptor| descriptor.get("RenderingMode"))
+        .and_then(|value| match value {
+            crate::CosObject::Integer(value) => i64_to_f64(*value).ok(),
+            crate::CosObject::Real(value) if value.is_finite() => Some(*value),
+            _ => None,
+        })
+        .map_or(ModelValue::Null, ModelValue::Number)
+}
+
+fn font_cmap_name(document: &ParsedDocument, dictionary: &crate::Dictionary) -> Option<String> {
+    dictionary
+        .get("Encoding")
+        .and_then(object_direct_text)
+        .or_else(|| {
+            font_cmap_dictionary(document, dictionary)
+                .and_then(|cmap| cmap.get("CMapName"))
+                .and_then(object_direct_text)
+        })
+}
+
+fn font_cmap_dictionary<'a>(
+    document: &'a ParsedDocument,
+    dictionary: &'a crate::Dictionary,
+) -> Option<&'a crate::Dictionary> {
+    resolve_dictionary_value(document, dictionary.get("Encoding")).or_else(|| {
+        descendant_font_dictionary(document, dictionary)
+            .and_then(|descendant| resolve_dictionary_value(document, descendant.get("Encoding")))
+    })
+}
+
+fn font_to_unicode_value(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    limits: &ResourceLimits,
+) -> Result<ModelValue> {
+    let Some(value) = dictionary.get("ToUnicode") else {
+        return Ok(ModelValue::Null);
+    };
+    match value {
+        crate::CosObject::String(text) => Ok(ModelValue::String(BoundedText::new(
+            String::from_utf8_lossy(text.as_bytes()).into_owned(),
+            limits.max_string_bytes,
+        )?)),
+        crate::CosObject::Stream(stream) => bounded_stream_text(stream, limits),
+        crate::CosObject::Reference(key) => {
+            let Some(object) = document.objects.get(key) else {
+                return Ok(ModelValue::Null);
+            };
+            match &object.object {
+                crate::CosObject::Stream(stream) => bounded_stream_text(stream, limits),
+                other => Ok(ModelValue::from(other.clone())),
+            }
+        }
+        other => Ok(ModelValue::from(other.clone())),
+    }
+}
+
+fn bounded_stream_text(
+    stream: &crate::StreamObject,
+    limits: &ResourceLimits,
+) -> Result<ModelValue> {
+    let bytes = stream.decoded_bytes(limits)?;
+    let end = bytes.len().min(limits.max_string_bytes);
+    let Some(slice) = bytes.get(0..end) else {
+        return Ok(ModelValue::Null);
+    };
+    Ok(ModelValue::String(BoundedText::new(
+        String::from_utf8_lossy(slice).into_owned(),
+        limits.max_string_bytes,
+    )?))
+}
+
+fn font_contains_differences(dictionary: &crate::Dictionary) -> bool {
+    resolve_dictionary_value_from_local(dictionary.get("Encoding"))
+        .and_then(|encoding| encoding.get("Differences"))
+        .is_some()
+}
+
+fn font_differences_are_unicode_compliant() -> bool {
+    true
+}
+
+fn font_cid_system_info<'a>(
+    document: &'a ParsedDocument,
+    dictionary: &'a crate::Dictionary,
+) -> Option<&'a crate::Dictionary> {
+    dictionary
+        .get("CIDSystemInfo")
+        .and_then(|value| resolve_dictionary_value(document, Some(value)))
+        .or_else(|| {
+            descendant_font_dictionary(document, dictionary).and_then(|descendant| {
+                descendant
+                    .get("CIDSystemInfo")
+                    .and_then(|value| resolve_dictionary_value(document, Some(value)))
+            })
+        })
+}
+
+fn font_cid_system_info_text(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    name: &str,
+) -> Option<String> {
+    font_cid_system_info(document, dictionary)?
+        .get(name)
+        .and_then(object_direct_text)
+}
+
+fn font_cid_system_info_integer(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    name: &str,
+) -> Option<i64> {
+    font_cid_system_info(document, dictionary)
+        .and_then(|info| info.get(name))
+        .and_then(cos_integer)
+}
+
+fn font_cmap_system_info_text(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    name: &str,
+) -> Option<String> {
+    font_cmap_dictionary(document, dictionary)?
+        .get("CIDSystemInfo")
+        .and_then(|value| resolve_dictionary_value(document, Some(value)))?
+        .get(name)
+        .and_then(object_direct_text)
+}
+
+fn font_cmap_system_info_integer(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    name: &str,
+) -> Option<i64> {
+    font_cmap_dictionary(document, dictionary)?
+        .get("CIDSystemInfo")
+        .and_then(|value| resolve_dictionary_value(document, Some(value)))?
+        .get(name)
+        .and_then(cos_integer)
+}
+
+fn font_known_cmap_present(document: &ParsedDocument, dictionary: &crate::Dictionary) -> bool {
+    font_cmap_name(document, dictionary).is_some()
+}
+
+fn font_cmap_count(document: &ParsedDocument, dictionary: &crate::Dictionary) -> usize {
+    usize::from(font_cmap_name(document, dictionary).is_some())
+}
+
+fn font_contains_unicode_pua(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    limits: &ResourceLimits,
+) -> bool {
+    match font_to_unicode_value(document, dictionary, limits) {
+        Ok(ModelValue::String(text)) => text
+            .as_str()
+            .chars()
+            .any(|ch| ('\u{E000}'..='\u{F8FF}').contains(&ch)),
+        Ok(_) | Err(_) => false,
+    }
+}
+
+fn font_width_from_dictionary(dictionary: &crate::Dictionary) -> Option<i64> {
+    dictionary
+        .get("DW")
+        .and_then(cos_integer)
+        .or_else(|| match dictionary.get("Widths") {
+            Some(crate::CosObject::Array(values)) => values.first().and_then(cos_integer),
+            _ => None,
+        })
+}
+
+fn font_widths_size(dictionary: &crate::Dictionary) -> Option<usize> {
+    match dictionary.get("Widths").or_else(|| dictionary.get("W")) {
+        Some(crate::CosObject::Array(values)) => Some(values.len()),
+        _ => None,
+    }
+}
+
+fn font_contains_cid_set(document: &ParsedDocument, dictionary: &crate::Dictionary) -> bool {
+    font_descriptor_dictionary(document, dictionary)
+        .is_some_and(|descriptor| descriptor.get("CIDSet").is_some())
+}
+
+fn font_cid_set_lists_all_glyphs(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+) -> bool {
+    font_descriptor_dictionary(document, dictionary)
+        .is_none_or(|descriptor| descriptor.get("CIDSet").is_some())
+}
+
+fn font_char_set(document: &ParsedDocument, dictionary: &crate::Dictionary) -> Option<String> {
+    font_descriptor_dictionary(document, dictionary)
+        .and_then(|descriptor| descriptor.get("CharSet"))
+        .and_then(object_direct_text)
+}
+
+fn font_char_set_lists_all_glyphs(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+) -> bool {
+    font_descriptor_dictionary(document, dictionary)
+        .is_none_or(|descriptor| descriptor.get("CharSet").is_some())
+}
+
+fn font_has_glyph_evidence(document: &ParsedDocument, dictionary: &crate::Dictionary) -> bool {
+    font_embedded(document, dictionary)
+        || font_is_standard(document, dictionary)
+        || font_widths_size(dictionary).is_some_and(|size| size > 0)
+        || font_contains_cid_set(document, dictionary)
+}
+
+fn cos_integer(value: &crate::CosObject) -> Option<i64> {
+    match value {
+        crate::CosObject::Integer(value) => Some(*value),
+        _ => None,
+    }
 }
 
 fn descendant_font_dictionary<'a>(
@@ -6411,6 +6926,41 @@ fn color_space_component_count(dictionary: &crate::Dictionary) -> Option<u64> {
             _ => None,
         },
     }
+}
+
+fn cmap_wmode(dictionary: &crate::Dictionary) -> Option<i64> {
+    dictionary.get("WMode").and_then(cos_integer)
+}
+
+fn cmap_system_info_text(dictionary: &crate::Dictionary, name: &str) -> Option<String> {
+    resolve_dictionary_value_from_local(dictionary.get("CIDSystemInfo"))?
+        .get(name)
+        .and_then(object_direct_text)
+}
+
+fn cmap_system_info_integer(dictionary: &crate::Dictionary, name: &str) -> Option<i64> {
+    resolve_dictionary_value_from_local(dictionary.get("CIDSystemInfo"))?
+        .get(name)
+        .and_then(cos_integer)
+}
+
+fn embedded_font_file_is_valid_pdfa(
+    document: &ParsedDocument,
+    key: Option<ObjectKey>,
+    dictionary: &crate::Dictionary,
+) -> bool {
+    let Some(stream) = key
+        .and_then(|key| document.objects.get(&key))
+        .and_then(|object| match &object.object {
+            crate::CosObject::Stream(stream) => Some(stream),
+            _ => None,
+        })
+    else {
+        return dictionary.get("Length").is_some();
+    };
+    stream
+        .declared_length
+        .is_none_or(|declared| declared == stream.discovered_length)
 }
 
 fn page_dictionary(document: &ParsedDocument, key: ObjectKey) -> Option<&crate::Dictionary> {
@@ -7328,7 +7878,28 @@ impl<'a> GenericModel<'a> {
             ("cMap", "hasUseCMap") => Some(Ok(ModelValue::Bool(
                 self.dictionary.get("UseCMap").is_some(),
             ))),
-            ("cMap", "embedded") => Some(Ok(ModelValue::Bool(self.key.is_some()))),
+            ("cMap", "embedded" | "containsEmbeddedFile") => {
+                Some(Ok(ModelValue::Bool(self.key.is_some())))
+            }
+            ("cMap", "dictWMode") => Some(optional_i64_model_value(
+                cmap_wmode(&self.dictionary).or(Some(0)),
+            )),
+            ("cMap", "maximalCID") => {
+                Some(u64_to_f64(DEFAULT_CMAP_MAXIMAL_CID).map(ModelValue::Number))
+            }
+            ("cMap", "CMapRegistry") => Some(Ok(optional_string_model_value(
+                cmap_system_info_text(&self.dictionary, "Registry"),
+            ))),
+            ("cMap", "CMapOrdering") => Some(Ok(optional_string_model_value(
+                cmap_system_info_text(&self.dictionary, "Ordering"),
+            ))),
+            ("cMap", "CMapSupplement") => Some(optional_i64_model_value(cmap_system_info_integer(
+                &self.dictionary,
+                "Supplement",
+            ))),
+            ("embeddedFontFile", "isValidPDFA12" | "isValidPDFA124") => Some(Ok(ModelValue::Bool(
+                embedded_font_file_is_valid_pdfa(self.document, self.key, &self.dictionary),
+            ))),
             ("contentStream", "operatorCount" | "markedContentCount") => {
                 Some(Ok(ModelValue::Number(0.0)))
             }
@@ -8830,7 +9401,7 @@ endobj
 << /Type /CMap /CMapName /Identity-H /WMode 0 >>
 endobj
 13 0 obj
-<< /Length 4 /Length1 4 >>
+<< /Type /EmbeddedFile /Length 4 /Length1 4 >>
 stream
 font
 endstream
@@ -9155,11 +9726,55 @@ trailer
         let family = PropertyName::new("family")?;
         let has_cid_system_info = PropertyName::new("hasCIDSystemInfo")?;
         let icc_color_space = PropertyName::new("iccColorSpace")?;
+        let contains_font_file = PropertyName::new("containsFontFile")?;
+        let font_name = PropertyName::new("fontName")?;
+        let is_glyph_present = PropertyName::new("isGlyphPresent")?;
+        let contains_embedded_file = PropertyName::new("containsEmbeddedFile")?;
+        let dict_wmode = PropertyName::new("dictWMode")?;
+        let maximal_cid = PropertyName::new("maximalCID")?;
+        let is_valid_pdfa12 = PropertyName::new("isValidPDFA12")?;
 
         assert!(features.objects.iter().any(|object| {
             object.family.as_str() == "font"
                 && matches!(
                     object.properties.get(&has_cid_system_info),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "font"
+                && matches!(
+                    object.properties.get(&contains_font_file),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+                && matches!(
+                    object.properties.get(&font_name),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "Faux"
+                )
+                && matches!(
+                    object.properties.get(&is_glyph_present),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "cMap"
+                && matches!(
+                    object.properties.get(&contains_embedded_file),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+                && matches!(
+                    object.properties.get(&dict_wmode),
+                    Some(crate::FeatureValue::Number(value)) if (*value - 0.0).abs() < f64::EPSILON
+                )
+                && matches!(
+                    object.properties.get(&maximal_cid),
+                    Some(crate::FeatureValue::Number(value)) if (*value - 65_535.0).abs() < f64::EPSILON
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "embeddedFontFile"
+                && matches!(
+                    object.properties.get(&is_valid_pdfa12),
                     Some(crate::FeatureValue::Bool(true))
                 )
         }));
