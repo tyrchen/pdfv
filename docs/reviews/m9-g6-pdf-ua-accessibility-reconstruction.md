@@ -37,8 +37,8 @@ for this milestone:
 
 G6 removed every remaining PDF/UA and WTPDF accessibility unsupported-rule
 cluster. The implementation now binds structure-root child-type facts,
-structure-element tag/language/heading/table/list/note/signature properties,
-annotation target facts, and previously missing table/list semantic guard
+structure-element namespace, tag, language, heading, table, header, list, note,
+signature, and annotation-target properties, plus table/list semantic guard
 properties. The accessibility graph remains bounded, lazy, and report-safe:
 raw page text and alternate text are not dumped into feature reports.
 
@@ -58,10 +58,12 @@ PDF/A coverage remains fully bound from G5.
 
 ## Corpus
 
-The Java-free parity corpus remains stable: 10 / 10 rows match, with 0 expected
-drift and 0 unexpected drift. The generated accessibility row covers tagged
-structure, role-map normalization, marked-content associations, image-alt,
-artifact, list, link, and annotation semantic families.
+The Java-free parity corpus remains stable: 13 / 13 rows match, with 0 expected
+drift and 0 unexpected drift. The generated accessibility rows cover tagged
+structure, explicit PDF/UA-1, explicit PDF/UA-2 malformed table/header/MCID
+semantics, WTPDF accessibility link semantics, role-map normalization,
+marked-content associations, image-alt, artifact, list, link, and annotation
+semantic families.
 
 `corpus-agreement.json` records `liveOracleEnabled: false`; live veraPDF oracle
 execution remains part of G7 release-oracle automation. This G6 snapshot is the

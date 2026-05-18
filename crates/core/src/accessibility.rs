@@ -146,6 +146,8 @@ pub(crate) struct AccessibilityNode {
     pub normalized_role: String,
     /// Parent node when known from traversal.
     pub parent: Option<AccessibilityNodeId>,
+    /// Structure namespace URL from `/NS` when declared.
+    pub namespace_url: Option<String>,
     /// Associated page object.
     pub page: Option<ObjectKey>,
     /// Associated page ordinal.
@@ -180,6 +182,14 @@ pub(crate) struct AccessibilityNode {
     pub list_numbering: Option<String>,
     /// Bounded note type attribute value from `/A` when present.
     pub note_type: Option<String>,
+    /// Table row span from `/A /RowSpan`, defaulting to one.
+    pub row_span: u32,
+    /// Table column span from `/A /ColSpan`, defaulting to one.
+    pub col_span: u32,
+    /// Header identifiers from `/A /Headers`.
+    pub headers: Vec<String>,
+    /// Header scope from `/A /Scope`.
+    pub scope: Option<String>,
     /// Whether `/C` class mapping references exist.
     pub has_class: bool,
     /// Whether `/ID` exists.
@@ -505,6 +515,7 @@ fn traverse_structure_tree(
                     role,
                     normalized_role,
                     parent: item.parent,
+                    namespace_url: namespace_url(document, dictionary),
                     page,
                     page_ordinal: page.and_then(|page| page_ordinals.get(&page).copied()),
                     location: ObjectLocation {
@@ -529,6 +540,10 @@ fn traverse_structure_tree(
                     role_attribute: attribute_text(document, dictionary, "Role"),
                     list_numbering: attribute_text(document, dictionary, "ListNumbering"),
                     note_type: attribute_text(document, dictionary, "NoteType"),
+                    row_span: attribute_positive_u32(document, dictionary, "RowSpan").unwrap_or(1),
+                    col_span: attribute_positive_u32(document, dictionary, "ColSpan").unwrap_or(1),
+                    headers: attribute_texts(document, dictionary, "Headers"),
+                    scope: attribute_text(document, dictionary, "Scope"),
                     has_class: dictionary.get("C").is_some(),
                     has_id: dictionary.get("ID").is_some(),
                     id_text: element_id(dictionary),
@@ -1176,6 +1191,38 @@ fn attribute_text(
         })
 }
 
+fn attribute_texts(document: &ParsedDocument, dictionary: &Dictionary, name: &str) -> Vec<String> {
+    attribute_values(document, dictionary.get("A"))
+        .into_iter()
+        .flat_map(|attribute| strings_from_value(attribute.get(name)))
+        .collect()
+}
+
+fn attribute_positive_u32(
+    document: &ParsedDocument,
+    dictionary: &Dictionary,
+    name: &str,
+) -> Option<u32> {
+    attribute_values(document, dictionary.get("A"))
+        .into_iter()
+        .find_map(|attribute| {
+            attribute.get(name).and_then(|value| {
+                integer_value(Some(value))
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value > 0)
+            })
+        })
+}
+
+fn namespace_url(document: &ParsedDocument, dictionary: &Dictionary) -> Option<String> {
+    match dictionary.get("NS")? {
+        CosObject::Name(_) | CosObject::String(_) => string_from_value(dictionary.get("NS")?),
+        value => dictionary_from_value(document, Some(value))
+            .and_then(|namespace| namespace.get("NS"))
+            .and_then(string_from_value),
+    }
+}
+
 fn attribute_values<'a>(
     document: &'a ParsedDocument,
     value: Option<&'a CosObject>,
@@ -1211,6 +1258,32 @@ fn class_name_from_value(value: &CosObject) -> Option<String> {
         CosObject::String(_) => text_string(Some(value)),
         _ => None,
     }
+}
+
+fn strings_from_value(value: Option<&CosObject>) -> Vec<String> {
+    let mut values = Vec::new();
+    push_strings_from_value(value, &mut values);
+    values
+}
+
+fn push_strings_from_value(value: Option<&CosObject>, values: &mut Vec<String>) {
+    match value {
+        Some(CosObject::Array(items)) => {
+            for item in items {
+                push_strings_from_value(Some(item), values);
+            }
+        }
+        Some(value) => {
+            if let Some(text) = string_from_value(value) {
+                values.push(text);
+            }
+        }
+        None => {}
+    }
+}
+
+fn string_from_value(value: &CosObject) -> Option<String> {
+    name_value(value).or_else(|| text_string(Some(value)))
 }
 
 fn collect_pages<'a>(

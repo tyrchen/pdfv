@@ -5138,10 +5138,10 @@ impl ModelObject for AnnotationModel<'_> {
             "gContainsCatalogLang" => Ok(ModelValue::Bool(
                 catalog_value(self.document, "Lang").is_some(),
             )),
-            "differentTargetAnnotObjectKey"
-            | "gOutputCS"
-            | "structParentType"
-            | "structParentStandardType" => Ok(ModelValue::Null),
+            "differentTargetAnnotObjectKey" => {
+                annotation_target_mismatch(self.document, self.dictionary, self.key)
+            }
+            "gOutputCS" | "structParentType" | "structParentStandardType" => Ok(ModelValue::Null),
             "N_type" => Ok(annotation_normal_appearance_type(
                 self.document,
                 self.dictionary,
@@ -6453,6 +6453,9 @@ fn structure_element_property(
     if let Some(value) = structure_element_pdfua_property(document, graph, node, name) {
         return value;
     }
+    if let Some(value) = structure_element_relationship_property(graph, node, name) {
+        return value;
+    }
     match name.as_str() {
         "role" | "S" | "parentType" | "structParentType" => Ok(ModelValue::String(
             BoundedText::unchecked(node.role.clone()),
@@ -6499,17 +6502,6 @@ fn structure_element_property(
         }),
         "P" | "containsParent" => Ok(ModelValue::Bool(node.contains_parent)),
         "containsRef" => Ok(ModelValue::Bool(node.contains_ref)),
-        "parentStandardTypeNamespaceURL"
-        | "parentNamespaceURL"
-        | "firstChildStandardTypeNamespaceURL"
-        | "numberOfColumnWithWrongRowSpan"
-        | "numberOfRowWithWrongColumnSpan"
-        | "wrongColumnSpan"
-        | "orphanRefs"
-        | "ghostRefs" => Ok(ModelValue::Null),
-        "kidsStandardTypes" => Ok(ModelValue::String(BoundedText::unchecked(
-            child_standard_types(graph, node),
-        ))),
         "hasContentItems" | "isTaggedContent" => {
             Ok(ModelValue::Bool(!node.content_items.is_empty()))
         }
@@ -6527,6 +6519,55 @@ fn structure_element_property(
         "Type" => Ok(ModelValue::String(BoundedText::unchecked("StructElem"))),
         _ => unknown_property(name),
     }
+}
+
+fn structure_element_relationship_property(
+    graph: &AccessibilityGraph,
+    node: &AccessibilityNode,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    let value = match name.as_str() {
+        "parentStandardTypeNamespaceURL" | "parentNamespaceURL" => {
+            Ok(optional_string_model_value(node.namespace_url.clone()))
+        }
+        "firstChildStandardTypeNamespaceURL" => Ok(node
+            .children
+            .iter()
+            .find_map(|child| {
+                graph
+                    .node(*child)
+                    .and_then(|child| child.namespace_url.clone())
+            })
+            .map_or(ModelValue::Null, |value| {
+                ModelValue::String(BoundedText::unchecked(value))
+            })),
+        "numberOfColumnWithWrongRowSpan" => table_analysis(graph, node)
+            .and_then(|analysis| optional_usize_model_value(analysis.wrong_row_span_columns)),
+        "numberOfRowWithWrongColumnSpan" => table_analysis(graph, node)
+            .and_then(|analysis| optional_usize_model_value(analysis.wrong_column_span_rows)),
+        "wrongColumnSpan" => table_analysis(graph, node).map(|analysis| {
+            analysis
+                .wrong_column_span_detail
+                .map_or(ModelValue::Null, |value| {
+                    ModelValue::String(BoundedText::unchecked(value))
+                })
+        }),
+        "orphanRefs" => Ok(
+            note_orphan_refs(graph, node).map_or(ModelValue::Null, |value| {
+                ModelValue::String(BoundedText::unchecked(value))
+            }),
+        ),
+        "ghostRefs" => Ok(
+            note_ghost_refs(graph, node).map_or(ModelValue::Null, |value| {
+                ModelValue::String(BoundedText::unchecked(value))
+            }),
+        ),
+        "kidsStandardTypes" => Ok(ModelValue::String(BoundedText::unchecked(
+            child_standard_types(graph, node),
+        ))),
+        _ => return None,
+    };
+    Some(value)
 }
 
 fn structure_element_pdfua_property(
@@ -6564,9 +6605,9 @@ fn structure_element_pdfua_property(
         "usesHn" => Ok(ModelValue::Bool(heading_level(&node.normalized_role) > 0.0)),
         "hasCorrectNestingLevel" => Ok(ModelValue::Bool(has_correct_heading_nesting(graph, node))),
         "hasDuplicateNoteID" => Ok(ModelValue::Bool(has_duplicate_note_id(graph, node))),
-        "hasConnectedHeader" => Ok(ModelValue::Bool(has_connected_table_header(node))),
+        "hasConnectedHeader" => Ok(ModelValue::Bool(has_connected_table_header(graph, node))),
         "unknownHeaders" => Ok(ModelValue::String(BoundedText::unchecked(unknown_headers(
-            node,
+            graph, node,
         )))),
         "isGrouping" => Ok(ModelValue::Bool(is_grouping_role(&node.normalized_role))),
         "widgetAnnotsCount" => widget_annotation_count(document, graph, node)
@@ -6577,7 +6618,9 @@ fn structure_element_pdfua_property(
         "hasParentFormulaOrMathML" => {
             Ok(ModelValue::Bool(has_parent_formula_or_mathml(graph, node)))
         }
-        "hasIntersection" => Ok(ModelValue::Bool(false)),
+        "hasIntersection" => {
+            table_analysis(graph, node).map(|analysis| ModelValue::Bool(analysis.has_intersection))
+        }
         _ => return None,
     };
     Some(value)
@@ -6763,8 +6806,7 @@ fn root_first_child_namespace_url(graph: &AccessibilityGraph) -> Option<String> 
         .nodes
         .iter()
         .find(|node| node.parent.is_none())
-        .filter(|node| node.normalized_role == "Document")
-        .map(|_node| String::from("http://iso.org/pdf2/ssn"))
+        .and_then(|node| node.namespace_url.clone())
 }
 
 fn child_standard_types(graph: &AccessibilityGraph, node: &AccessibilityNode) -> String {
@@ -6848,6 +6890,52 @@ fn is_widget_annotation(dictionary: &crate::Dictionary) -> bool {
     )
 }
 
+fn annotation_target_mismatch(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    key: Option<ObjectKey>,
+) -> Result<ModelValue> {
+    if !dictionary
+        .get("Subtype")
+        .is_some_and(|value| matches!(value, crate::CosObject::Name(name) if name.matches("Link")))
+    {
+        return Ok(ModelValue::Null);
+    }
+    if annotation_struct_parent(dictionary).is_none() {
+        return Ok(ModelValue::Null);
+    }
+    let Some(key) = key else {
+        return Ok(ModelValue::Bool(false));
+    };
+    let graph =
+        crate::accessibility::build_accessibility_graph(document, &ResourceLimits::default())?;
+    let has_matching_link = graph
+        .object_references
+        .iter()
+        .filter(|reference| reference.object == Some(key))
+        .any(|reference| {
+            reference.is_link_annotation
+                && graph
+                    .node(reference.node)
+                    .is_some_and(|node| node.normalized_role == "Link")
+        });
+    if has_matching_link {
+        Ok(ModelValue::Null)
+    } else {
+        Ok(ModelValue::Bool(false))
+    }
+}
+
+fn annotation_struct_parent(dictionary: &crate::Dictionary) -> Option<i64> {
+    match dictionary
+        .get("StructParent")
+        .or_else(|| dictionary.get("StructParents"))?
+    {
+        crate::CosObject::Integer(value) => Some(*value),
+        _ => None,
+    }
+}
+
 fn has_correct_heading_nesting(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
     let level = heading_level(&node.normalized_role);
     if level <= 1.0 {
@@ -6878,17 +6966,217 @@ fn has_duplicate_note_id(graph: &AccessibilityGraph, node: &AccessibilityNode) -
         })
 }
 
-fn has_connected_table_header(node: &AccessibilityNode) -> bool {
+fn has_connected_table_header(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
     matches!(node.normalized_role.as_str(), "TH" | "THead")
-        || (node.normalized_role == "TD" && node.has_attributes)
+        || (node.normalized_role == "TD"
+            && (headers_resolve_to_table_headers(graph, node)
+                || scoped_table_header_applies(graph, node)))
 }
 
-fn unknown_headers(node: &AccessibilityNode) -> &'static str {
-    if node.normalized_role == "TD" && !has_connected_table_header(node) {
-        "missing"
-    } else {
-        ""
+fn unknown_headers(graph: &AccessibilityGraph, node: &AccessibilityNode) -> String {
+    if node.normalized_role != "TD" {
+        return String::new();
     }
+    let unresolved = node
+        .headers
+        .iter()
+        .filter(|header| !header_resolves_to_table_header(graph, header))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unresolved.is_empty() {
+        return unresolved.join(",");
+    }
+    if has_connected_table_header(graph, node) {
+        String::new()
+    } else {
+        String::from("missing")
+    }
+}
+
+fn headers_resolve_to_table_headers(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
+    !node.headers.is_empty()
+        && node
+            .headers
+            .iter()
+            .all(|header| header_resolves_to_table_header(graph, header))
+}
+
+fn header_resolves_to_table_header(graph: &AccessibilityGraph, header: &str) -> bool {
+    graph.nodes.iter().any(|candidate| {
+        candidate.normalized_role == "TH" && candidate.id_text.as_deref() == Some(header)
+    })
+}
+
+fn scoped_table_header_applies(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
+    table_ancestor(graph, node).is_some_and(|table| {
+        table_descendants(graph, table)
+            .into_iter()
+            .any(|candidate| candidate.normalized_role == "TH" && candidate.scope.is_some())
+    })
+}
+
+fn table_ancestor<'a>(
+    graph: &'a AccessibilityGraph,
+    node: &AccessibilityNode,
+) -> Option<&'a AccessibilityNode> {
+    let mut current = node.parent;
+    while let Some(parent) = current {
+        let parent_node = graph.node(parent)?;
+        if parent_node.normalized_role == "Table" {
+            return Some(parent_node);
+        }
+        current = parent_node.parent;
+    }
+    None
+}
+
+#[derive(Debug, Default)]
+struct TableAnalysis {
+    has_intersection: bool,
+    wrong_row_span_columns: Option<usize>,
+    wrong_column_span_rows: Option<usize>,
+    wrong_column_span_detail: Option<String>,
+}
+
+fn table_analysis(graph: &AccessibilityGraph, node: &AccessibilityNode) -> Result<TableAnalysis> {
+    if node.normalized_role != "Table" {
+        return Ok(TableAnalysis::default());
+    }
+    let rows = table_rows(graph, node);
+    if rows.is_empty() {
+        return Ok(TableAnalysis::default());
+    }
+    let mut occupied = BTreeSet::new();
+    let mut row_widths = Vec::with_capacity(rows.len());
+    let mut wrong_row_span_columns = 0_usize;
+    let mut has_intersection = false;
+    for (row_index, row) in rows.iter().enumerate() {
+        let mut column = 0_usize;
+        let mut row_width = 0_usize;
+        for cell in table_cells(graph, row) {
+            while occupied.contains(&(row_index, column)) {
+                column = column
+                    .checked_add(1)
+                    .ok_or(ValidationError::LimitExceeded {
+                        limit: "table_columns",
+                    })?;
+            }
+            let row_span =
+                usize::try_from(cell.row_span).map_err(|_| ValidationError::LimitExceeded {
+                    limit: "table_row_span",
+                })?;
+            let col_span =
+                usize::try_from(cell.col_span).map_err(|_| ValidationError::LimitExceeded {
+                    limit: "table_column_span",
+                })?;
+            if row_index
+                .checked_add(row_span)
+                .is_some_and(|end| end > rows.len())
+            {
+                wrong_row_span_columns = wrong_row_span_columns.checked_add(col_span).ok_or(
+                    ValidationError::LimitExceeded {
+                        limit: "table_wrong_row_span_columns",
+                    },
+                )?;
+            }
+            for row_offset in 0..row_span {
+                for col_offset in 0..col_span {
+                    let target_row = row_index.checked_add(row_offset).ok_or(
+                        ValidationError::LimitExceeded {
+                            limit: "table_rows",
+                        },
+                    )?;
+                    let target_column =
+                        column
+                            .checked_add(col_offset)
+                            .ok_or(ValidationError::LimitExceeded {
+                                limit: "table_columns",
+                            })?;
+                    if !occupied.insert((target_row, target_column)) {
+                        has_intersection = true;
+                    }
+                }
+            }
+            column = column
+                .checked_add(col_span)
+                .ok_or(ValidationError::LimitExceeded {
+                    limit: "table_columns",
+                })?;
+            row_width = row_width.max(column);
+        }
+        row_widths.push(row_width);
+    }
+    let expected_width = row_widths.iter().copied().max().unwrap_or(0);
+    let wrong_rows = row_widths
+        .iter()
+        .enumerate()
+        .filter(|(_index, width)| **width > 0 && **width != expected_width)
+        .map(|(index, _width)| index)
+        .collect::<Vec<_>>();
+    Ok(TableAnalysis {
+        has_intersection,
+        wrong_row_span_columns: (wrong_row_span_columns > 0).then_some(wrong_row_span_columns),
+        wrong_column_span_rows: (!wrong_rows.is_empty()).then_some(wrong_rows.len()),
+        wrong_column_span_detail: wrong_rows.first().map(|index| format!("row:{index}")),
+    })
+}
+
+fn table_rows<'a>(
+    graph: &'a AccessibilityGraph,
+    table: &'a AccessibilityNode,
+) -> Vec<&'a AccessibilityNode> {
+    table_descendants(graph, table)
+        .into_iter()
+        .filter(|node| node.normalized_role == "TR")
+        .collect()
+}
+
+fn table_cells<'a>(
+    graph: &'a AccessibilityGraph,
+    row: &'a AccessibilityNode,
+) -> Vec<&'a AccessibilityNode> {
+    table_descendants(graph, row)
+        .into_iter()
+        .filter(|node| matches!(node.normalized_role.as_str(), "TH" | "TD"))
+        .collect()
+}
+
+fn table_descendants<'a>(
+    graph: &'a AccessibilityGraph,
+    node: &'a AccessibilityNode,
+) -> Vec<&'a AccessibilityNode> {
+    let mut descendants = Vec::new();
+    let mut stack = node.children.iter().rev().copied().collect::<Vec<_>>();
+    while let Some(child_id) = stack.pop() {
+        let Some(child) = graph.node(child_id) else {
+            continue;
+        };
+        descendants.push(child);
+        stack.extend(child.children.iter().rev().copied());
+    }
+    descendants
+}
+
+fn note_orphan_refs(graph: &AccessibilityGraph, node: &AccessibilityNode) -> Option<String> {
+    if node.normalized_role != "Note" {
+        return None;
+    }
+    let note_id = node.id_text.as_ref()?;
+    let referenced = graph.nodes.iter().any(|candidate| {
+        candidate.normalized_role == "Reference" && candidate.id_text.as_ref() == Some(note_id)
+    });
+    (!referenced).then(|| String::from("missing"))
+}
+
+fn note_ghost_refs(graph: &AccessibilityGraph, node: &AccessibilityNode) -> Option<String> {
+    if node.normalized_role != "Reference" {
+        return None;
+    }
+    let reference_id = node.id_text.as_ref()?;
+    let target_exists = graph.nodes.iter().any(|candidate| {
+        candidate.normalized_role == "Note" && candidate.id_text.as_ref() == Some(reference_id)
+    });
+    (!target_exists).then(|| reference_id.clone())
 }
 
 fn is_grouping_role(role: &str) -> bool {

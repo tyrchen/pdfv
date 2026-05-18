@@ -188,7 +188,7 @@ fn checked_in_corpus_rows() -> Result<Vec<CorpusAgreementRow>> {
 }
 
 fn generated_corpus_rows() -> Result<Vec<CorpusAgreementRow>> {
-    Ok(vec![
+    let mut rows = vec![
         corpus_row(CorpusRowSpec {
             fixture: "generated:profile-official-pdfa-1b",
             source: CorpusFixtureSource::Generated,
@@ -269,6 +269,64 @@ fn generated_corpus_rows() -> Result<Vec<CorpusAgreementRow>> {
                 "artifact",
                 "heading",
                 "list",
+                "link",
+            ],
+        })?,
+    ];
+    rows.extend(generated_accessibility_profile_rows()?);
+    Ok(rows)
+}
+
+fn generated_accessibility_profile_rows() -> Result<Vec<CorpusAgreementRow>> {
+    Ok(vec![
+        corpus_row(CorpusRowSpec {
+            fixture: "generated:accessibility-pdfua-1-tagged",
+            source: CorpusFixtureSource::Generated,
+            bytes: &accessibility_pdf(),
+            options: explicit_profile_feature_options("pdfua", 1, "none")?,
+            expected: CorpusOutcome::Incomplete,
+            profile: "pdfua-1",
+            semantic_families: &[
+                "pdfua", "tagged", "roleMap", "list", "link", "imageAlt", "artifact",
+            ],
+            required_feature_families: &[
+                "accessibilityDocument",
+                "structureElement",
+                "accessibilityAnnotation",
+                "artifact",
+                "heading",
+                "list",
+                "link",
+            ],
+        })?,
+        corpus_row(CorpusRowSpec {
+            fixture: "generated:accessibility-pdfua-2-malformed-table",
+            source: CorpusFixtureSource::Generated,
+            bytes: &malformed_table_accessibility_pdf(),
+            options: explicit_profile_feature_options("pdfua", 2, "iso32005")?,
+            expected: CorpusOutcome::Incomplete,
+            profile: "pdfua-2-iso32005",
+            semantic_families: &[
+                "pdfua",
+                "table",
+                "malformedMcid",
+                "headerAssociation",
+                "namespace",
+            ],
+            required_feature_families: &["accessibilityDocument", "structureElement", "table"],
+        })?,
+        corpus_row(CorpusRowSpec {
+            fixture: "generated:accessibility-wtpdf-link",
+            source: CorpusFixtureSource::Generated,
+            bytes: &accessibility_pdf(),
+            options: explicit_profile_feature_options("wtpdf", 1, "accessibility")?,
+            expected: CorpusOutcome::Incomplete,
+            profile: "wtpdf-1-0-accessibility",
+            semantic_families: &["wtpdf", "link", "annotation", "artifact"],
+            required_feature_families: &[
+                "accessibilityDocument",
+                "structureElement",
+                "accessibilityAnnotation",
                 "link",
             ],
         })?,
@@ -394,6 +452,25 @@ fn explicit_profile_options(
     )?;
     Ok(ValidationOptions::builder()
         .flavour(FlavourSelection::Explicit { flavour })
+        .build())
+}
+
+fn explicit_profile_feature_options(
+    family: &str,
+    part: u32,
+    conformance: &str,
+) -> Result<ValidationOptions> {
+    let flavour = ValidationFlavour::new(
+        family,
+        std::num::NonZeroU32::new(part).ok_or(crate::ConfigError::InvalidValue {
+            field: "part",
+            reason: BoundedText::unchecked("profile part must be nonzero"),
+        })?,
+        conformance,
+    )?;
+    Ok(ValidationOptions::builder()
+        .flavour(FlavourSelection::Explicit { flavour })
+        .feature_selection(FeatureSelection::All)
         .build())
 }
 
@@ -700,6 +777,67 @@ trailer
     pdf
 }
 
+fn malformed_table_accessibility_pdf() -> Vec<u8> {
+    let stream = b"/P <</MCID 0>> BDC BT (cell) Tj ET EMC /P <</MCID 3>> BDC BT (orphan) Tj ET EMC";
+    let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 8 0 R /Lang (en-US) /MarkInfo << /Marked true >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /StructParents 0 /Resources << >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length "
+        .to_vec();
+    pdf.extend(stream.len().to_string().as_bytes());
+    pdf.extend(
+        br" >>
+stream
+",
+    );
+    pdf.extend(stream);
+    pdf.extend(
+        br"
+endstream
+endobj
+8 0 obj
+<< /Type /StructTreeRoot /K [9 0 R] /ParentTree << /Nums [0 [12 0 R null null 15 0 R]] >> >>
+endobj
+9 0 obj
+<< /Type /StructElem /S /Document /NS 20 0 R /K [10 0 R] >>
+endobj
+10 0 obj
+<< /Type /StructElem /S /Table /K [11 0 R 14 0 R] >>
+endobj
+11 0 obj
+<< /Type /StructElem /S /TR /K [12 0 R 13 0 R] >>
+endobj
+12 0 obj
+<< /Type /StructElem /S /TH /K 0 /ID (h1) /A << /Scope /Column /ColSpan 2 /RowSpan 3 >> >>
+endobj
+13 0 obj
+<< /Type /StructElem /S /TD /K 1 /A << /Headers [(missing)] >> >>
+endobj
+14 0 obj
+<< /Type /StructElem /S /TR /K [15 0 R] >>
+endobj
+15 0 obj
+<< /Type /StructElem /S /TD /K 3 >>
+endobj
+20 0 obj
+<< /Type /Namespace /NS (http://iso.org/pdf2/ssn) >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+",
+    );
+    pdf
+}
+
 fn write_fixture_bytes(target: &mut [u8], start: usize, bytes: &[u8]) {
     let end = start.saturating_add(bytes.len());
     if let Some(slot) = target.get_mut(start..end) {
@@ -724,7 +862,7 @@ mod tests {
         let report = corpus_agreement_report()?;
 
         assert!(!report.live_oracle_enabled);
-        assert_eq!(report.summary.total_rows, 10);
+        assert_eq!(report.summary.total_rows, 13);
         assert_eq!(report.summary.matches, report.summary.total_rows);
         assert_eq!(report.summary.unexpected_drift, 0);
         assert!(report.rows.iter().any(|row| {
@@ -746,6 +884,14 @@ mod tests {
                     .semantic_families
                     .iter()
                     .any(|family| family.as_str() == "font")
+        }));
+        assert!(report.rows.iter().any(|row| {
+            row.fixture.as_str() == "generated:accessibility-pdfua-2-malformed-table"
+                && row.pdfv_outcome == CorpusOutcome::Incomplete
+                && row
+                    .observed_feature_families
+                    .iter()
+                    .any(|family| family.as_str() == "table")
         }));
         Ok(())
     }
