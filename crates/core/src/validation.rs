@@ -188,21 +188,32 @@ const IMAGE_DIRECT_PROPERTIES: &[&str] = &[
     "Height",
     "ColorSpace",
     "BitsPerComponent",
+    "ImageMask",
     "Filter",
     "DecodeParms",
     "SMask",
     "Mask",
     "Intent",
+    "Interpolate",
+    "Alternates",
+    "OPI",
 ];
 const XOBJECT_DIRECT_PROPERTIES: &[&str] = &[
     "Type",
     "Subtype",
+    "Subtype2",
     "BBox",
     "Matrix",
     "Resources",
     "Group",
     "Filter",
     "DecodeParms",
+    "SMask",
+    "OPI",
+    "PS",
+    "Ref",
+    "CT",
+    "Alt",
 ];
 const PATTERN_DIRECT_PROPERTIES: &[&str] = &[
     "Type",
@@ -258,8 +269,9 @@ const COLOR_SPACE_DIRECT_PROPERTIES: &[&str] = &[
     "Process",
     "Components",
 ];
-const EXT_GSTATE_DIRECT_PROPERTIES: &[&str] =
-    &["Type", "BM", "CA", "ca", "SMask", "AIS", "OP", "op", "OPM"];
+const EXT_GSTATE_DIRECT_PROPERTIES: &[&str] = &[
+    "Type", "BM", "CA", "ca", "SMask", "AIS", "OP", "op", "OPM", "TR", "TR2", "HTP", "HTO",
+];
 const SIGNATURE_DIRECT_PROPERTIES: &[&str] = &[
     "Type",
     "Filter",
@@ -692,18 +704,74 @@ const IMAGE_PROPERTIES: &[&str] = &[
     "Height",
     "ColorSpace",
     "BitsPerComponent",
+    "ImageMask",
     "Filter",
     "DecodeParms",
     "SMask",
     "Mask",
     "Intent",
+    "Interpolate",
+    "Alternates",
+    "OPI",
     "width",
     "height",
     "hasColorSpace",
+    "isMask",
+    "containsAlternates",
+    "containsOPI",
+    "nrColorSpaceSpecs",
+    "nrColorSpacesWithApproxField",
+    "nrColorChannels",
+    "colrMethod",
+    "colrEnumCS",
+    "bpccBoxPresent",
+    "bitDepth",
 ];
-const XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
-const FORM_XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
-const POSTSCRIPT_XOBJECT_PROPERTIES: &[&str] = XOBJECT_DIRECT_PROPERTIES;
+const XOBJECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "Subtype2",
+    "BBox",
+    "Matrix",
+    "Resources",
+    "Group",
+    "Filter",
+    "DecodeParms",
+    "SMask",
+    "OPI",
+    "PS",
+    "Ref",
+    "CT",
+    "Alt",
+    "containsOPI",
+    "containsSMask",
+    "containsPS",
+    "containsRef",
+    "hasCorrectAlt",
+];
+const FORM_XOBJECT_PROPERTIES: &[&str] = &[
+    "Type",
+    "Subtype",
+    "Subtype2",
+    "BBox",
+    "Matrix",
+    "Resources",
+    "Group",
+    "Filter",
+    "DecodeParms",
+    "SMask",
+    "OPI",
+    "PS",
+    "Ref",
+    "CT",
+    "Alt",
+    "containsOPI",
+    "containsSMask",
+    "containsPS",
+    "containsRef",
+    "isUniqueSemanticParent",
+];
+const POSTSCRIPT_XOBJECT_PROPERTIES: &[&str] = XOBJECT_PROPERTIES;
 const PATTERN_PROPERTIES: &[&str] = PATTERN_DIRECT_PROPERTIES;
 const SHADING_PROPERTIES: &[&str] = SHADING_DIRECT_PROPERTIES;
 const FUNCTION_PROPERTIES: &[&str] = FUNCTION_DIRECT_PROPERTIES;
@@ -841,6 +909,26 @@ const COLOR_SPACE_PROPERTIES: &[&str] = &[
     "hasAlternate",
     "hasTintTransform",
     "hasICCProfile",
+    "nrComponents",
+    "gOutputCS",
+    "gDocumentOutputCS",
+    "gPageOutputCS",
+    "gTransparencyCS",
+    "gOutputProfileIndirect",
+    "currentTransparencyProfileIndirect",
+    "ICCProfileIndirect",
+    "ICCProfileMD5",
+    "gOutputICCProfileMD5",
+    "currentTransparencyICCProfileMD5",
+    "S",
+    "HalftoneName",
+    "HalftoneType",
+    "overprintFlag",
+    "OPM",
+    "colorantName",
+    "TransferFunction",
+    "areColorantsPresent",
+    "areTintAndAlternateConsistent",
     "Type",
     "N",
     "Alternate",
@@ -875,6 +963,15 @@ const EXT_GSTATE_PROPERTIES: &[&str] = &[
     "hasSoftMask",
     "hasBlendMode",
     "alphaSource",
+    "containsBM",
+    "BMNameValue",
+    "containsSMask",
+    "SMaskNameValue",
+    "containsTR",
+    "containsTR2",
+    "TR2NameValue",
+    "containsHTP",
+    "containsHTO",
     "Type",
     "BM",
     "CA",
@@ -884,6 +981,10 @@ const EXT_GSTATE_PROPERTIES: &[&str] = &[
     "OP",
     "op",
     "OPM",
+    "TR",
+    "TR2",
+    "HTP",
+    "HTO",
 ];
 const ACCESSIBILITY_DOCUMENT_PROPERTIES: &[&str] = &[
     "isTagged",
@@ -1035,6 +1136,10 @@ const SIGNATURE_PROPERTIES: &[&str] = &[
 const SECURITY_PROPERTIES: &[&str] = SECURITY_DIRECT_PROPERTIES;
 const OUTPUT_INTENT_PROPERTIES: &[&str] = &[
     "hasDestOutputProfile",
+    "containsDestOutputProfileRef",
+    "sameOutputProfileIndirect",
+    "destOutputProfileIndirect",
+    "ICCProfileMD5",
     "iccProfileSize",
     "iccVersion",
     "iccDeviceClass",
@@ -1081,7 +1186,11 @@ const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
     "family",
     "S",
     "Subtype",
+    "Subtype2",
     "Type",
+    "BMNameValue",
+    "TR2NameValue",
+    "SMaskNameValue",
     "colorSpace",
     "cmapName",
     "deviceClass",
@@ -1091,6 +1200,10 @@ const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
     "iccDeviceClass",
     "iccPcs",
     "iccVersion",
+    "gOutputCS",
+    "gDocumentOutputCS",
+    "gPageOutputCS",
+    "gTransparencyCS",
     "name",
     "normalizedRole",
     "operator",
@@ -3295,6 +3408,32 @@ impl<'a> ModelGraph<'a> {
             return Ok(());
         };
         for (ordinal, (name, value)) in resources.iter().enumerate() {
+            if collection.family == "colorSpace" {
+                if let Some((key, offset, dictionary)) =
+                    normalize_color_space_resource(self.document, value)
+                {
+                    push_generic_model(
+                        models,
+                        GenericModel::new(
+                            self.document,
+                            "colorSpace",
+                            key,
+                            offset,
+                            &dictionary,
+                            ordinal,
+                            format!(
+                                "{}[{}]/{}[{}]",
+                                collection.context_prefix,
+                                collection.page_ordinal,
+                                collection.family,
+                                String::from_utf8_lossy(name.as_bytes())
+                            ),
+                        ),
+                        collection.max_objects,
+                    )?;
+                }
+                continue;
+            }
             if let Some((key, offset, dictionary)) = resolve_named_dictionary(self.document, value)
             {
                 let object_family = if collection.family == "xObject" {
@@ -4673,6 +4812,21 @@ impl ModelObject for OutputIntentModel<'_> {
             "hasDestOutputProfile" => Ok(ModelValue::Bool(
                 self.dictionary.get("DestOutputProfile").is_some(),
             )),
+            "containsDestOutputProfileRef" => Ok(ModelValue::Bool(
+                self.dictionary.get("DestOutputProfileRef").is_some(),
+            )),
+            "sameOutputProfileIndirect" => {
+                output_intents_same_profile_indirect(self.document, self.limits, name)
+            }
+            "destOutputProfileIndirect" => Ok(optional_string_model_value(
+                output_profile_indirect(self.dictionary),
+            )),
+            "ICCProfileMD5" => output_intent_profile_digest_property(
+                self.document,
+                self.dictionary,
+                self.limits,
+                name,
+            ),
             "iccProfileSize" => optional_u64_model_value(
                 output_intent_icc_header(self.document, self.dictionary, self.limits)?
                     .map(|header| header.profile_size),
@@ -6897,6 +7051,87 @@ fn output_intent_icc_header(
     Ok(parse_icc_header(&bytes))
 }
 
+fn output_profile_indirect(dictionary: &crate::Dictionary) -> Option<String> {
+    match dictionary.get("DestOutputProfile") {
+        Some(crate::CosObject::Reference(key)) => Some(object_key_text(*key)),
+        _ => None,
+    }
+}
+
+fn output_intents_same_profile_indirect(
+    document: &ParsedDocument,
+    limits: &ResourceLimits,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    let Some(catalog) = catalog_dictionary(document) else {
+        return Ok(ModelValue::Bool(true));
+    };
+    let mut first_profile: Option<String> = None;
+    for value in array_values(catalog.get("OutputIntents")) {
+        let Some((_key, _offset, dictionary)) = resolve_named_dictionary(document, value) else {
+            continue;
+        };
+        let Some(profile_value) = dictionary.get("DestOutputProfile") else {
+            continue;
+        };
+        let crate::CosObject::Reference(profile_key) = profile_value else {
+            return unknown_property(name);
+        };
+        let Some(stream) = stream_from_value(document, Some(profile_value)) else {
+            return unknown_property(name);
+        };
+        if stream.discovered_length > limits.max_icc_profile_bytes {
+            return unknown_property(name);
+        }
+        let bytes = stream.decoded_bytes(limits)?;
+        if parse_icc_header(&bytes).is_none() {
+            return unknown_property(name);
+        }
+        let current_profile = object_key_text(*profile_key);
+        if first_profile
+            .as_ref()
+            .is_some_and(|profile| profile != &current_profile)
+        {
+            return Ok(ModelValue::Bool(false));
+        }
+        if first_profile.is_none() {
+            first_profile = Some(current_profile);
+        }
+    }
+    Ok(ModelValue::Bool(true))
+}
+
+fn document_output_intent_dictionary(document: &ParsedDocument) -> Option<&crate::Dictionary> {
+    let catalog = catalog_dictionary(document)?;
+    array_values(catalog.get("OutputIntents")).find_map(|value| {
+        resolve_named_dictionary(document, value).map(|(_key, _offset, dictionary)| dictionary)
+    })
+}
+
+fn document_output_color_space(document: &ParsedDocument) -> Option<String> {
+    let dictionary = document_output_intent_dictionary(document)?;
+    let header = output_intent_icc_header(document, dictionary, &ResourceLimits::default())
+        .ok()
+        .flatten()?;
+    Some(header.color_space)
+}
+
+fn document_output_profile_indirect(document: &ParsedDocument) -> Option<String> {
+    document_output_intent_dictionary(document).and_then(output_profile_indirect)
+}
+
+fn output_intent_profile_digest_property(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    _limits: &ResourceLimits,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    if icc_stream_from_dictionary(document, dictionary).is_none() {
+        return Ok(ModelValue::Null);
+    }
+    unknown_property(name)
+}
+
 fn parse_icc_header(bytes: &[u8]) -> Option<IccHeader> {
     if bytes.len() < 132 {
         return None;
@@ -6919,7 +7154,7 @@ fn parse_icc_header(bytes: &[u8]) -> Option<IccHeader> {
 }
 
 fn ascii_tag(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim().to_owned()
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 fn color_space_family(dictionary: &crate::Dictionary) -> String {
@@ -6941,6 +7176,165 @@ fn color_space_family(dictionary: &crate::Dictionary) -> String {
     String::from("unknown")
 }
 
+fn normalize_color_space_resource(
+    document: &ParsedDocument,
+    value: &crate::CosObject,
+) -> Option<(Option<ObjectKey>, Option<u64>, crate::Dictionary)> {
+    match value {
+        crate::CosObject::Reference(key) => {
+            let object = document.objects.get(key)?;
+            normalize_color_space_object(document, &object.object)
+                .map(|dictionary| (Some(*key), Some(object.offset), dictionary))
+        }
+        value => {
+            normalize_color_space_object(document, value).map(|dictionary| (None, None, dictionary))
+        }
+    }
+}
+
+fn normalize_color_space_object(
+    document: &ParsedDocument,
+    value: &crate::CosObject,
+) -> Option<crate::Dictionary> {
+    match value {
+        crate::CosObject::Name(name) => color_space_name_dictionary(name),
+        crate::CosObject::Array(values) => color_space_array_dictionary(document, values),
+        crate::CosObject::Dictionary(dictionary) => {
+            let mut normalized = dictionary.clone();
+            if normalized.get("Family").is_none() {
+                let family = infer_color_space_dictionary_family(dictionary);
+                insert_name(&mut normalized, "Family", family)?;
+            }
+            Some(normalized)
+        }
+        crate::CosObject::Stream(stream) => {
+            let mut normalized = stream.dictionary.clone();
+            if normalized.get("Family").is_none() {
+                let family = infer_color_space_dictionary_family(&stream.dictionary);
+                insert_name(&mut normalized, "Family", family)?;
+            }
+            Some(normalized)
+        }
+        crate::CosObject::Reference(_)
+        | crate::CosObject::Null
+        | crate::CosObject::Boolean(_)
+        | crate::CosObject::Integer(_)
+        | crate::CosObject::Real(_)
+        | crate::CosObject::String(_) => None,
+    }
+}
+
+fn color_space_name_dictionary(name: &PdfName) -> Option<crate::Dictionary> {
+    let mut dictionary = crate::Dictionary::default();
+    dictionary.insert(name_key("Family")?, crate::CosObject::Name(name.clone()));
+    Some(dictionary)
+}
+
+fn color_space_array_dictionary(
+    document: &ParsedDocument,
+    values: &[crate::CosObject],
+) -> Option<crate::Dictionary> {
+    let crate::CosObject::Name(family_name) = values.first()? else {
+        return None;
+    };
+    let mut dictionary = crate::Dictionary::default();
+    insert_name(
+        &mut dictionary,
+        "Family",
+        &String::from_utf8_lossy(family_name.as_bytes()),
+    )?;
+    match String::from_utf8_lossy(family_name.as_bytes()).as_ref() {
+        "ICCBased" => {
+            let profile = values.get(1)?;
+            dictionary.insert(name_key("ICCProfile")?, profile.clone());
+            if let Some(profile_dictionary) = resolve_dictionary_value(document, Some(profile)) {
+                copy_dictionary_entry(profile_dictionary, &mut dictionary, "N")?;
+                copy_dictionary_entry(profile_dictionary, &mut dictionary, "Alternate")?;
+                copy_dictionary_entry(profile_dictionary, &mut dictionary, "Range")?;
+                copy_dictionary_entry(profile_dictionary, &mut dictionary, "Metadata")?;
+                copy_dictionary_entry(profile_dictionary, &mut dictionary, "Filter")?;
+            }
+        }
+        "Indexed" => {
+            copy_array_entry(values, &mut dictionary, 1, "Base")?;
+            copy_array_entry(values, &mut dictionary, 2, "HiVal")?;
+            copy_array_entry(values, &mut dictionary, 3, "Lookup")?;
+        }
+        "Separation" => {
+            copy_array_entry(values, &mut dictionary, 1, "Name")?;
+            copy_array_entry(values, &mut dictionary, 2, "Alternate")?;
+            copy_array_entry(values, &mut dictionary, 3, "TintTransform")?;
+        }
+        "DeviceN" => {
+            copy_array_entry(values, &mut dictionary, 1, "Components")?;
+            copy_array_entry(values, &mut dictionary, 2, "Alternate")?;
+            copy_array_entry(values, &mut dictionary, 3, "TintTransform")?;
+            if let Some(attributes) = values
+                .get(4)
+                .and_then(|value| resolve_dictionary_value(document, Some(value)))
+            {
+                copy_dictionary_entry(attributes, &mut dictionary, "Colorants")?;
+                copy_dictionary_entry(attributes, &mut dictionary, "Process")?;
+            }
+        }
+        "DeviceGray" | "DeviceRGB" | "DeviceCMYK" | "CalGray" | "CalRGB" | "Lab" => {}
+        _ => return None,
+    }
+    Some(dictionary)
+}
+
+fn infer_color_space_dictionary_family(dictionary: &crate::Dictionary) -> &str {
+    if dictionary.get("N").is_some() {
+        "ICCBased"
+    } else if dictionary.get("HiVal").is_some() || dictionary.get("Lookup").is_some() {
+        "Indexed"
+    } else if dictionary.get("TintTransform").is_some()
+        && (dictionary.get("Components").is_some()
+            || dictionary.get("Process").is_some()
+            || dictionary.get("Colorants").is_some())
+    {
+        "DeviceN"
+    } else if dictionary.get("TintTransform").is_some() {
+        "Separation"
+    } else {
+        "unknown"
+    }
+}
+
+fn copy_array_entry(
+    values: &[crate::CosObject],
+    dictionary: &mut crate::Dictionary,
+    index: usize,
+    key: &str,
+) -> Option<()> {
+    dictionary.insert(name_key(key)?, values.get(index)?.clone());
+    Some(())
+}
+
+fn copy_dictionary_entry(
+    source: &crate::Dictionary,
+    target: &mut crate::Dictionary,
+    key: &str,
+) -> Option<()> {
+    if let Some(value) = source.get(key) {
+        target.insert(name_key(key)?, value.clone());
+    }
+    Some(())
+}
+
+fn insert_name(dictionary: &mut crate::Dictionary, key: &str, value: &str) -> Option<()> {
+    dictionary.insert(name_key(key)?, name_object(value)?);
+    Some(())
+}
+
+fn name_object(value: &str) -> Option<crate::CosObject> {
+    Some(crate::CosObject::Name(name_key(value)?))
+}
+
+fn name_key(value: &str) -> Option<PdfName> {
+    PdfName::new(value.as_bytes().to_vec(), &ResourceLimits::default()).ok()
+}
+
 fn color_space_component_count(dictionary: &crate::Dictionary) -> Option<u64> {
     match dictionary.get("N") {
         Some(crate::CosObject::Integer(value)) => u64::try_from(*value).ok(),
@@ -6951,6 +7345,246 @@ fn color_space_component_count(dictionary: &crate::Dictionary) -> Option<u64> {
             _ => None,
         },
     }
+}
+
+fn color_space_colorant_name(dictionary: &crate::Dictionary) -> Option<String> {
+    dictionary
+        .get("Name")
+        .or_else(|| dictionary.get("ColorantName"))
+        .and_then(object_direct_text)
+}
+
+fn color_space_colorants_present(dictionary: &crate::Dictionary) -> bool {
+    color_space_family(dictionary) != "DeviceN" || dictionary.get("Colorants").is_some()
+}
+
+fn color_space_tint_consistent(document: &ParsedDocument, dictionary: &crate::Dictionary) -> bool {
+    if !matches!(
+        color_space_family(dictionary).as_str(),
+        "Separation" | "DeviceN"
+    ) {
+        return true;
+    }
+    if dictionary.get("Alternate").is_none() || dictionary.get("TintTransform").is_none() {
+        return false;
+    }
+    let Some(colorant_name) = color_space_colorant_name(dictionary) else {
+        return true;
+    };
+    let current_signature = color_space_tint_signature(dictionary);
+    all_document_color_spaces(document)
+        .into_iter()
+        .filter(|candidate| {
+            color_space_family(candidate) == "Separation"
+                && color_space_colorant_name(candidate).as_deref() == Some(colorant_name.as_str())
+        })
+        .all(|candidate| color_space_tint_signature(&candidate) == current_signature)
+}
+
+fn color_space_tint_signature(dictionary: &crate::Dictionary) -> (Option<String>, Option<String>) {
+    (
+        dictionary.get("Alternate").map(cos_signature),
+        dictionary.get("TintTransform").map(cos_signature),
+    )
+}
+
+fn all_document_color_spaces(document: &ParsedDocument) -> Vec<crate::Dictionary> {
+    let mut color_spaces = Vec::new();
+    for object in document.objects.values() {
+        let Some(dictionary) = object.object.as_dictionary() else {
+            continue;
+        };
+        collect_color_space_resources(document, dictionary, &mut color_spaces);
+        if let Some(resources) = resolve_dictionary_value(document, dictionary.get("Resources")) {
+            collect_color_space_resources(document, resources, &mut color_spaces);
+        }
+    }
+    color_spaces
+}
+
+fn collect_color_space_resources(
+    document: &ParsedDocument,
+    resources: &crate::Dictionary,
+    color_spaces: &mut Vec<crate::Dictionary>,
+) {
+    let Some(crate::CosObject::Dictionary(collection)) = resources.get("ColorSpace") else {
+        return;
+    };
+    color_spaces.extend(
+        collection
+            .iter()
+            .filter_map(|(_name, value)| normalize_color_space_resource(document, value))
+            .map(|(_key, _offset, dictionary)| dictionary),
+    );
+}
+
+fn cos_signature(value: &crate::CosObject) -> String {
+    match value {
+        crate::CosObject::Reference(key) => object_key_text(*key),
+        other => format!("{other:?}"),
+    }
+}
+
+fn color_space_icc_profile_indirect(dictionary: &crate::Dictionary) -> Option<String> {
+    match dictionary
+        .get("ICCProfile")
+        .or_else(|| dictionary.get("Profile"))
+    {
+        Some(crate::CosObject::Reference(key)) => Some(object_key_text(*key)),
+        _ => None,
+    }
+    .or_else(|| {
+        if color_space_family(dictionary) == "ICCBased" {
+            dictionary.get("N").map(|_| String::from("inline"))
+        } else {
+            None
+        }
+    })
+}
+
+fn color_space_profile_digest_property(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    let has_profile = color_space_icc_profile_indirect(dictionary).is_some()
+        || document_output_profile_indirect(document).is_some();
+    if has_profile {
+        return unknown_property(name);
+    }
+    Ok(ModelValue::Null)
+}
+
+fn halftone_value(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+    key: &str,
+) -> ModelValue {
+    dictionary
+        .get(key)
+        .or_else(|| {
+            resolve_dictionary_value(document, dictionary.get("HT"))
+                .and_then(|halftone| halftone.get(key))
+        })
+        .cloned()
+        .map_or(ModelValue::Null, ModelValue::from)
+}
+
+fn image_is_mask(dictionary: &crate::Dictionary) -> bool {
+    dictionary
+        .get("ImageMask")
+        .is_some_and(|value| matches!(value, crate::CosObject::Boolean(true)))
+}
+
+fn image_interpolate_value(dictionary: &crate::Dictionary) -> ModelValue {
+    dictionary
+        .get("Interpolate")
+        .cloned()
+        .map_or(ModelValue::Bool(false), ModelValue::from)
+}
+
+fn image_color_space_specs(dictionary: &crate::Dictionary) -> Option<u64> {
+    dictionary.get("ColorSpace").map(|_| 1)
+}
+
+fn image_jpx_or_value(
+    dictionary: &crate::Dictionary,
+    name: &PropertyName,
+    fallback: Result<ModelValue>,
+) -> Result<ModelValue> {
+    if image_has_jpx_filter(dictionary) {
+        return unknown_property(name);
+    }
+    fallback
+}
+
+fn image_has_jpx_filter(dictionary: &crate::Dictionary) -> bool {
+    cos_filter_names(dictionary.get("Filter"))
+        .iter()
+        .any(|name| name == "JPXDecode")
+}
+
+fn cos_filter_names(value: Option<&crate::CosObject>) -> Vec<String> {
+    match value {
+        Some(crate::CosObject::Name(name)) => {
+            vec![String::from_utf8_lossy(name.as_bytes()).into_owned()]
+        }
+        Some(crate::CosObject::Array(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                crate::CosObject::Name(name) => {
+                    Some(String::from_utf8_lossy(name.as_bytes()).into_owned())
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn image_color_channels(document: &ParsedDocument, dictionary: &crate::Dictionary) -> Option<u64> {
+    let color_space = dictionary.get("ColorSpace")?;
+    color_space_component_count_from_value(document, color_space)
+}
+
+fn color_space_component_count_from_value(
+    document: &ParsedDocument,
+    value: &crate::CosObject,
+) -> Option<u64> {
+    match value {
+        crate::CosObject::Name(name) if name.matches("DeviceGray") => Some(1),
+        crate::CosObject::Name(name) if name.matches("DeviceRGB") => Some(3),
+        crate::CosObject::Name(name) if name.matches("DeviceCMYK") => Some(4),
+        crate::CosObject::Array(values) => values.first().and_then(|first| match first {
+            crate::CosObject::Name(name) if name.matches("ICCBased") => values
+                .get(1)
+                .and_then(|profile| resolve_named_dictionary(document, profile))
+                .and_then(|(_key, _offset, profile)| profile.get("N"))
+                .and_then(cos_integer)
+                .and_then(|value| u64::try_from(value).ok()),
+            crate::CosObject::Name(name) if name.matches("Indexed") => Some(1),
+            crate::CosObject::Name(name) if name.matches("Separation") => Some(1),
+            crate::CosObject::Name(name) if name.matches("DeviceN") => {
+                values.get(1).and_then(|names| match names {
+                    crate::CosObject::Array(names) => u64::try_from(names.len()).ok(),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }),
+        crate::CosObject::Dictionary(dictionary) => color_space_component_count(dictionary),
+        crate::CosObject::Reference(key) => document
+            .objects
+            .get(key)
+            .and_then(|object| object.object.as_dictionary())
+            .and_then(color_space_component_count),
+        _ => None,
+    }
+}
+
+fn name_key_model_value(dictionary: &crate::Dictionary, key: &str) -> ModelValue {
+    dictionary
+        .get(key)
+        .and_then(object_direct_text)
+        .map_or(ModelValue::Null, |value| {
+            ModelValue::String(BoundedText::unchecked(value))
+        })
+}
+
+fn media_clip_alt_is_valid(dictionary: &crate::Dictionary) -> bool {
+    let Some(crate::CosObject::Array(values)) = dictionary.get("Alt") else {
+        return false;
+    };
+    if values.len() % 2 != 0 {
+        return false;
+    }
+    values.iter().enumerate().all(|(index, value)| {
+        matches!(value, crate::CosObject::String(text) if index % 2 == 0 || !text.as_bytes().is_empty())
+    })
+}
+
+fn object_key_text(key: ObjectKey) -> String {
+    format!("{} {} R", key.number.get(), key.generation)
 }
 
 fn cmap_system_info_text(dictionary: &crate::Dictionary, name: &str) -> Option<String> {
@@ -7831,6 +8465,14 @@ impl<'a> GenericModel<'a> {
     }
 
     fn resource_summary_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        self.image_summary_property(name)
+            .or_else(|| self.color_space_summary_property(name))
+            .or_else(|| self.ext_gstate_summary_property(name))
+            .or_else(|| self.xobject_summary_property(name))
+            .or_else(|| self.cmap_font_stream_summary_property(name))
+    }
+
+    fn image_summary_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
         match (self.object_type.as_str(), name.as_str()) {
             ("image", "width") => Some(dictionary_property(
                 &self.dictionary,
@@ -7845,10 +8487,54 @@ impl<'a> GenericModel<'a> {
             ("image", "hasColorSpace") => Some(Ok(ModelValue::Bool(
                 self.dictionary.get("ColorSpace").is_some(),
             ))),
+            ("image", "isMask") => Some(Ok(ModelValue::Bool(image_is_mask(&self.dictionary)))),
+            ("image", "containsAlternates") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("Alternates").is_some(),
+            ))),
+            ("image", "containsOPI") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("OPI").is_some())))
+            }
+            ("image", "Interpolate") => Some(Ok(image_interpolate_value(&self.dictionary))),
+            ("image", "nrColorSpaceSpecs") => Some(image_jpx_or_value(
+                &self.dictionary,
+                name,
+                optional_u64_model_value(image_color_space_specs(&self.dictionary)),
+            )),
+            ("image", "nrColorSpacesWithApproxField") => Some(image_jpx_or_value(
+                &self.dictionary,
+                name,
+                Ok(ModelValue::Number(0.0)),
+            )),
+            ("image", "nrColorChannels") => Some(image_jpx_or_value(
+                &self.dictionary,
+                name,
+                optional_u64_model_value(image_color_channels(self.document, &self.dictionary)),
+            )),
+            ("image", "colrMethod" | "colrEnumCS") => Some(image_jpx_or_value(
+                &self.dictionary,
+                name,
+                Ok(ModelValue::Null),
+            )),
+            ("image", "bpccBoxPresent") => Some(image_jpx_or_value(
+                &self.dictionary,
+                name,
+                Ok(ModelValue::Bool(false)),
+            )),
+            ("image", "bitDepth") => Some(optional_i64_model_value(
+                self.dictionary
+                    .get("BitsPerComponent")
+                    .and_then(cos_integer),
+            )),
+            _ => None,
+        }
+    }
+
+    fn color_space_summary_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match (self.object_type.as_str(), name.as_str()) {
             ("colorSpace", "family") => Some(Ok(ModelValue::String(BoundedText::unchecked(
                 color_space_family(&self.dictionary),
             )))),
-            ("colorSpace", "componentCount") => Some(optional_u64_model_value(
+            ("colorSpace", "componentCount" | "nrComponents") => Some(optional_u64_model_value(
                 color_space_component_count(&self.dictionary),
             )),
             ("colorSpace", "hasAlternate") => Some(Ok(ModelValue::Bool(
@@ -7861,19 +8547,137 @@ impl<'a> GenericModel<'a> {
                 color_space_family(&self.dictionary) == "ICCBased"
                     || self.object_type.as_str() == "iccProfile",
             ))),
+            ("colorSpace", "gOutputCS" | "gDocumentOutputCS" | "gPageOutputCS") => Some(Ok(
+                optional_string_model_value(document_output_color_space(self.document)),
+            )),
+            ("colorSpace", "gTransparencyCS" | "currentTransparencyProfileIndirect") => {
+                Some(Ok(ModelValue::Null))
+            }
+            ("colorSpace", "gOutputProfileIndirect") => Some(Ok(optional_string_model_value(
+                document_output_profile_indirect(self.document),
+            ))),
+            ("colorSpace", "ICCProfileIndirect") => Some(Ok(optional_string_model_value(
+                color_space_icc_profile_indirect(&self.dictionary),
+            ))),
+            (
+                "colorSpace",
+                "ICCProfileMD5" | "gOutputICCProfileMD5" | "currentTransparencyICCProfileMD5",
+            ) => Some(color_space_profile_digest_property(
+                self.document,
+                &self.dictionary,
+                name,
+            )),
+            ("colorSpace", "S") => Some(Ok(self
+                .dictionary
+                .get("S")
+                .or_else(|| {
+                    resolve_dictionary_value(self.document, self.dictionary.get("Group"))
+                        .and_then(|group| group.get("S"))
+                })
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from))),
+            ("colorSpace", "HalftoneName") => Some(Ok(halftone_value(
+                self.document,
+                &self.dictionary,
+                "HalftoneName",
+            ))),
+            ("colorSpace", "HalftoneType") => Some(Ok(halftone_value(
+                self.document,
+                &self.dictionary,
+                "HalftoneType",
+            ))),
+            ("colorSpace", "overprintFlag") => Some(Ok(ModelValue::Bool(
+                self.dictionary.get("OP").is_some() || self.dictionary.get("op").is_some(),
+            ))),
+            ("colorSpace", "OPM") => Some(Ok(self
+                .dictionary
+                .get("OPM")
+                .cloned()
+                .map_or(ModelValue::Number(0.0), ModelValue::from))),
+            ("colorSpace", "colorantName") => Some(Ok(optional_string_model_value(
+                color_space_colorant_name(&self.dictionary),
+            ))),
+            ("colorSpace", "TransferFunction") => Some(Ok(self
+                .dictionary
+                .get("TransferFunction")
+                .or_else(|| self.dictionary.get("TR"))
+                .cloned()
+                .map_or(ModelValue::Null, ModelValue::from))),
+            ("colorSpace", "areColorantsPresent") => Some(Ok(ModelValue::Bool(
+                color_space_colorants_present(&self.dictionary),
+            ))),
+            ("colorSpace", "areTintAndAlternateConsistent") => Some(Ok(ModelValue::Bool(
+                color_space_tint_consistent(self.document, &self.dictionary),
+            ))),
+            _ => None,
+        }
+    }
+
+    fn ext_gstate_summary_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match (self.object_type.as_str(), name.as_str()) {
             ("extGState", "hasSoftMask") => Some(Ok(ModelValue::Bool(
                 self.dictionary.get("SMask").is_some_and(
                     |value| !matches!(value, crate::CosObject::Name(name) if name.matches("None")),
                 ),
             ))),
-            ("extGState", "hasBlendMode") => {
+            ("extGState", "hasBlendMode" | "containsBM") => {
                 Some(Ok(ModelValue::Bool(self.dictionary.get("BM").is_some())))
+            }
+            ("extGState", "BMNameValue") => Some(Ok(name_key_model_value(&self.dictionary, "BM"))),
+            ("extGState", "containsSMask") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("SMask").is_some())))
+            }
+            ("extGState", "SMaskNameValue") => {
+                Some(Ok(name_key_model_value(&self.dictionary, "SMask")))
+            }
+            ("extGState", "containsTR") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("TR").is_some())))
+            }
+            ("extGState", "containsTR2") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("TR2").is_some())))
+            }
+            ("extGState", "TR2NameValue") => {
+                Some(Ok(name_key_model_value(&self.dictionary, "TR2")))
+            }
+            ("extGState", "containsHTP") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("HTP").is_some())))
+            }
+            ("extGState", "containsHTO") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("HTO").is_some())))
             }
             ("extGState", "alphaSource") => Some(Ok(self
                 .dictionary
                 .get("AIS")
                 .cloned()
                 .map_or(ModelValue::Null, ModelValue::from))),
+            _ => None,
+        }
+    }
+
+    fn xobject_summary_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match (self.object_type.as_str(), name.as_str()) {
+            ("xObject" | "formXObject" | "postScriptXObject", "containsOPI") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("OPI").is_some())))
+            }
+            ("xObject" | "formXObject" | "postScriptXObject", "containsSMask") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("SMask").is_some())))
+            }
+            ("xObject" | "formXObject" | "postScriptXObject", "containsPS") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("PS").is_some())))
+            }
+            ("xObject" | "formXObject" | "postScriptXObject", "containsRef") => {
+                Some(Ok(ModelValue::Bool(self.dictionary.get("Ref").is_some())))
+            }
+            ("formXObject", "isUniqueSemanticParent") => Some(Ok(ModelValue::Bool(true))),
+            ("xObject", "hasCorrectAlt") => Some(Ok(ModelValue::Bool(media_clip_alt_is_valid(
+                &self.dictionary,
+            )))),
+            _ => None,
+        }
+    }
+
+    fn cmap_font_stream_summary_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        match (self.object_type.as_str(), name.as_str()) {
             ("cMap", "hasCIDSystemInfo") => Some(Ok(ModelValue::Bool(
                 self.dictionary.get("CIDSystemInfo").is_some(),
             ))),
@@ -9348,7 +10152,8 @@ trailer
     }
 
     fn phase16_resource_pdf() -> Vec<u8> {
-        let stream = b"BT /Inherited 12 Tf ET /Local cs /Missing gs /Bad Do /Shade sh";
+        let stream =
+            b"BT /Inherited 12 Tf ET /Local cs /GS1 gs /Missing gs /Bad Do /Im1 Do /Fm1 Do /Shade sh";
         let mut pdf = br"%PDF-1.7
 1 0 obj
 << /Type /Catalog /Pages 2 0 R /OutputIntents [10 0 R] >>
@@ -9357,7 +10162,7 @@ endobj
 << /Type /Pages /Kids [3 0 R] /Count 1 /Resources << /Font << /Inherited 5 0 R >> /Shading << /Shade 11 0 R >> >> >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /Resources << /ColorSpace << /Local 7 0 R >> /XObject << /Bad 6 0 R >> >> /Contents 4 0 R >>
+<< /Type /Page /Parent 2 0 R /Resources << /ColorSpace << /Local 7 0 R /DeviceBad [/DeviceN [/Spot] /DeviceRGB 15 0 R << >>] /SepA [/Separation /Spot /DeviceRGB 15 0 R] /SepB [/Separation /Spot /DeviceCMYK 15 0 R] >> /ExtGState << /GS1 16 0 R >> /XObject << /Bad 6 0 R /Im1 17 0 R /Fm1 18 0 R >> >> /Contents 4 0 R >>
 endobj
 4 0 obj
 << /Length "
@@ -9380,7 +10185,7 @@ endobj
 << /NotAnXObject true >>
 endobj
 7 0 obj
-<< /N 3 /Alternate /DeviceRGB /Range [0 1 0 1 0 1] >>
+<< /N 3 /Alternate /DeviceRGB /Range [0 1 0 1 0 1] /OP false /OPM 0 >>
 endobj
 8 0 obj
 << /Type /Font /Subtype /CIDFontType2 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 9 0 R >>
@@ -9423,6 +10228,61 @@ endstream
 endobj
 15 0 obj
 << /FunctionType 2 /Domain [0 1] /Range [0 1] >>
+endobj
+16 0 obj
+<< /Type /ExtGState /BM /Normal /SMask /None /TR2 /Default /CA 1 >>
+endobj
+17 0 obj
+<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /ImageMask false /Interpolate false /Length 0 >>
+stream
+endstream
+endobj
+18 0 obj
+<< /Type /XObject /Subtype /Form /Subtype2 /PS /BBox [0 0 1 1] /Resources << /ColorSpace << /Nested 7 0 R >> >> /Length 0 >>
+stream
+endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+",
+        );
+        pdf
+    }
+
+    fn g4_incomplete_semantics_pdf() -> Vec<u8> {
+        let stream = b"/Im1 Do";
+        let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OutputIntents [5 0 R] >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length "
+            .to_vec();
+        pdf.extend(stream.len().to_string().as_bytes());
+        pdf.extend(
+            br" >>
+stream
+",
+        );
+        pdf.extend(stream);
+        pdf.extend(
+            br"
+endstream
+endobj
+5 0 obj
+<< /Type /OutputIntent /S /GTS_PDFA1 /DestOutputProfile << /N 3 >> >>
+endobj
+6 0 obj
+<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /Filter /JPXDecode /Length 0 >>
+stream
+endstream
 endobj
 trailer
 << /Root 1 0 R >>
@@ -9768,7 +10628,7 @@ trailer
             object.family.as_str() == "outputIntent"
                 && matches!(
                     object.properties.get(&icc_color_space),
-                    Some(crate::FeatureValue::String(value)) if value.as_str() == "RGB"
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "RGB "
                 )
         }));
         assert!(
@@ -9783,6 +10643,156 @@ trailer
                 .iter()
                 .any(|object| object.family.as_str() == "function")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_extract_g4_resource_color_image_xobject_summaries() -> crate::Result<()> {
+        let options = ValidationOptions::builder()
+            .feature_selection(FeatureSelection::All)
+            .build();
+        let validator = Validator::new(options)?;
+        let report =
+            validator.validate_reader(Cursor::new(phase16_resource_pdf()), InputName::memory())?;
+        let features =
+            report
+                .feature_report
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "featureExtraction",
+                })?;
+        let g_output_cs = PropertyName::new("gOutputCS")?;
+        let nr_components = PropertyName::new("nrComponents")?;
+        let family = PropertyName::new("family")?;
+        let are_colorants_present = PropertyName::new("areColorantsPresent")?;
+        let are_tint_and_alternate_consistent = PropertyName::new("areTintAndAlternateConsistent")?;
+        let contains_bm = PropertyName::new("containsBM")?;
+        let tr2_name_value = PropertyName::new("TR2NameValue")?;
+        let is_mask = PropertyName::new("isMask")?;
+        let nr_color_channels = PropertyName::new("nrColorChannels")?;
+        let bit_depth = PropertyName::new("bitDepth")?;
+        let subtype2 = PropertyName::new("Subtype2")?;
+        let contains_ps = PropertyName::new("containsPS")?;
+
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "colorSpace"
+                && matches!(
+                    object.properties.get(&g_output_cs),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "RGB "
+                )
+                && matches!(
+                    object.properties.get(&nr_components),
+                    Some(crate::FeatureValue::Number(value)) if (*value - 3.0).abs() < f64::EPSILON
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "colorSpace"
+                && matches!(
+                    object.properties.get(&family),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "DeviceN"
+                )
+                && matches!(
+                    object.properties.get(&are_colorants_present),
+                    Some(crate::FeatureValue::Bool(false))
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "colorSpace"
+                && matches!(
+                    object.properties.get(&family),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "Separation"
+                )
+                && matches!(
+                    object.properties.get(&are_tint_and_alternate_consistent),
+                    Some(crate::FeatureValue::Bool(false))
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "extGState"
+                && matches!(
+                    object.properties.get(&contains_bm),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+                && matches!(
+                    object.properties.get(&tr2_name_value),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "Default"
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "image"
+                && matches!(
+                    object.properties.get(&is_mask),
+                    Some(crate::FeatureValue::Bool(false))
+                )
+                && matches!(
+                    object.properties.get(&nr_color_channels),
+                    Some(crate::FeatureValue::Number(value)) if (*value - 3.0).abs() < f64::EPSILON
+                )
+                && matches!(
+                    object.properties.get(&bit_depth),
+                    Some(crate::FeatureValue::Number(value)) if (*value - 8.0).abs() < f64::EPSILON
+                )
+        }));
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "formXObject"
+                && matches!(
+                    object.properties.get(&subtype2),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "PS"
+                )
+                && matches!(
+                    object.properties.get(&contains_ps),
+                    Some(crate::FeatureValue::Bool(false))
+                )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_return_incomplete_for_unparsed_g4_byte_semantics() -> crate::Result<()> {
+        let document = Parser::default().parse(Cursor::new(g4_incomplete_semantics_pdf()))?;
+        let limits = ResourceLimits::default();
+        let catalog_key = document.catalog.ok_or(crate::ParseError::MissingObject {
+            message: BoundedText::unchecked("missing catalog"),
+        })?;
+        let catalog =
+            CatalogModel::new(&document, catalog_key).ok_or(crate::ParseError::MissingObject {
+                message: BoundedText::unchecked("missing catalog model"),
+            })?;
+        let output_intents = OutputIntentModel::from_catalog(&document, &catalog, &limits, 8)?;
+        let same_output_profile = PropertyName::new("sameOutputProfileIndirect")?;
+
+        assert!(matches!(
+            output_intents
+                .first()
+                .ok_or(crate::ParseError::MissingObject {
+                    message: BoundedText::unchecked("missing output intent"),
+                })?
+                .property(&same_output_profile),
+            Err(PdfvError::Profile(
+                crate::ProfileError::UnknownProperty { .. }
+            ))
+        ));
+
+        let graph = super::ModelGraph::with_all_families(&document, &limits);
+        let mut stack = vec![ModelObjectRef::Document(super::DocumentModel::new(
+            &document,
+        ))];
+        let bpcc_box_present = PropertyName::new("bpccBoxPresent")?;
+        let mut saw_jpx_image = false;
+        while let Some(object) = stack.pop() {
+            if object.object_type().as_str() == "image" {
+                saw_jpx_image = true;
+                assert!(matches!(
+                    object.property(&bpcc_box_present),
+                    Err(PdfvError::Profile(
+                        crate::ProfileError::UnknownProperty { .. }
+                    ))
+                ));
+            }
+            for linked in object.linked_objects(&graph, 32)? {
+                stack.push(linked);
+            }
+        }
+        assert!(saw_jpx_image);
         Ok(())
     }
 

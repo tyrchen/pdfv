@@ -33,3 +33,4 @@
 - [M9 G1 Expression Coverage Closure Snapshot](reviews/m9-g1-expression-coverage-closure.md)
 - [M9 G2 Derived Property Closure Snapshot](reviews/m9-g2-derived-property-closure.md)
 - [M9 G3 Font and CMap Decision Semantics Snapshot](reviews/m9-g3-font-cmap-decision-semantics.md)
+- [M9 G4 Resource, Color, Image, and XObject Semantics Snapshot](reviews/m9-g4-resource-color-image-xobject-semantics.md)

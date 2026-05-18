@@ -221,8 +221,16 @@ fn generated_corpus_rows() -> Result<Vec<CorpusAgreementRow>> {
             options: feature_options(),
             expected: CorpusOutcome::Valid,
             profile: "auto-default-pdfa-1b",
-            semantic_families: &["resource", "font", "color"],
-            required_feature_families: &["resourceUse", "font", "colorSpace", "outputIntent"],
+            semantic_families: &["resource", "font", "color", "image", "xObject"],
+            required_feature_families: &[
+                "resourceUse",
+                "font",
+                "colorSpace",
+                "outputIntent",
+                "extGState",
+                "image",
+                "formXObject",
+            ],
         })?,
         corpus_row(CorpusRowSpec {
             fixture: "generated:font-cmap-subset-incomplete",
@@ -444,7 +452,8 @@ trailer
 }
 
 fn resource_font_color_pdf() -> Vec<u8> {
-    let stream = b"BT /Inherited 12 Tf ET /Local cs /Missing gs /Bad Do /Shade sh";
+    let stream =
+        b"BT /Inherited 12 Tf ET /Local cs /GS1 gs /Missing gs /Bad Do /Im1 Do /Fm1 Do /Shade sh";
     let mut pdf = br"%PDF-1.7
 1 0 obj
 << /Type /Catalog /Pages 2 0 R /OutputIntents [10 0 R] >>
@@ -453,7 +462,7 @@ endobj
 << /Type /Pages /Kids [3 0 R] /Count 1 /Resources << /Font << /Inherited 5 0 R >> /Shading << /Shade 11 0 R >> >> >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /Resources << /ColorSpace << /Local 7 0 R >> /XObject << /Bad 6 0 R >> >> /Contents 4 0 R >>
+<< /Type /Page /Parent 2 0 R /Resources << /ColorSpace << /Local 7 0 R /DeviceBad [/DeviceN [/Spot] /DeviceRGB 15 0 R << >>] /SepA [/Separation /Spot /DeviceRGB 15 0 R] /SepB [/Separation /Spot /DeviceCMYK 15 0 R] >> /ExtGState << /GS1 16 0 R >> /XObject << /Bad 6 0 R /Im1 17 0 R /Fm1 18 0 R >> >> /Contents 4 0 R >>
 endobj
 4 0 obj
 << /Length "
@@ -476,7 +485,7 @@ endobj
 << /NotAnXObject true >>
 endobj
 7 0 obj
-<< /N 3 /Alternate /DeviceRGB /Range [0 1 0 1 0 1] >>
+<< /N 3 /Alternate /DeviceRGB /Range [0 1 0 1 0 1] /OP false /OPM 0 >>
 endobj
 8 0 obj
 << /Type /Font /Subtype /CIDFontType2 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 9 0 R >>
@@ -519,6 +528,19 @@ endstream
 endobj
 15 0 obj
 << /FunctionType 2 /Domain [0 1] /Range [0 1] >>
+endobj
+16 0 obj
+<< /Type /ExtGState /BM /Normal /SMask /None /TR2 /Default /CA 1 >>
+endobj
+17 0 obj
+<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /ImageMask false /Interpolate false /Length 0 >>
+stream
+endstream
+endobj
+18 0 obj
+<< /Type /XObject /Subtype /Form /Subtype2 /PS /BBox [0 0 1 1] /Resources << /ColorSpace << /Nested 7 0 R >> >> /Length 0 >>
+stream
+endstream
 endobj
 trailer
 << /Root 1 0 R >>

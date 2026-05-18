@@ -2204,7 +2204,7 @@ fn unsupported_primary_reason(reason: &str) -> &'static str {
 }
 
 fn missing_semantic_family_reason(
-    object_type: &ObjectTypeName,
+    _object_type: &ObjectTypeName,
     expr: &RuleExpr,
 ) -> Option<&'static str> {
     let mut properties = Vec::new();
@@ -2228,9 +2228,6 @@ fn missing_semantic_family_reason(
             })
         })
         .then_some("missingSemanticFamily")
-        .or_else(|| {
-            matches!(object_type.as_str(), "undefinedOperator").then_some("missingSemanticFamily")
-        })
 }
 
 fn increment_reason(reasons: &mut BTreeMap<String, u64>, reason: &'static str) {
