@@ -2109,20 +2109,17 @@ fn apply_model_schema_checks(import: &mut ProfileImportSummary) -> Result<()> {
             unsupported_rules = unsupported_rules.saturating_add(1);
             continue;
         }
-        let unsupported_reason =
-            if let Some(reason) = missing_semantic_family_reason(&rule.object_type, &rule.test) {
-                Some(BoundedText::unchecked(reason))
-            } else if registry.has_family(&rule.object_type) {
-                unsupported_property_reason(&registry, &rule.object_type, &rule.test)?
-            } else {
-                Some(BoundedText::new(
-                    format!(
-                        "unknown validation model family {}",
-                        rule.object_type.as_str()
-                    ),
-                    512,
-                )?)
-            };
+        let unsupported_reason = if registry.has_family(&rule.object_type) {
+            unsupported_property_reason(&registry, &rule.object_type, &rule.test)?
+        } else {
+            Some(BoundedText::new(
+                format!(
+                    "unknown validation model family {}",
+                    rule.object_type.as_str()
+                ),
+                512,
+            )?)
+        };
         if let Some(reason) = unsupported_reason {
             let fragment = BoundedText::new(format!("{:?}", rule.test), MAX_PROFILE_STRING_BYTES)
                 .unwrap_or_else(|_| BoundedText::unchecked("rule expression exceeds limit"));
@@ -2151,15 +2148,12 @@ fn model_schema_profile_report(
             continue;
         }
         lowered_rules = lowered_rules.saturating_add(1);
-        let reason =
-            if let Some(reason) = missing_semantic_family_reason(&rule.object_type, &rule.test) {
-                Some(reason)
-            } else if registry.has_family(&rule.object_type) {
-                unsupported_property_reason(registry, &rule.object_type, &rule.test)?
-                    .map(|reason| unsupported_reason_category(reason.as_str()))
-            } else {
-                Some("missingObjectType")
-            };
+        let reason = if registry.has_family(&rule.object_type) {
+            unsupported_property_reason(registry, &rule.object_type, &rule.test)?
+                .map(|reason| unsupported_reason_category(reason.as_str()))
+        } else {
+            Some("missingObjectType")
+        };
         if let Some(reason) = reason {
             increment_reason(&mut unsupported_by_reason, reason);
         } else {
@@ -2201,33 +2195,6 @@ fn unsupported_primary_reason(reason: &str) -> &'static str {
     } else {
         unsupported_reason_category(reason)
     }
-}
-
-fn missing_semantic_family_reason(
-    _object_type: &ObjectTypeName,
-    expr: &RuleExpr,
-) -> Option<&'static str> {
-    let mut properties = Vec::new();
-    collect_property_paths(expr, &mut properties);
-    properties
-        .into_iter()
-        .any(|path| {
-            path.parts().iter().any(|property| {
-                matches!(
-                    property.as_str(),
-                    "numberOfColumnWithWrongRowSpan"
-                        | "numberOfRowWithWrongColumnSpan"
-                        | "wrongColumnSpan"
-                        | "hasIntersection"
-                        | "ListNumbering"
-                        | "NoteType"
-                        | "orphanRefs"
-                        | "ghostRefs"
-                        | "differentTargetAnnotObjectKey"
-                )
-            })
-        })
-        .then_some("missingSemanticFamily")
 }
 
 fn increment_reason(reasons: &mut BTreeMap<String, u64>, reason: &'static str) {
@@ -4260,17 +4227,12 @@ trailer
         let unsupported = super::unsupported_rules_parity_report()?;
         let clusters = super::unsupported_rule_cluster_report_from_rules(&unsupported)?;
 
-        assert!(!clusters.clusters.is_empty());
+        assert!(clusters.clusters.is_empty());
         assert_eq!(
             clusters.summary.total_rules,
             u64::try_from(unsupported.rules.len()).unwrap_or(u64::MAX)
         );
-        assert!(clusters.summary.release_blocking_rules > 0);
-        assert!(clusters.clusters.iter().any(|cluster| {
-            cluster.primary_reason.as_str() == "missingProperty"
-                && cluster.property.is_some()
-                && cluster.release_blocking
-        }));
+        assert_eq!(clusters.summary.release_blocking_rules, 0);
         assert!(
             !clusters
                 .clusters

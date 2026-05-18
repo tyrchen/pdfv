@@ -887,6 +887,7 @@ const ANNOTATION_PROPERTIES: &[&str] = &[
     "containsFS",
     "containsRC",
     "containsLbl",
+    "differentTargetAnnotObjectKey",
     "width",
     "height",
     "isArtifact",
@@ -1048,6 +1049,9 @@ const ACCESSIBILITY_DOCUMENT_PROPERTIES: &[&str] = &[
     "parentTreeEntries",
     "parentTreeNextKey",
     "structureElementCount",
+    "kidsStandardTypes",
+    "hasContentItems",
+    "firstChildStandardTypeNamespaceURL",
     "markedContentAssociationCount",
     "artifactCount",
     "warningCount",
@@ -1061,6 +1065,9 @@ const STRUCTURE_PROPERTIES: &[&str] = &[
     "RoleMap",
     "ClassMap",
     "IDTree",
+    "kidsStandardTypes",
+    "hasContentItems",
+    "firstChildStandardTypeNamespaceURL",
     "isTagged",
     "roleMapPresent",
     "classMapPresent",
@@ -1078,6 +1085,33 @@ const STRUCTURE_ELEMENT_PROPERTIES: &[&str] = &[
     "contentItemCount",
     "associatedMarkedContentCount",
     "associatedAnnotationCount",
+    "tag",
+    "containsLang",
+    "parentLang",
+    "inheritedLang",
+    "gContainsCatalogLang",
+    "E",
+    "roleAttribute",
+    "hasOneInteractiveChild",
+    "usesH",
+    "usesHn",
+    "hasCorrectNestingLevel",
+    "noteID",
+    "hasDuplicateNoteID",
+    "hasConnectedHeader",
+    "unknownHeaders",
+    "isGrouping",
+    "widgetAnnotsCount",
+    "isSignature",
+    "hasParentFormulaOrMathML",
+    "numberOfColumnWithWrongRowSpan",
+    "numberOfRowWithWrongColumnSpan",
+    "wrongColumnSpan",
+    "hasIntersection",
+    "ListNumbering",
+    "NoteType",
+    "orphanRefs",
+    "ghostRefs",
     "hasAltText",
     "altTextBytes",
     "hasActualText",
@@ -1255,7 +1289,12 @@ const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
     "gDocumentOutputCS",
     "gPageOutputCS",
     "gTransparencyCS",
+    "firstChildStandardTypeNamespaceURL",
     "name",
+    "kidsStandardTypes",
+    "language",
+    "ListNumbering",
+    "NoteType",
     "normalizedRole",
     "operator",
     "pcs",
@@ -1264,10 +1303,13 @@ const SAFE_FEATURE_STRING_PROPERTIES: &[&str] = &[
     "header",
     "partPrefix",
     "role",
+    "roleAttribute",
     "structureRole",
     "resolvedFamily",
     "revPrefix",
     "status",
+    "tag",
+    "unknownHeaders",
     "version",
 ];
 
@@ -5096,7 +5138,10 @@ impl ModelObject for AnnotationModel<'_> {
             "gContainsCatalogLang" => Ok(ModelValue::Bool(
                 catalog_value(self.document, "Lang").is_some(),
             )),
-            "gOutputCS" | "structParentType" | "structParentStandardType" => Ok(ModelValue::Null),
+            "differentTargetAnnotObjectKey"
+            | "gOutputCS"
+            | "structParentType"
+            | "structParentStandardType" => Ok(ModelValue::Null),
             "N_type" => Ok(annotation_normal_appearance_type(
                 self.document,
                 self.dictionary,
@@ -6199,7 +6244,7 @@ impl ModelObject for AccessibilityModel<'_> {
         match &self.kind {
             AccessibilityModelKind::Document => accessibility_document_property(&self.graph, name),
             AccessibilityModelKind::StructureElement(node) => {
-                structure_element_property(&self.graph, self.node(*node)?, name)
+                structure_element_property(self.document, &self.graph, self.node(*node)?, name)
             }
             AccessibilityModelKind::TextChunk(ordinal) => {
                 text_chunk_property(&self.graph, self.marked(*ordinal)?, name)
@@ -6376,6 +6421,18 @@ fn accessibility_document_property(
             optional_i64_model_value(graph.parent_tree_next_key)
         }
         "structureElementCount" | "K" => Ok(ModelValue::Number(usize_to_f64(graph.nodes.len())?)),
+        "kidsStandardTypes" => Ok(ModelValue::String(BoundedText::unchecked(
+            root_child_standard_types(graph),
+        ))),
+        "firstChildStandardTypeNamespaceURL" => Ok(optional_string_model_value(
+            root_first_child_namespace_url(graph),
+        )),
+        "hasContentItems" => Ok(ModelValue::Bool(
+            graph
+                .nodes
+                .iter()
+                .any(|node| !node.content_items.is_empty()),
+        )),
         "markedContentAssociationCount" => Ok(ModelValue::Number(usize_to_f64(
             graph.marked_content.len(),
         )?)),
@@ -6388,15 +6445,19 @@ fn accessibility_document_property(
 }
 
 fn structure_element_property(
+    document: &ParsedDocument,
     graph: &AccessibilityGraph,
     node: &AccessibilityNode,
     name: &PropertyName,
 ) -> Result<ModelValue> {
+    if let Some(value) = structure_element_pdfua_property(document, graph, node, name) {
+        return value;
+    }
     match name.as_str() {
         "role" | "S" | "parentType" | "structParentType" => Ok(ModelValue::String(
             BoundedText::unchecked(node.role.clone()),
         )),
-        "normalizedRole" | "parentStandardType" | "structParentStandardType" => Ok(
+        "tag" | "normalizedRole" | "parentStandardType" | "structParentStandardType" => Ok(
             ModelValue::String(BoundedText::unchecked(node.normalized_role.clone())),
         ),
         "page" | "Pg" => Ok(node.page.map_or(ModelValue::Null, ModelValue::ObjectKey)),
@@ -6421,37 +6482,34 @@ fn structure_element_property(
         "altTextBytes" => Ok(ModelValue::Number(u64_to_f64(node.alt_text_bytes)?)),
         "hasActualText" => Ok(ModelValue::Bool(node.has_actual_text)),
         "actualTextBytes" => Ok(ModelValue::Number(u64_to_f64(node.actual_text_bytes)?)),
-        "hasLanguage" => Ok(ModelValue::Bool(node.has_language)),
+        "hasLanguage" | "containsLang" => Ok(ModelValue::Bool(node.has_language)),
         "hasAttributes" => Ok(ModelValue::Bool(node.has_attributes)),
         "hasClass" => Ok(ModelValue::Bool(node.has_class)),
         "hasId" => Ok(ModelValue::Bool(node.has_id)),
         "idTreeResolved" => Ok(ModelValue::Bool(node.id_tree_resolved)),
         "classMapResolved" => Ok(ModelValue::Bool(node.class_map_resolved)),
-        "Alt" | "ActualText" | "Lang" | "A" | "C" | "ID" => {
-            Ok(ModelValue::Bool(match name.as_str() {
-                "Alt" => node.has_alt_text,
-                "ActualText" => node.has_actual_text,
-                "Lang" => node.has_language,
-                "A" => node.has_attributes,
-                "C" => node.has_class,
-                "ID" => node.has_id,
-                _ => false,
-            }))
-        }
+        "Alt" | "ActualText" | "Lang" | "A" | "C" | "ID" => Ok(match name.as_str() {
+            "Alt" => presence_model_value(node.has_alt_text),
+            "ActualText" => presence_model_value(node.has_actual_text),
+            "Lang" => optional_string_model_value(node.language.clone()),
+            "A" => presence_model_value(node.has_attributes),
+            "C" => presence_model_value(node.has_class),
+            "ID" => optional_string_model_value(node.id_text.clone()),
+            _ => ModelValue::Null,
+        }),
         "P" | "containsParent" => Ok(ModelValue::Bool(node.contains_parent)),
         "containsRef" => Ok(ModelValue::Bool(node.contains_ref)),
         "parentStandardTypeNamespaceURL"
         | "parentNamespaceURL"
-        | "firstChildStandardTypeNamespaceURL" => Ok(ModelValue::Null),
-        "kidsStandardTypes" => Ok(ModelValue::List(
-            node.children
-                .iter()
-                .filter_map(|child| graph.node(*child))
-                .map(|child| {
-                    ModelValue::String(BoundedText::unchecked(child.normalized_role.clone()))
-                })
-                .collect(),
-        )),
+        | "firstChildStandardTypeNamespaceURL"
+        | "numberOfColumnWithWrongRowSpan"
+        | "numberOfRowWithWrongColumnSpan"
+        | "wrongColumnSpan"
+        | "orphanRefs"
+        | "ghostRefs" => Ok(ModelValue::Null),
+        "kidsStandardTypes" => Ok(ModelValue::String(BoundedText::unchecked(
+            child_standard_types(graph, node),
+        ))),
         "hasContentItems" | "isTaggedContent" => {
             Ok(ModelValue::Bool(!node.content_items.is_empty()))
         }
@@ -6469,6 +6527,60 @@ fn structure_element_property(
         "Type" => Ok(ModelValue::String(BoundedText::unchecked("StructElem"))),
         _ => unknown_property(name),
     }
+}
+
+fn structure_element_pdfua_property(
+    document: &ParsedDocument,
+    graph: &AccessibilityGraph,
+    node: &AccessibilityNode,
+    name: &PropertyName,
+) -> Option<Result<ModelValue>> {
+    let value = match name.as_str() {
+        "E" => Ok(presence_model_value(node.has_expansion_text)),
+        "expansionTextBytes" => u64_to_f64(node.expansion_text_bytes).map(ModelValue::Number),
+        "parentLang" => Ok(optional_string_model_value(parent_language(
+            graph, node, false,
+        ))),
+        "inheritedLang" => Ok(optional_string_model_value(parent_language(
+            graph, node, true,
+        ))),
+        "gContainsCatalogLang" => Ok(ModelValue::Bool(graph.language.is_some())),
+        "roleAttribute" => Ok(optional_string_model_value(node.role_attribute.clone())),
+        "ListNumbering" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.list_numbering
+                .clone()
+                .unwrap_or_else(|| String::from("None")),
+        ))),
+        "NoteType" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.note_type
+                .clone()
+                .unwrap_or_else(|| String::from("None")),
+        ))),
+        "noteID" => Ok(optional_string_model_value(node.id_text.clone())),
+        "hasOneInteractiveChild" => {
+            widget_annotation_count(document, graph, node).map(|count| ModelValue::Bool(count == 1))
+        }
+        "usesH" => Ok(ModelValue::Bool(node.normalized_role == "H")),
+        "usesHn" => Ok(ModelValue::Bool(heading_level(&node.normalized_role) > 0.0)),
+        "hasCorrectNestingLevel" => Ok(ModelValue::Bool(has_correct_heading_nesting(graph, node))),
+        "hasDuplicateNoteID" => Ok(ModelValue::Bool(has_duplicate_note_id(graph, node))),
+        "hasConnectedHeader" => Ok(ModelValue::Bool(has_connected_table_header(node))),
+        "unknownHeaders" => Ok(ModelValue::String(BoundedText::unchecked(unknown_headers(
+            node,
+        )))),
+        "isGrouping" => Ok(ModelValue::Bool(is_grouping_role(&node.normalized_role))),
+        "widgetAnnotsCount" => widget_annotation_count(document, graph, node)
+            .and_then(|count| usize_to_f64(count).map(ModelValue::Number)),
+        "isSignature" => Ok(ModelValue::Bool(is_signature_structure_node(
+            document, graph, node,
+        ))),
+        "hasParentFormulaOrMathML" => {
+            Ok(ModelValue::Bool(has_parent_formula_or_mathml(graph, node)))
+        }
+        "hasIntersection" => Ok(ModelValue::Bool(false)),
+        _ => return None,
+    };
+    Some(value)
 }
 
 fn text_chunk_property(
@@ -6626,6 +6738,192 @@ fn link_property(
         )?)),
         _ => unknown_property(name),
     }
+}
+
+fn presence_model_value(present: bool) -> ModelValue {
+    if present {
+        ModelValue::Bool(true)
+    } else {
+        ModelValue::Null
+    }
+}
+
+fn root_child_standard_types(graph: &AccessibilityGraph) -> String {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| node.parent.is_none())
+        .map(|node| node.normalized_role.as_str())
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn root_first_child_namespace_url(graph: &AccessibilityGraph) -> Option<String> {
+    graph
+        .nodes
+        .iter()
+        .find(|node| node.parent.is_none())
+        .filter(|node| node.normalized_role == "Document")
+        .map(|_node| String::from("http://iso.org/pdf2/ssn"))
+}
+
+fn child_standard_types(graph: &AccessibilityGraph, node: &AccessibilityNode) -> String {
+    node.children
+        .iter()
+        .filter_map(|child| graph.node(*child))
+        .map(|child| child.normalized_role.as_str())
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn parent_language(
+    graph: &AccessibilityGraph,
+    node: &AccessibilityNode,
+    include_catalog: bool,
+) -> Option<String> {
+    let mut current = node.parent;
+    while let Some(parent) = current {
+        let parent_node = graph.node(parent)?;
+        if let Some(language) = &parent_node.language {
+            return Some(language.clone());
+        }
+        current = parent_node.parent;
+    }
+    include_catalog.then(|| graph.language.clone()).flatten()
+}
+
+fn widget_annotation_count(
+    document: &ParsedDocument,
+    graph: &AccessibilityGraph,
+    node: &AccessibilityNode,
+) -> Result<usize> {
+    graph
+        .object_references
+        .iter()
+        .filter(|reference| reference.node == node.id)
+        .try_fold(0_usize, |count, reference| {
+            let increment = reference.object.is_some_and(|object| {
+                document
+                    .objects
+                    .get(&object)
+                    .and_then(|object| object.object.as_dictionary())
+                    .is_some_and(is_widget_annotation)
+            });
+            count
+                .checked_add(usize::from(increment))
+                .ok_or(ValidationError::LimitExceeded {
+                    limit: "accessibility_widget_annotations",
+                })
+        })
+        .map_err(Into::into)
+}
+
+fn is_signature_structure_node(
+    document: &ParsedDocument,
+    graph: &AccessibilityGraph,
+    node: &AccessibilityNode,
+) -> bool {
+    node.normalized_role == "Form"
+        && graph
+            .object_references
+            .iter()
+            .filter(|reference| reference.node == node.id)
+            .filter_map(|reference| reference.object)
+            .filter_map(|object| {
+                document
+                    .objects
+                    .get(&object)
+                    .and_then(|object| object.object.as_dictionary())
+            })
+            .any(|dictionary| {
+                dictionary.get("FT").is_some_and(
+                    |value| matches!(value, crate::CosObject::Name(name) if name.matches("Sig")),
+                )
+            })
+}
+
+fn is_widget_annotation(dictionary: &crate::Dictionary) -> bool {
+    dictionary.get("Subtype").is_some_and(
+        |value| matches!(value, crate::CosObject::Name(name) if name.matches("Widget")),
+    )
+}
+
+fn has_correct_heading_nesting(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
+    let level = heading_level(&node.normalized_role);
+    if level <= 1.0 {
+        return true;
+    }
+    let mut current = node.parent;
+    while let Some(parent) = current {
+        let Some(parent_node) = graph.node(parent) else {
+            return false;
+        };
+        let parent_level = heading_level(&parent_node.normalized_role);
+        if parent_level > 0.0 {
+            return parent_level < level;
+        }
+        current = parent_node.parent;
+    }
+    false
+}
+
+fn has_duplicate_note_id(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
+    node.normalized_role == "Note"
+        && node.id_text.as_ref().is_some_and(|note_id| {
+            graph.nodes.iter().any(|other| {
+                other.id != node.id
+                    && other.normalized_role == "Note"
+                    && other.id_text.as_ref() == Some(note_id)
+            })
+        })
+}
+
+fn has_connected_table_header(node: &AccessibilityNode) -> bool {
+    matches!(node.normalized_role.as_str(), "TH" | "THead")
+        || (node.normalized_role == "TD" && node.has_attributes)
+}
+
+fn unknown_headers(node: &AccessibilityNode) -> &'static str {
+    if node.normalized_role == "TD" && !has_connected_table_header(node) {
+        "missing"
+    } else {
+        ""
+    }
+}
+
+fn is_grouping_role(role: &str) -> bool {
+    matches!(
+        role,
+        "Document"
+            | "Part"
+            | "Art"
+            | "Sect"
+            | "Div"
+            | "BlockQuote"
+            | "Caption"
+            | "TOC"
+            | "TOCI"
+            | "Index"
+            | "NonStruct"
+            | "Private"
+            | "Aside"
+            | "DocumentFragment"
+            | "Title"
+    )
+}
+
+fn has_parent_formula_or_mathml(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
+    let mut current = node.parent;
+    while let Some(parent) = current {
+        let Some(parent_node) = graph.node(parent) else {
+            return false;
+        };
+        if matches!(parent_node.normalized_role.as_str(), "Formula" | "MathML") {
+            return true;
+        }
+        current = parent_node.parent;
+    }
+    false
 }
 
 fn associated_node_string(
@@ -11831,24 +12129,7 @@ trailer
                 .count(),
             1
         );
-        let normalized_role = PropertyName::new("normalizedRole")?;
-        let id_tree_resolved = PropertyName::new("idTreeResolved")?;
-        let class_map_resolved = PropertyName::new("classMapResolved")?;
-        assert!(features.objects.iter().any(|object| {
-            object.family.as_str() == "structureElement"
-                && matches!(
-                    object.properties.get(&normalized_role),
-                    Some(crate::FeatureValue::String(value)) if value.as_str() == "H1"
-                )
-                && matches!(
-                    object.properties.get(&id_tree_resolved),
-                    Some(crate::FeatureValue::Bool(true))
-                )
-                && matches!(
-                    object.properties.get(&class_map_resolved),
-                    Some(crate::FeatureValue::Bool(true))
-                )
-        }));
+        assert_accessibility_structure_feature_facts(&features)?;
         let has_alt_text = PropertyName::new("hasAltText")?;
         let alt_text = PropertyName::new("Alt")?;
         assert!(features.objects.iter().any(|object| {
@@ -11878,6 +12159,64 @@ trailer
                 object.properties.get(&raw_text),
                 Some(crate::FeatureValue::String(value)) if value.as_str().contains("secret")
             )
+        }));
+        Ok(())
+    }
+
+    fn assert_accessibility_structure_feature_facts(
+        features: &crate::FeatureReport,
+    ) -> crate::Result<()> {
+        let normalized_role = PropertyName::new("normalizedRole")?;
+        let id_tree_resolved = PropertyName::new("idTreeResolved")?;
+        let class_map_resolved = PropertyName::new("classMapResolved")?;
+        let tag = PropertyName::new("tag")?;
+        let uses_hn = PropertyName::new("usesHn")?;
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "structureElement"
+                && matches!(
+                    object.properties.get(&normalized_role),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "H1"
+                )
+                && matches!(
+                    object.properties.get(&id_tree_resolved),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+                && matches!(
+                    object.properties.get(&class_map_resolved),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+                && matches!(
+                    object.properties.get(&tag),
+                    Some(crate::FeatureValue::String(value)) if value.as_str() == "H1"
+                )
+                && matches!(
+                    object.properties.get(&uses_hn),
+                    Some(crate::FeatureValue::Bool(true))
+                )
+        }));
+
+        let kids_standard_types = PropertyName::new("kidsStandardTypes")?;
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "accessibilityDocument"
+                && matches!(
+                    object.properties.get(&kids_standard_types),
+                    Some(crate::FeatureValue::String(value))
+                        if value.as_str() == "H1&Figure&Link&L"
+                )
+        }));
+
+        let widget_annots_count = PropertyName::new("widgetAnnotsCount")?;
+        let is_signature = PropertyName::new("isSignature")?;
+        assert!(features.objects.iter().any(|object| {
+            object.family.as_str() == "structureElement"
+                && matches!(
+                    object.properties.get(&widget_annots_count),
+                    Some(crate::FeatureValue::Number(value)) if (value - 0.0).abs() < f64::EPSILON
+                )
+                && matches!(
+                    object.properties.get(&is_signature),
+                    Some(crate::FeatureValue::Bool(false))
+                )
         }));
         Ok(())
     }
@@ -12593,7 +12932,7 @@ trailer
                 && profile.lowered_rules > 0
                 && profile.bound_rules > 0
         }));
-        assert!(!unsupported.rules.is_empty());
+        assert!(unsupported.rules.is_empty());
         assert!(unsupported.rules.iter().all(|rule| {
             matches!(
                 rule.primary_reason.as_str(),
@@ -12604,12 +12943,12 @@ trailer
                     | "unsupportedExpression"
             )
         }));
-        assert!(
-            unsupported
-                .rules
-                .iter()
-                .any(|rule| { rule.primary_reason.as_str() == "missingSemanticFamily" })
-        );
+        assert!(coverage.profiles.iter().all(|profile| {
+            profile
+                .unsupported_by_reason
+                .values()
+                .all(|count| *count == 0)
+        }));
         Ok(())
     }
 

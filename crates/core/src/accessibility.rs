@@ -164,14 +164,28 @@ pub(crate) struct AccessibilityNode {
     pub has_actual_text: bool,
     /// Bounded `/ActualText` byte count.
     pub actual_text_bytes: u64,
+    /// Whether the dictionary declares `/E`.
+    pub has_expansion_text: bool,
+    /// Bounded `/E` byte count.
+    pub expansion_text_bytes: u64,
     /// Whether `/Lang` exists on this element.
     pub has_language: bool,
+    /// Bounded `/Lang` value.
+    pub language: Option<String>,
     /// Whether `/A` attributes exist.
     pub has_attributes: bool,
+    /// Bounded role attribute value from `/A` when present.
+    pub role_attribute: Option<String>,
+    /// Bounded list numbering attribute value from `/A` when present.
+    pub list_numbering: Option<String>,
+    /// Bounded note type attribute value from `/A` when present.
+    pub note_type: Option<String>,
     /// Whether `/C` class mapping references exist.
     pub has_class: bool,
     /// Whether `/ID` exists.
     pub has_id: bool,
+    /// Bounded `/ID` value when string-like.
+    pub id_text: Option<String>,
     /// Whether this element's `/ID` resolves through `/IDTree`.
     pub id_tree_resolved: bool,
     /// Whether `/P` exists.
@@ -507,10 +521,17 @@ fn traverse_structure_tree(
                     alt_text_bytes: text_bytes(dictionary.get("Alt")),
                     has_actual_text: dictionary.get("ActualText").is_some(),
                     actual_text_bytes: text_bytes(dictionary.get("ActualText")),
+                    has_expansion_text: dictionary.get("E").is_some(),
+                    expansion_text_bytes: text_bytes(dictionary.get("E")),
                     has_language: dictionary.get("Lang").is_some(),
+                    language: text_string(dictionary.get("Lang")),
                     has_attributes: dictionary.get("A").is_some(),
+                    role_attribute: attribute_text(document, dictionary, "Role"),
+                    list_numbering: attribute_text(document, dictionary, "ListNumbering"),
+                    note_type: attribute_text(document, dictionary, "NoteType"),
                     has_class: dictionary.get("C").is_some(),
                     has_id: dictionary.get("ID").is_some(),
+                    id_text: element_id(dictionary),
                     id_tree_resolved: element_id(dictionary).is_some_and(|id| {
                         graph
                             .id_tree
@@ -1138,6 +1159,49 @@ fn class_references_resolve(struct_tree: &Dictionary, dictionary: &Dictionary) -
         value => class_name_from_value(value)
             .and_then(|class_name| class_map.get(class_name.as_str()))
             .is_some(),
+    }
+}
+
+fn attribute_text(
+    document: &ParsedDocument,
+    dictionary: &Dictionary,
+    name: &str,
+) -> Option<String> {
+    attribute_values(document, dictionary.get("A"))
+        .into_iter()
+        .find_map(|attribute| {
+            attribute
+                .get(name)
+                .and_then(|value| name_value(value).or_else(|| text_string(Some(value))))
+        })
+}
+
+fn attribute_values<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&'a CosObject>,
+) -> Vec<&'a Dictionary> {
+    let mut values = Vec::new();
+    push_attribute_values(document, value, &mut values);
+    values
+}
+
+fn push_attribute_values<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&'a CosObject>,
+    values: &mut Vec<&'a Dictionary>,
+) {
+    match value {
+        Some(CosObject::Array(items)) => {
+            for item in items {
+                push_attribute_values(document, Some(item), values);
+            }
+        }
+        Some(value) => {
+            if let Some(dictionary) = dictionary_from_value(document, Some(value)) {
+                values.push(dictionary);
+            }
+        }
+        None => {}
     }
 }
 

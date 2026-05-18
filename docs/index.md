@@ -35,3 +35,4 @@
 - [M9 G3 Font and CMap Decision Semantics Snapshot](reviews/m9-g3-font-cmap-decision-semantics.md)
 - [M9 G4 Resource, Color, Image, and XObject Semantics Snapshot](reviews/m9-g4-resource-color-image-xobject-semantics.md)
 - [M9 G5 XMP RDF Metadata Validation Snapshot](reviews/m9-g5-xmp-rdf-metadata-validation.md)
+- [M9 G6 PDF/UA Accessibility Reconstruction Snapshot](reviews/m9-g6-pdf-ua-accessibility-reconstruction.md)
