@@ -20,6 +20,8 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+    expectedClassification: expectedDriftUnsupportedRule
+    classificationNote: "G7 triage: pdfv returns Incomplete with runtime unsupported numeric/string shape rules; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."
   - id: t2-verapdf-parser-valid-document-pdfa-1b
     path: vendors/veraPDF-parser/src/test/resources/org/verapdf/cos/filters/validDocument.pdf
     tier: t2PublicConformance
@@ -38,6 +40,8 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+    expectedClassification: expectedDriftUnsupportedRule
+    classificationNote: "G7 triage: pdfv returns Incomplete with runtime unsupported numeric/string shape rules; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."
   - id: t2-verapdf-feature-pages-pdfa-1b
     path: vendors/veraPDF-validation/feature-reporting/src/test/resources/objects/pdf/Pages.pdf
     tier: t2PublicConformance
@@ -56,3 +60,5 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+    expectedClassification: expectedDriftUnsupportedRule
+    classificationNote: "G7 triage: pdfv returns Incomplete with runtime unsupported shape rules while veraPDF returns Invalid; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."

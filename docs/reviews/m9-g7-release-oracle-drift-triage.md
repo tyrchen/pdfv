@@ -47,10 +47,12 @@ for this milestone:
 | Live T2 timeout rows | 0 |
 | Live T3 committed rows | 0 |
 
-All live T2 mismatches are classified as `expectedDriftUnsupportedRule`: veraPDF
-returns `Valid` or `Invalid`, while pdfv returns `Incomplete` with unsupported
-rule evidence. This preserves the G7 safety invariant that a live mismatch must
-not become a false-compliant `Valid` result.
+All live T2 mismatches are explicitly pre-triaged in the manifest as
+`expectedDriftUnsupportedRule`: veraPDF returns `Valid` or `Invalid`, while pdfv
+returns `Incomplete` with runtime unsupported-rule evidence. Untriaged runtime
+unsupported-rule mismatches remain `unexpectedDrift` and release-blocking. This
+preserves the G7 safety invariant that a live mismatch must not become a
+false-compliant `Valid` result or silently non-blocking drift.
 
 ## Corpus Manifests
 

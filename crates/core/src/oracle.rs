@@ -743,11 +743,6 @@ pub fn classify_oracle_observation(
     if let Some(classification) = row.expected_classification {
         return classification;
     }
-    if observation.pdfv_unsupported_rules > 0
-        && matches!(observation.pdfv_outcome, Some(CorpusOutcome::Incomplete))
-    {
-        return OracleDriftClassification::ExpectedDriftUnsupportedRule;
-    }
     OracleDriftClassification::UnexpectedDrift
 }
 
@@ -986,6 +981,50 @@ mod tests {
         );
         assert!(result.false_compliant);
         assert!(result.release_blocking);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_keep_untriaged_unsupported_rule_mismatches_unexpected() -> crate::Result<()> {
+        let row = base_row()?;
+        let observation = OracleRowObservation {
+            vera_pdf_outcome: Some(CorpusOutcome::Valid),
+            pdfv_outcome: Some(CorpusOutcome::Incomplete),
+            pdfv_unsupported_rules: 3,
+            vera_pdf_status: OracleExecutionStatus::Completed,
+            pdfv_status: OracleExecutionStatus::Completed,
+        };
+
+        let result = OracleCorpusResultRow::from_observation(&row, observation)?;
+
+        assert_eq!(
+            result.classification,
+            OracleDriftClassification::UnexpectedDrift
+        );
+        assert!(result.release_blocking);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_accept_explicit_expected_unsupported_rule_drift() -> crate::Result<()> {
+        let mut row = base_row()?;
+        row.expected_classification = Some(OracleDriftClassification::ExpectedDriftUnsupportedRule);
+        row.classification_note = Some(BoundedText::new("triaged unsupported rule drift", 64)?);
+        let observation = OracleRowObservation {
+            vera_pdf_outcome: Some(CorpusOutcome::Valid),
+            pdfv_outcome: Some(CorpusOutcome::Incomplete),
+            pdfv_unsupported_rules: 3,
+            vera_pdf_status: OracleExecutionStatus::Completed,
+            pdfv_status: OracleExecutionStatus::Completed,
+        };
+
+        let result = OracleCorpusResultRow::from_observation(&row, observation)?;
+
+        assert_eq!(
+            result.classification,
+            OracleDriftClassification::ExpectedDriftUnsupportedRule
+        );
+        assert!(!result.release_blocking);
         Ok(())
     }
 

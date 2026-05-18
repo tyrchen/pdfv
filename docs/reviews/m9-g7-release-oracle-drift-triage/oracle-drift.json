@@ -60,7 +60,7 @@
       "falseCompliant": false,
       "releaseBlocking": false,
       "pdfvUnsupportedRules": 37,
-      "reason": "veraPDF Valid, pdfv Incomplete"
+      "reason": "G7 triage: pdfv returns Incomplete with runtime unsupported numeric/string shape rules; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."
     },
     {
       "id": "t2-verapdf-parser-valid-document-pdfa-1b",
@@ -93,7 +93,7 @@
       "falseCompliant": false,
       "releaseBlocking": false,
       "pdfvUnsupportedRules": 42,
-      "reason": "veraPDF Valid, pdfv Incomplete"
+      "reason": "G7 triage: pdfv returns Incomplete with runtime unsupported numeric/string shape rules; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."
     },
     {
       "id": "t2-verapdf-feature-pages-pdfa-1b",
@@ -126,7 +126,7 @@
       "falseCompliant": false,
       "releaseBlocking": false,
       "pdfvUnsupportedRules": 3,
-      "reason": "veraPDF Invalid, pdfv Incomplete"
+      "reason": "G7 triage: pdfv returns Incomplete with runtime unsupported shape rules while veraPDF returns Invalid; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."
     }
   ]
 }

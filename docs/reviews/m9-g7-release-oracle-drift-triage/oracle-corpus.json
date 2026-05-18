@@ -3,7 +3,7 @@
   "liveOracleEnabled": true,
   "metadata": {
     "pdfvVersion": "0.1.1",
-    "pdfvCommit": "ebeb4b53cbefb11ef8fe404e2873aeb6321cedc0",
+    "pdfvCommit": "72a13619c3c08a1c823ef8aed443c67563f61f7e",
     "veraPdfVersion": "veraPDF 1.31.65",
     "javaVersion": "openjdk version \"25.0.1\" 2025-10-21",
     "os": "macos",
@@ -75,7 +75,7 @@
       "falseCompliant": false,
       "releaseBlocking": false,
       "pdfvUnsupportedRules": 37,
-      "reason": "veraPDF Valid, pdfv Incomplete"
+      "reason": "G7 triage: pdfv returns Incomplete with runtime unsupported numeric/string shape rules; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."
     },
     {
       "id": "t2-verapdf-parser-valid-document-pdfa-1b",
@@ -108,7 +108,7 @@
       "falseCompliant": false,
       "releaseBlocking": false,
       "pdfvUnsupportedRules": 42,
-      "reason": "veraPDF Valid, pdfv Incomplete"
+      "reason": "G7 triage: pdfv returns Incomplete with runtime unsupported numeric/string shape rules; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."
     },
     {
       "id": "t2-verapdf-feature-pages-pdfa-1b",
@@ -141,7 +141,7 @@
       "falseCompliant": false,
       "releaseBlocking": false,
       "pdfvUnsupportedRules": 3,
-      "reason": "veraPDF Invalid, pdfv Incomplete"
+      "reason": "G7 triage: pdfv returns Incomplete with runtime unsupported shape rules while veraPDF returns Invalid; this is tracked as expected unsupported-rule drift for the release-oracle snapshot."
     }
   ]
 }
