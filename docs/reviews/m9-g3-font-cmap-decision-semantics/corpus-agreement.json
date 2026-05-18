@@ -2,8 +2,8 @@
   "schemaVersion": "phase19-corpus-agreement-v1",
   "liveOracleEnabled": false,
   "summary": {
-    "totalRows": 9,
-    "matches": 9,
+    "totalRows": 10,
+    "matches": 10,
     "expectedDrift": 0,
     "unexpectedDrift": 0
   },
@@ -129,6 +129,19 @@
         "stream",
         "xObject"
       ]
+    },
+    {
+      "fixture": "generated:font-cmap-subset-incomplete",
+      "source": "generated",
+      "veraPdfOutcome": "incomplete",
+      "pdfvOutcome": "incomplete",
+      "profile": "pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "font",
+        "cMap"
+      ],
+      "observedFeatureFamilies": []
     },
     {
       "fixture": "generated:xmp-pdfa-claim",

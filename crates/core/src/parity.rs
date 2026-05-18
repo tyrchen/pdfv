@@ -225,6 +225,16 @@ fn generated_corpus_rows() -> Result<Vec<CorpusAgreementRow>> {
             required_feature_families: &["resourceUse", "font", "colorSpace", "outputIntent"],
         })?,
         corpus_row(CorpusRowSpec {
+            fixture: "generated:font-cmap-subset-incomplete",
+            source: CorpusFixtureSource::Generated,
+            bytes: &subset_font_missing_cidset_pdf(),
+            options: explicit_profile_options("pdfa", 1, "b")?,
+            expected: CorpusOutcome::Incomplete,
+            profile: "pdfa-1b",
+            semantic_families: &["font", "cMap"],
+            required_feature_families: &[],
+        })?,
+        corpus_row(CorpusRowSpec {
             fixture: "generated:xmp-pdfa-claim",
             source: CorpusFixtureSource::Generated,
             bytes: &xmp_pdf(),
@@ -518,6 +528,61 @@ trailer
     pdf
 }
 
+fn subset_font_missing_cidset_pdf() -> Vec<u8> {
+    let stream = b"BT /F1 12 Tf ET";
+    let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length "
+        .to_vec();
+    pdf.extend(stream.len().to_string().as_bytes());
+    pdf.extend(
+        br" >>
+stream
+",
+    );
+    pdf.extend(stream);
+    pdf.extend(
+        br"
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /ABCDEF+Faux /Encoding 8 0 R /DescendantFonts [6 0 R] /ToUnicode 9 0 R >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /ABCDEF+Faux /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 7 0 R >>
+endobj
+7 0 obj
+<< /Type /FontDescriptor /FontName /ABCDEF+Faux /Flags 4 /FontFile2 10 0 R >>
+endobj
+8 0 obj
+<< /Type /CMap /CMapName /Identity-H /WMode 0 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>
+endobj
+9 0 obj
+<< /Type /CMap /CMapName /Identity-H /WMode 0 >>
+endobj
+10 0 obj
+<< /Type /EmbeddedFile /Length 4 /Length1 4 >>
+stream
+font
+endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+",
+    );
+    pdf
+}
+
 fn xmp_pdf() -> Vec<u8> {
     let xmp = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/">
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -637,7 +702,7 @@ mod tests {
         let report = corpus_agreement_report()?;
 
         assert!(!report.live_oracle_enabled);
-        assert_eq!(report.summary.total_rows, 9);
+        assert_eq!(report.summary.total_rows, 10);
         assert_eq!(report.summary.matches, report.summary.total_rows);
         assert_eq!(report.summary.unexpected_drift, 0);
         assert!(report.rows.iter().any(|row| {
@@ -651,6 +716,14 @@ mod tests {
         assert!(report.rows.iter().any(|row| {
             row.fixture.as_str() == "generated:profile-official-pdfa-1b"
                 && row.pdfv_outcome == CorpusOutcome::Incomplete
+        }));
+        assert!(report.rows.iter().any(|row| {
+            row.fixture.as_str() == "generated:font-cmap-subset-incomplete"
+                && row.pdfv_outcome == CorpusOutcome::Incomplete
+                && row
+                    .semantic_families
+                    .iter()
+                    .any(|family| family.as_str() == "font")
         }));
         Ok(())
     }

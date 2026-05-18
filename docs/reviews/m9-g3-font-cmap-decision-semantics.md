@@ -39,9 +39,11 @@ for this milestone:
 G3 removed every missing-property cluster assigned to font, CMap, and embedded
 font-file decision semantics. The implemented facts are bounded summaries:
 font subtype/name, Standard 14 detection, descriptor flags, embedded program
-presence, font-file subtype, ToUnicode, CMap identity/WMode/CIDSystemInfo,
-CIDSet/CharSet presence, glyph evidence, and shallow embedded font-file
-validity.
+presence, font-file subtype, ToUnicode, CMap identity/CIDSystemInfo,
+CIDSet/CharSet presence, and glyph evidence. Checks that require decoded font
+programs, embedded CMap bytes, complete CIDSet/CharSet glyph reconciliation, or
+nested PDF/A validation now return runtime `Incomplete` instead of an
+optimistic compliant result.
 
 ## Bound Coverage
 
@@ -63,7 +65,7 @@ PDF/A profile bound-rule coverage improved again after the G2 snapshot:
 
 ## Corpus
 
-The Java-free parity corpus remains stable: 9 / 9 rows match, with 0 expected
+The Java-free parity corpus remains stable: 10 / 10 rows match, with 0 expected
 drift and 0 unexpected drift.
 
 ## Remaining Readiness Work
