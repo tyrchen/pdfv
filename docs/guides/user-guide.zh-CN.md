@@ -72,6 +72,15 @@ pdfv validate document.pdf --profile profile.xml --format json
 pdfv profiles list
 ```
 
+## veraPDF 就绪状态
+
+`pdfv` 当前已经在 M9 G8 就绪快照中导入、lower 并绑定 vendored PDF/A、
+PDF/UA 和 WTPDF profile 规则。第一个公开的 veraPDF-grade 声明仍然暂停，
+直到私有 T3 真实世界语料门禁通过。
+
+支持的 profile 范围、语料证据、已知 drift 和不在范围内的能力，见
+[veraPDF Readiness](../verapdf-readiness.md)。
+
 ## 报告格式
 
 通过 `--format` 选择输出格式：

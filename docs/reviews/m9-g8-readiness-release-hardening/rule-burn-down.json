@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "phase22-rule-burn-down-v1",
+  "currentSummary": {
+    "totalRules": 0,
+    "totalClusters": 0,
+    "releaseBlockingRules": 0,
+    "releaseBlockingClusters": 0
+  },
+  "previousSummary": {
+    "totalRules": 0,
+    "totalClusters": 0,
+    "releaseBlockingRules": 0,
+    "releaseBlockingClusters": 0
+  },
+  "clusters": [],
+  "largestClusters": []
+}

@@ -7,6 +7,8 @@
 - [JSON and Config Examples](json-examples.md)
 - [veraPDF CLI Compatibility](verapdf-cli-compatibility.md)
 - [Conformance Fixture Matrix](conformance-fixture-matrix.md)
+- [veraPDF Readiness](verapdf-readiness.md)
+- [Release Notes: M9 G8 veraPDF Readiness](release-notes/m9-g8-verapdf-readiness.md)
 
 ## 简体中文
 
@@ -37,3 +39,4 @@
 - [M9 G5 XMP RDF Metadata Validation Snapshot](reviews/m9-g5-xmp-rdf-metadata-validation.md)
 - [M9 G6 PDF/UA Accessibility Reconstruction Snapshot](reviews/m9-g6-pdf-ua-accessibility-reconstruction.md)
 - [M9 G7 Release Oracle and Drift Triage Snapshot](reviews/m9-g7-release-oracle-drift-triage.md)
+- [M9 G8 Readiness Release Hardening Snapshot](reviews/m9-g8-readiness-release-hardening.md)

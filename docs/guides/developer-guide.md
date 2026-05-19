@@ -70,17 +70,27 @@ cargo test -p pdfv-core parser::tests::test_should_parse_header_and_catalog_from
 Before handing off a change, run:
 
 ```bash
-cargo build --workspace --all-targets
-cargo test --workspace --all-targets
-cargo +nightly fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic -W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing -W clippy::panic
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-cargo audit
-cargo deny check
+make standard-gates
 ```
 
 `cargo deny check` currently emits known warnings for unmatched allowed licenses and duplicate `wit-bindgen` lock entries; it must still exit successfully.
+
+## veraPDF Readiness Gates
+
+Readiness release work must also refresh the parity and oracle artifacts:
+
+```bash
+PDFV_PARITY_BASELINE_DIR=docs/reviews/m9-g7-release-oracle-drift-triage \
+PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
+  PDFV_ORACLE_CORPUS_MANIFEST=tests/oracle-t2-public-conformance.yml \
+  PDFV_ORACLE_CORPUS_ROOT=. \
+  make readiness-gates
+```
+
+The public readiness scope and current release blocker are documented in
+[veraPDF Readiness](../verapdf-readiness.md). Do not claim veraPDF-grade
+readiness for arbitrary real-world PDF/A/PDF/UA workflows until a T3 release-lab
+snapshot passes the gates in `specs/27-oracle-corpus-verification-plan.md`.
 
 ## Makefile Targets
 

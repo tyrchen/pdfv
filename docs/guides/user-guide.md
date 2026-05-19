@@ -72,6 +72,16 @@ List built-in profiles and coverage metadata:
 pdfv profiles list
 ```
 
+## veraPDF Readiness
+
+pdfv currently imports, lowers, and binds the vendored PDF/A, PDF/UA, and WTPDF
+profile rules recorded in the M9 G8 readiness snapshot. The first public
+veraPDF-grade claim is still withheld until the private T3 real-world corpus
+gate passes.
+
+See [veraPDF Readiness](../verapdf-readiness.md) for the supported profile
+scope, corpus evidence, known drift, and out-of-scope surfaces.
+
 ## Report Formats
 
 Use `--format` to select the report writer:

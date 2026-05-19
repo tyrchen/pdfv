@@ -4,6 +4,16 @@ build:
 test:
 	@cargo nextest run --all-features
 
+standard-gates:
+	@cargo build --workspace --all-targets
+	@cargo test --workspace --all-targets
+	@cargo +nightly fmt --all -- --check
+	@cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
+	@cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic -W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing -W clippy::panic
+	@RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+	@cargo audit
+	@cargo deny check
+
 test-conformance-verapdf:
 	@if [ -z "$$PDFV_VERAPDF_CORPUS_DIR" ]; then \
 		echo "PDFV_VERAPDF_CORPUS_DIR must point to a veraPDF-corpus checkout"; \
@@ -60,4 +70,6 @@ oracle-corpus:
 oracle-corpus-summary:
 	@cargo run -p pdfv-core --example oracle_corpus_summary
 
-.PHONY: build test test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down oracle-corpus oracle-corpus-summary
+readiness-gates: parity-model-schema parity-corpus parity-profile-report parity-burn-down oracle-corpus oracle-corpus-summary
+
+.PHONY: build test standard-gates test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down oracle-corpus oracle-corpus-summary readiness-gates

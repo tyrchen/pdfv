@@ -1,0 +1,27 @@
+{
+  "totalRows": 3,
+  "matches": 0,
+  "mismatches": 3,
+  "classifiedMismatches": 3,
+  "unexpectedDrift": 0,
+  "falseCompliant": 0,
+  "releaseBlocking": 0,
+  "timeoutCount": 0,
+  "matchPercentageBasisPoints": 0,
+  "byTier": {
+    "t2PublicConformance": 3
+  },
+  "byProfileFamily": {
+    "pdfa": 3
+  },
+  "byClassification": {
+    "expectedDriftUnsupportedRule": 3
+  },
+  "byVeraPdfOutcome": {
+    "invalid": 1,
+    "valid": 2
+  },
+  "byPdfvOutcome": {
+    "incomplete": 3
+  }
+}

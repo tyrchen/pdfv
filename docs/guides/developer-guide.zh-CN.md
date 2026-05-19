@@ -70,17 +70,27 @@ cargo test -p pdfv-core parser::tests::test_should_parse_header_and_catalog_from
 交付前请跑完这一组命令：
 
 ```bash
-cargo build --workspace --all-targets
-cargo test --workspace --all-targets
-cargo +nightly fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic -W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing -W clippy::panic
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-cargo audit
-cargo deny check
+make standard-gates
 ```
 
 `cargo deny check` 目前会打印一些已知警告，比如允许列表里暂时没遇到的许可证，以及 lockfile 里重复的 `wit-bindgen` 版本。只要命令成功退出即可；不要为了消掉这些已知警告顺手改依赖树。
+
+## veraPDF 就绪门禁
+
+做 readiness release 工作时，还要刷新 parity 和 oracle artifact：
+
+```bash
+PDFV_PARITY_BASELINE_DIR=docs/reviews/m9-g7-release-oracle-drift-triage \
+PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
+  PDFV_ORACLE_CORPUS_MANIFEST=tests/oracle-t2-public-conformance.yml \
+  PDFV_ORACLE_CORPUS_ROOT=. \
+  make readiness-gates
+```
+
+公开 readiness 范围和当前 release blocker 记录在
+[veraPDF Readiness](../verapdf-readiness.md)。在 T3 release-lab 快照通过
+`specs/27-oracle-corpus-verification-plan.md` 定义的门禁之前，不要声明
+`pdfv` 已经对任意真实世界 PDF/A/PDF/UA 工作流达到 veraPDF-grade readiness。
 
 ## Makefile
 

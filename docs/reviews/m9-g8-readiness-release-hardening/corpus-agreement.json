@@ -1,0 +1,310 @@
+{
+  "schemaVersion": "phase19-corpus-agreement-v1",
+  "liveOracleEnabled": false,
+  "summary": {
+    "totalRows": 13,
+    "matches": 13,
+    "expectedDrift": 0,
+    "unexpectedDrift": 0
+  },
+  "rows": [
+    {
+      "fixture": "tests/fixtures/minimal-valid.pdf",
+      "source": "checkedIn",
+      "veraPdfOutcome": "valid",
+      "pdfvOutcome": "valid",
+      "profile": "auto-default-pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "parser"
+      ],
+      "observedFeatureFamilies": []
+    },
+    {
+      "fixture": "tests/fixtures/leading-bytes-invalid.pdf",
+      "source": "checkedIn",
+      "veraPdfOutcome": "invalid",
+      "pdfvOutcome": "invalid",
+      "profile": "auto-default-pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "parser"
+      ],
+      "observedFeatureFamilies": []
+    },
+    {
+      "fixture": "tests/fixtures/not-a-pdf.pdf",
+      "source": "checkedIn",
+      "veraPdfOutcome": "parseFailed",
+      "pdfvOutcome": "parseFailed",
+      "profile": "auto-default-pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "parser"
+      ],
+      "observedFeatureFamilies": []
+    },
+    {
+      "fixture": "tests/fixtures/xref-stream-object-stream-valid.pdf",
+      "source": "checkedIn",
+      "veraPdfOutcome": "valid",
+      "pdfvOutcome": "valid",
+      "profile": "auto-default-pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "parser"
+      ],
+      "observedFeatureFamilies": []
+    },
+    {
+      "fixture": "generated:profile-official-pdfa-1b",
+      "source": "generated",
+      "veraPdfOutcome": "incomplete",
+      "pdfvOutcome": "incomplete",
+      "profile": "pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "profile"
+      ],
+      "observedFeatureFamilies": []
+    },
+    {
+      "fixture": "generated:operator-content-stream",
+      "source": "generated",
+      "veraPdfOutcome": "valid",
+      "pdfvOutcome": "valid",
+      "profile": "auto-default-pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "operator"
+      ],
+      "observedFeatureFamilies": [
+        "accessibilityDocument",
+        "catalog",
+        "colorSpace",
+        "contentStream",
+        "document",
+        "extGState",
+        "font",
+        "image",
+        "inlineImage",
+        "markedContent",
+        "operator",
+        "page",
+        "pageTree",
+        "resource",
+        "resourceUse",
+        "shading",
+        "stream"
+      ]
+    },
+    {
+      "fixture": "generated:resource-font-color",
+      "source": "generated",
+      "veraPdfOutcome": "valid",
+      "pdfvOutcome": "valid",
+      "profile": "auto-default-pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "resource",
+        "font",
+        "color",
+        "image",
+        "xObject"
+      ],
+      "observedFeatureFamilies": [
+        "accessibilityDocument",
+        "cMap",
+        "catalog",
+        "colorSpace",
+        "contentStream",
+        "document",
+        "extGState",
+        "font",
+        "formXObject",
+        "function",
+        "iccProfile",
+        "image",
+        "operator",
+        "outputIntent",
+        "page",
+        "pageTree",
+        "resource",
+        "resourceUse",
+        "shading",
+        "stream",
+        "xObject"
+      ]
+    },
+    {
+      "fixture": "generated:font-cmap-subset-incomplete",
+      "source": "generated",
+      "veraPdfOutcome": "incomplete",
+      "pdfvOutcome": "incomplete",
+      "profile": "pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "font",
+        "cMap"
+      ],
+      "observedFeatureFamilies": []
+    },
+    {
+      "fixture": "generated:xmp-pdfa-claim",
+      "source": "generated",
+      "veraPdfOutcome": "incomplete",
+      "pdfvOutcome": "incomplete",
+      "profile": "auto-detected-pdfa-2b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "xmp"
+      ],
+      "observedFeatureFamilies": []
+    },
+    {
+      "fixture": "generated:accessibility-structure",
+      "source": "generated",
+      "veraPdfOutcome": "valid",
+      "pdfvOutcome": "valid",
+      "profile": "auto-default-pdfa-1b",
+      "agreement": "match",
+      "semanticFamilies": [
+        "accessibility"
+      ],
+      "observedFeatureFamilies": [
+        "accessibilityAnnotation",
+        "accessibilityDocument",
+        "annotation",
+        "artifact",
+        "catalog",
+        "contentStream",
+        "document",
+        "heading",
+        "image",
+        "imageChunk",
+        "link",
+        "list",
+        "markedContent",
+        "operator",
+        "page",
+        "pageTree",
+        "resource",
+        "resourceUse",
+        "stream",
+        "structureElement",
+        "structureTreeRoot",
+        "textChunk"
+      ]
+    },
+    {
+      "fixture": "generated:accessibility-pdfua-1-tagged",
+      "source": "generated",
+      "veraPdfOutcome": "incomplete",
+      "pdfvOutcome": "incomplete",
+      "profile": "pdfua-1",
+      "agreement": "match",
+      "semanticFamilies": [
+        "pdfua",
+        "tagged",
+        "roleMap",
+        "list",
+        "link",
+        "imageAlt",
+        "artifact"
+      ],
+      "observedFeatureFamilies": [
+        "accessibilityAnnotation",
+        "accessibilityDocument",
+        "annotation",
+        "artifact",
+        "catalog",
+        "contentStream",
+        "document",
+        "heading",
+        "image",
+        "imageChunk",
+        "link",
+        "list",
+        "markedContent",
+        "operator",
+        "page",
+        "pageTree",
+        "resource",
+        "resourceUse",
+        "stream",
+        "structureElement",
+        "structureTreeRoot",
+        "textChunk"
+      ]
+    },
+    {
+      "fixture": "generated:accessibility-pdfua-2-malformed-table",
+      "source": "generated",
+      "veraPdfOutcome": "incomplete",
+      "pdfvOutcome": "incomplete",
+      "profile": "pdfua-2-iso32005",
+      "agreement": "match",
+      "semanticFamilies": [
+        "pdfua",
+        "table",
+        "malformedMcid",
+        "headerAssociation",
+        "namespace"
+      ],
+      "observedFeatureFamilies": [
+        "accessibilityDocument",
+        "catalog",
+        "contentStream",
+        "document",
+        "markedContent",
+        "operator",
+        "page",
+        "pageTree",
+        "resource",
+        "stream",
+        "structureElement",
+        "structureTreeRoot",
+        "table",
+        "textChunk"
+      ]
+    },
+    {
+      "fixture": "generated:accessibility-wtpdf-link",
+      "source": "generated",
+      "veraPdfOutcome": "incomplete",
+      "pdfvOutcome": "incomplete",
+      "profile": "wtpdf-1-0-accessibility",
+      "agreement": "match",
+      "semanticFamilies": [
+        "wtpdf",
+        "link",
+        "annotation",
+        "artifact"
+      ],
+      "observedFeatureFamilies": [
+        "accessibilityAnnotation",
+        "accessibilityDocument",
+        "annotation",
+        "artifact",
+        "catalog",
+        "contentStream",
+        "document",
+        "heading",
+        "image",
+        "imageChunk",
+        "link",
+        "list",
+        "markedContent",
+        "operator",
+        "page",
+        "pageTree",
+        "resource",
+        "resourceUse",
+        "stream",
+        "structureElement",
+        "structureTreeRoot",
+        "textChunk"
+      ]
+    }
+  ]
+}

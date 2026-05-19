@@ -145,3 +145,12 @@ Status: draft v1 · Owner: pdfv · Last updated: 2026-05-17
 - Why: aggregate bound-rule counts can hide weak PDF/A coverage, while byte-identical report parity would overfit report formatting instead of validation decisions. The real production risk is returning `Valid` when veraPDF would reject or when required semantics are unsupported. Oracle agreement plus zero false-compliant drift targets that risk directly.
 - Pinned by: [25-verapdf-grade-validation-prd.md](./25-verapdf-grade-validation-prd.md), [26-unsupported-rule-burn-down-design.md](./26-unsupported-rule-burn-down-design.md), [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md), [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md), [90-roadmap.md](./90-roadmap.md)
 - Date: 2026-05-17
+
+## D17 — Withhold the first veraPDF-grade claim until T3 release-lab evidence exists
+
+- Context: M9 G8 release hardening regenerated profile, parity, unsupported-cluster, and public T2 oracle evidence, but no private T3 real-world corpus manifest was supplied in-repository.
+- Alternatives considered: make the first claim from full rule binding plus public T2 rows; record a smaller T3 corpus threshold without data; withhold the claim until the T3 release-lab run exists.
+- Decision: do not make the first public veraPDF-grade PDF/A/PDF/UA readiness claim from the G8 evidence package alone. The claim remains blocked until a release-lab T3 snapshot records the corpus size, stratification, outcome-class match rate, mismatch classification, false-compliant count, and any statistically justified corpus-size exception.
+- Why: the G8 snapshot is strong implementation evidence, but `docs/reviews/m9-g8-readiness-release-hardening/oracle-summary.json` contains only 3 public T2 rows and 0 T3 rows. Claiming arbitrary real-world readiness without T3 evidence would violate the oracle gate and weaken the project's false-compliant risk control.
+- Pinned by: [25-verapdf-grade-validation-prd.md](./25-verapdf-grade-validation-prd.md), [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md), [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md), [../docs/verapdf-readiness.md](../docs/verapdf-readiness.md), [../docs/reviews/m9-g8-readiness-release-hardening.md](../docs/reviews/m9-g8-readiness-release-hardening.md)
+- Date: 2026-05-19
