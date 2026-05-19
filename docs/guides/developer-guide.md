@@ -92,6 +92,10 @@ private T3 manifest. It requires at least 1,000 T3 rows by default, 95% T3
 outcome-class match, 100% mismatch classification, and 0 false-compliant rows:
 
 ```bash
+PDFV_ORACLE_T3_CORPUS_ROOT=/path/to/private-corpus-root \
+  PDFV_ORACLE_T3_MANIFEST=/path/to/private-t3-manifest.yml \
+  make oracle-t3-manifest
+
 PDFV_PARITY_BASELINE_DIR=docs/reviews/m9-g7-release-oracle-drift-triage \
 PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
   PDFV_ORACLE_CORPUS_MANIFEST=/path/to/private-t3-manifest.yml \

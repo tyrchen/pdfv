@@ -92,6 +92,10 @@ PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
 100% mismatch classification，并且 false-compliant 行数为 0：
 
 ```bash
+PDFV_ORACLE_T3_CORPUS_ROOT=/path/to/private-corpus-root \
+  PDFV_ORACLE_T3_MANIFEST=/path/to/private-t3-manifest.yml \
+  make oracle-t3-manifest
+
 PDFV_PARITY_BASELINE_DIR=docs/reviews/m9-g7-release-oracle-drift-triage \
 PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
   PDFV_ORACLE_CORPUS_MANIFEST=/path/to/private-t3-manifest.yml \

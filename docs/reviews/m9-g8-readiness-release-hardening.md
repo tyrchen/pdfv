@@ -80,6 +80,7 @@ PDF/A/PDF/UA collections.
 | T2 public oracle gate | Passed | `oracle-summary.json` reports 0 unexpected drift and 0 false-compliant rows |
 | T3 real-world oracle gate | Blocked | no private release-lab manifest was supplied; 0 T3 rows |
 | Strict release target | Blocked as expected | `make readiness-release-gate` fails with the public T2 manifest because 0 T3 rows are present and 1,000 are required |
+| T3 manifest generation | Available | `make oracle-t3-manifest` generates private `t3RealWorld` rows from `PDFV_ORACLE_T3_CORPUS_ROOT` |
 | Public docs and release notes | Passed | `docs/verapdf-readiness.md` and `docs/release-notes/m9-g8-verapdf-readiness.md` |
 
 The correct public posture is therefore: profile/rule coverage and committed

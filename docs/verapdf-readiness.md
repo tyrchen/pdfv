@@ -71,6 +71,8 @@ The executable release gate is `make readiness-release-gate`. It sets
 `PDFV_ORACLE_REQUIRE_T3_RELEASE=1` for the oracle summary step and fails unless
 the report contains at least 1,000 T3 rows by default, at least 95% T3
 outcome-class match, no unexpected drift, and no false-compliant rows.
+Use `make oracle-t3-manifest` with `PDFV_ORACLE_T3_CORPUS_ROOT` to generate a
+private `t3RealWorld` manifest; do not commit that manifest or the private PDFs.
 
 ## Out Of Scope For The First Claim
 

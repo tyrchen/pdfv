@@ -7,6 +7,8 @@ withheld pending T3 release-lab evidence.
 
 - Added a G8 readiness snapshot with regenerated parity coverage, unsupported
   cluster, Java-free corpus, live T2 oracle, oracle summary, and drift artifacts.
+- Added `make oracle-t3-manifest` to generate private release-lab T3 manifests
+  from a caller-supplied corpus directory.
 - Published the supported profile scope for PDF/A, PDF/UA, and tracked WTPDF
   profiles.
 - Recorded that the first veraPDF-grade PDF/A/PDF/UA claim remains blocked
