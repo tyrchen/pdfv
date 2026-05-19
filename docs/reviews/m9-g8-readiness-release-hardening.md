@@ -79,6 +79,7 @@ PDF/A/PDF/UA collections.
 | Unsupported-rule release blockers | Passed | `unsupported-rule-clusters.json` reports 0 release-blocking clusters |
 | T2 public oracle gate | Passed | `oracle-summary.json` reports 0 unexpected drift and 0 false-compliant rows |
 | T3 real-world oracle gate | Blocked | no private release-lab manifest was supplied; 0 T3 rows |
+| Strict release target | Blocked as expected | `make readiness-release-gate` fails with the public T2 manifest because 0 T3 rows are present and 1,000 are required |
 | Public docs and release notes | Passed | `docs/verapdf-readiness.md` and `docs/release-notes/m9-g8-verapdf-readiness.md` |
 
 The correct public posture is therefore: profile/rule coverage and committed

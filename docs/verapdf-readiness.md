@@ -67,6 +67,11 @@ strong parity metrics and conservative `Incomplete` reporting for unsupported
 or unproven semantics. Do not present it as a release-grade replacement for
 veraPDF on arbitrary private collections.
 
+The executable release gate is `make readiness-release-gate`. It sets
+`PDFV_ORACLE_REQUIRE_T3_RELEASE=1` for the oracle summary step and fails unless
+the report contains at least 1,000 T3 rows by default, at least 95% T3
+outcome-class match, no unexpected drift, and no false-compliant rows.
+
 ## Out Of Scope For The First Claim
 
 - byte-for-byte compatibility with veraPDF XML, HTML, or text reports;

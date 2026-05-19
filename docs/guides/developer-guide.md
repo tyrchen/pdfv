@@ -87,6 +87,18 @@ PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
   make readiness-gates
 ```
 
+For an actual release-grade claim, run the strict release gate against the
+private T3 manifest. It requires at least 1,000 T3 rows by default, 95% T3
+outcome-class match, 100% mismatch classification, and 0 false-compliant rows:
+
+```bash
+PDFV_PARITY_BASELINE_DIR=docs/reviews/m9-g7-release-oracle-drift-triage \
+PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
+  PDFV_ORACLE_CORPUS_MANIFEST=/path/to/private-t3-manifest.yml \
+  PDFV_ORACLE_CORPUS_ROOT=/path/to/private-corpus-root \
+  make readiness-release-gate
+```
+
 The public readiness scope and current release blocker are documented in
 [veraPDF Readiness](../verapdf-readiness.md). Do not claim veraPDF-grade
 readiness for arbitrary real-world PDF/A/PDF/UA workflows until a T3 release-lab

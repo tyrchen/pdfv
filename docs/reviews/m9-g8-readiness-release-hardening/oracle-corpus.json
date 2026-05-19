@@ -3,7 +3,7 @@
   "liveOracleEnabled": true,
   "metadata": {
     "pdfvVersion": "0.1.1",
-    "pdfvCommit": "f6b0a27490fbded1d477d592575423f6ce0c2046",
+    "pdfvCommit": "e0256adccbe8f44f3ac6f33527b90b3499ca57bb",
     "veraPdfVersion": "veraPDF 1.31.65",
     "javaVersion": "openjdk version \"25.0.1\" 2025-10-21",
     "os": "macos",

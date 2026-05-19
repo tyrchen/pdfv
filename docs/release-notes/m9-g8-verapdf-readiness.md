@@ -28,6 +28,7 @@ The G8 snapshot is in
 | `make oracle-corpus` with public T2 manifest | Passed; 3 rows, 0 unexpected drift, 0 false-compliant rows |
 | `make oracle-corpus-summary` | Passed |
 | `make readiness-gates` | Passed with the public T2 manifest and G7 baseline directory |
+| `make readiness-release-gate` with the public T2 manifest | Correctly fails because the report has 0 T3 rows and the default release threshold is 1,000 |
 
 ## Readiness Decision
 
@@ -35,6 +36,7 @@ This is not a public veraPDF-grade readiness release. The T3 real-world corpus
 gate has 0 committed release-lab rows in this snapshot. The first claim requires
 the release-lab corpus evidence defined by
 [`specs/27-oracle-corpus-verification-plan.md`](../../specs/27-oracle-corpus-verification-plan.md).
+The strict `make readiness-release-gate` target now enforces this blocker.
 
 ## Known Drift
 

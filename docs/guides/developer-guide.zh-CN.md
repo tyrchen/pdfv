@@ -87,6 +87,18 @@ PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
   make readiness-gates
 ```
 
+如果要做真正的 release-grade 声明，请用私有 T3 manifest 跑严格 release
+门禁。默认要求至少 1,000 条 T3 行、T3 outcome-class match 不低于 95%、
+100% mismatch classification，并且 false-compliant 行数为 0：
+
+```bash
+PDFV_PARITY_BASELINE_DIR=docs/reviews/m9-g7-release-oracle-drift-triage \
+PDFV_VERAPDF_BIN=target/tools/verapdf-runtime/verapdf \
+  PDFV_ORACLE_CORPUS_MANIFEST=/path/to/private-t3-manifest.yml \
+  PDFV_ORACLE_CORPUS_ROOT=/path/to/private-corpus-root \
+  make readiness-release-gate
+```
+
 公开 readiness 范围和当前 release blocker 记录在
 [veraPDF Readiness](../verapdf-readiness.md)。在 T3 release-lab 快照通过
 `specs/27-oracle-corpus-verification-plan.md` 定义的门禁之前，不要声明
