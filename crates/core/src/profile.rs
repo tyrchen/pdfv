@@ -3115,14 +3115,18 @@ fn profile_id_for_flavour(flavour: &ValidationFlavour) -> Result<Identifier> {
 )]
 fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<BoundedText>)> {
     let mapped = match value {
-        "CosDocument" | "PDDocument" | "CosXRef" | "CosTrailer" | "CosIndirect" | "CosInfo" => {
-            Some("document")
-        }
+        "CosDocument" | "PDDocument" | "CosXRef" | "CosTrailer" => Some("document"),
+        "CosIndirect" => Some("cosIndirect"),
         "CosStream" => Some("stream"),
+        "CosInfo" => Some("documentInfo"),
         "CosInteger" => Some("cosInteger"),
         "CosReal" => Some("cosReal"),
         "CosName" => Some("cosName"),
         "CosString" => Some("cosString"),
+        "CosRenderingIntent" => Some("cosRenderingIntent"),
+        "CosFilter" => Some("cosFilter"),
+        "CosIIFilter" => Some("cosInlineImageFilter"),
+        "CosBM" => Some("cosBlendMode"),
         "CosArray"
         | "CosDict"
         | "CosTextString"
@@ -3131,11 +3135,7 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         | "CosBBox"
         | "CosActualText"
         | "CosAlt"
-        | "CosBM"
-        | "CosRenderingIntent"
-        | "CosFileSpecification"
-        | "CosFilter"
-        | "CosIIFilter" => Some("object"),
+        | "CosFileSpecification" => Some("object"),
         "GFCosMetadata"
         | "PDMetadata"
         | "Metadata"
@@ -3145,12 +3145,12 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         | "MainXMPPackage"
         | "XMPProperty"
         | "XMPLangAlt"
-        | "ExtensionSchemaValueType"
-        | "ExtensionSchemaDefinition"
-        | "ExtensionSchemaProperty"
-        | "ExtensionSchemaField"
-        | "ExtensionSchemasContainer"
         | "ExtensionSchemaObject" => Some("metadata"),
+        "ExtensionSchemaValueType" => Some("extensionSchemaValueType"),
+        "ExtensionSchemaDefinition" => Some("extensionSchemaDefinition"),
+        "ExtensionSchemaProperty" => Some("extensionSchemaProperty"),
+        "ExtensionSchemaField" => Some("extensionSchemaField"),
+        "ExtensionSchemasContainer" => Some("extensionSchemasContainer"),
         "PDCatalog" | "Catalog" => Some("catalog"),
         "PDPage" | "Page" => Some("page"),
         "PDFont"
@@ -3196,8 +3196,12 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDOutline" => Some("outline"),
         "PDDestination" => Some("destination"),
         "PDExtGState" => Some("extGState"),
-        "PDDeviceN" | "PDICCBasedCMYK" | "PDDeviceRGB" | "PDDeviceGray" | "PDDeviceCMYK"
-        | "PDSeparation" | "PDHalftone" | "PDGroup" => Some("colorSpace"),
+        "PDDeviceN" | "PDSeparation" | "PDGroup" => Some("colorSpace"),
+        "PDICCBasedCMYK" => Some("iccBasedCmyk"),
+        "PDDeviceRGB" => Some("deviceRgb"),
+        "PDDeviceGray" => Some("deviceGray"),
+        "PDDeviceCMYK" => Some("deviceCmyk"),
+        "PDHalftone" => Some("halftone"),
         "ICCProfile" | "ICCOutputProfile" | "ICCInputProfile" => Some("iccProfile"),
         "PDPattern" | "PDTilingPattern" | "PDShadingPattern" => Some("pattern"),
         "PDShading" => Some("shading"),

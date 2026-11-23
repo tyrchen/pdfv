@@ -68,6 +68,8 @@ pub(crate) struct ContentStreamSummary {
     pub marked_content: Vec<MarkedContentSpan>,
     /// Resource references found in operators.
     pub resource_uses: Vec<ResourceUse>,
+    /// Rendering-intent names retained with their use sites.
+    pub rendering_intents: Vec<(PdfName, ObjectLocation)>,
     /// Recoverable parsing warnings.
     pub warnings: Vec<ValidationWarning>,
     /// Whether parsing stopped at an operator cap.
@@ -126,6 +128,8 @@ pub(crate) enum OperatorFact {
     TextState {
         /// Operator name.
         op: OperatorName,
+        /// Value of the text rendering mode for `Tr`.
+        rendering_mode: Option<i64>,
         /// Deterministic location.
         location: ObjectLocation,
     },
@@ -185,6 +189,8 @@ pub(crate) enum OperatorFact {
         height: Option<u64>,
         /// Optional color-space name.
         color_space: Option<PdfName>,
+        /// Whether this image is a stencil painted with the current fill colour.
+        image_mask: bool,
         /// Optional bits per component.
         bits_per_component: Option<u64>,
         /// Declared filters.
@@ -372,6 +378,8 @@ pub(crate) enum ResourceFamily {
     ColorSpace,
     /// External graphics state resource from `gs`.
     ExtGState,
+    /// Pattern resource from `SCN` or `scn`.
+    Pattern,
     /// Shading resource from `sh`.
     Shading,
     /// `XObject` resource from `Do`.
@@ -386,6 +394,7 @@ impl ResourceFamily {
             Self::Font => "font",
             Self::ColorSpace => "colorSpace",
             Self::ExtGState => "extGState",
+            Self::Pattern => "pattern",
             Self::Shading => "shading",
             Self::XObject => "xObject",
         }
@@ -436,6 +445,7 @@ pub(crate) fn summarize_content_stream(
         facts: Vec::new(),
         marked_content: Vec::new(),
         resource_uses: Vec::new(),
+        rendering_intents: Vec::new(),
         warnings: Vec::new(),
         truncated: false,
     };
@@ -542,11 +552,15 @@ fn classify_operator(
     match op_name {
         "BI" => {
             let inline = parser.parse_inline_image(limits)?;
+            if let Some(intent) = inline.rendering_intent {
+                summary.rendering_intents.push((intent, location.clone()));
+            }
             mark_active_spans(summary, marked_stack, MarkedSpanFact::Image);
             summary.facts.push(OperatorFact::InlineImage {
                 width: inline.width,
                 height: inline.height,
                 color_space: inline.color_space,
+                image_mask: inline.image_mask,
                 bits_per_component: inline.bits_per_component,
                 filters: inline.filters,
                 location,
@@ -566,7 +580,15 @@ fn classify_operator(
                     location: location.clone(),
                 });
             }
-            summary.facts.push(OperatorFact::TextState { op, location });
+            let rendering_mode = match (op_name, operands.last()) {
+                ("Tr", Some(Operand::Integer(mode))) => Some(*mode),
+                _ => None,
+            };
+            summary.facts.push(OperatorFact::TextState {
+                op,
+                rendering_mode,
+                location,
+            });
         }
         "Td" | "TD" | "Tm" | "T*" => {
             summary
@@ -639,7 +661,17 @@ fn classify_operator(
                 .facts
                 .push(OperatorFact::GraphicsState { op, location });
         }
-        "cm" | "w" | "J" | "j" | "M" | "d" | "ri" | "i" => {
+        "ri" => {
+            if let Some(Operand::Name(intent)) = operands.last() {
+                summary
+                    .rendering_intents
+                    .push((intent.clone(), location.clone()));
+            }
+            summary
+                .facts
+                .push(OperatorFact::GraphicsState { op, location });
+        }
+        "cm" | "w" | "J" | "j" | "M" | "d" | "i" => {
             summary
                 .facts
                 .push(OperatorFact::GraphicsState { op, location });
@@ -669,6 +701,16 @@ fn classify_operator(
             push_color_fact(summary, op, operands, operand_bytes, location)?;
         }
         "SC" | "SCN" | "sc" | "scn" | "G" | "g" | "RG" | "rg" | "K" | "k" => {
+            if matches!(op_name, "SCN" | "scn")
+                && let Some(Operand::Name(name)) = operands.last()
+            {
+                summary.resource_uses.push(ResourceUse {
+                    family: ResourceFamily::Pattern,
+                    name: name.clone(),
+                    operator: op.clone(),
+                    location: location.clone(),
+                });
+            }
             push_color_fact(summary, op, operands, operand_bytes, location)?;
         }
         "sh" => {
@@ -862,8 +904,10 @@ struct InlineImageSummary {
     width: Option<u64>,
     height: Option<u64>,
     color_space: Option<PdfName>,
+    image_mask: bool,
     bits_per_component: Option<u64>,
     filters: Vec<PdfName>,
+    rendering_intent: Option<PdfName>,
 }
 
 struct ContentTokenizer<'a> {
@@ -974,9 +1018,14 @@ impl<'a> ContentTokenizer<'a> {
             width: inline_u64(&values, "W").or_else(|| inline_u64(&values, "Width")),
             height: inline_u64(&values, "H").or_else(|| inline_u64(&values, "Height")),
             color_space: inline_name(&values, "CS").or_else(|| inline_name(&values, "ColorSpace")),
+            image_mask: matches!(
+                values.get("IM").or_else(|| values.get("ImageMask")),
+                Some(Operand::Keyword(value)) if value == b"true"
+            ),
             bits_per_component: inline_u64(&values, "BPC")
                 .or_else(|| inline_u64(&values, "BitsPerComponent")),
-            filters: inline_filters(&values),
+            filters: inline_filters(&values, limits)?,
+            rendering_intent: inline_name(&values, "Intent"),
         })
     }
 
@@ -1182,11 +1231,36 @@ fn inline_name(values: &BTreeMap<String, Operand>, key: &str) -> Option<PdfName>
     }
 }
 
-fn inline_filters(values: &BTreeMap<String, Operand>) -> Vec<PdfName> {
-    ["F", "Filter"]
-        .iter()
-        .filter_map(|key| inline_name(values, key))
-        .collect()
+fn inline_filters(
+    values: &BTreeMap<String, Operand>,
+    limits: &ResourceLimits,
+) -> Result<Vec<PdfName>, ParseError> {
+    let value = values.get("Filter").or_else(|| values.get("F"));
+    match value {
+        Some(Operand::Name(name)) => Ok(vec![name.clone()]),
+        Some(Operand::Composite(bytes)) => {
+            let Some(array) = bytes
+                .strip_prefix(b"[")
+                .and_then(|bytes| bytes.strip_suffix(b"]"))
+            else {
+                return Ok(Vec::new());
+            };
+            let mut tokenizer = ContentTokenizer::new(array, limits);
+            let mut names = Vec::new();
+            while let Some(token) = tokenizer.next_token()? {
+                if let Token::Operand(Operand::Name(name)) = token {
+                    if u64::try_from(names.len()).unwrap_or(u64::MAX) >= limits.max_array_len {
+                        return Err(ParseError::LimitExceeded {
+                            limit: "max_array_len",
+                        });
+                    }
+                    names.push(name);
+                }
+            }
+            Ok(names)
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 fn name_to_string(name: &PdfName) -> String {

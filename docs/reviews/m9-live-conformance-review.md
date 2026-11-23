@@ -67,13 +67,56 @@ CIDSet evidence. On the eight supplemental rows, the four PDF/A cases now
 complete. Both negative cases agree with veraPDF, and both positive cases give
 incorrect `Invalid` decisions. The four PDF/UA cases remain `Incomplete`.
 
+## Rule Scope Follow-up
+
+PDF/A extension-schema rules now use the declared RDF container and the
+individual schema, property, value type, and field resources. A document can
+omit the extension-schema container. A declaration placed in a scalar
+attribute fails the container rule.
+
+Rendering intents, filters, blend modes, halftones, and device colour spaces
+use model objects scoped to their PDF relationships. Page content-stream
+arrays are read as a single operator sequence during validation. Invoked forms
+and tiling patterns resolve named resources in the page context, with local
+resources taking precedence. Indirect-object spacing rules inspect the
+original separators and line endings of physical objects. A usable standalone
+xref table or stream restricts the check to its in-use objects.
+
+| Profile | Matching positive decisions | Matching negative decisions | Incomplete decisions |
+| --- | ---: | ---: | ---: |
+| PDF/A-1b | 1 | 1 | 0 |
+| PDF/A-4 | 1 | 1 | 0 |
+| PDF/UA-1 | 0 | 0 | 2 |
+| PDF/UA-2 | 0 | 0 | 2 |
+
+On the supplemental public set, the PDF/A-4 CalRGB default fixture first
+exposed three colour-space false failures. It now passes. The PDF/A-4
+indirect-object fixture fails its expected rule, `6.1.8-1`. Five additional
+PDF/A-4 negative controls from the same pinned corpus, `6-2-4-3-t01-fail-a`
+through `fail-e`, all fail their expected DeviceRGB rule, `6.2.4.3-2`.
+
+The full 25-file `6-2-4-3-t01` PDF/A-4 group has 18 matching decisions,
+including three positives and 15 negatives. The four-component ICC rules
+apply only to CMYK ICCBased spaces, allowing the RGB/calibrated positives
+`pass-c` and `pass-d` to complete. The remaining seven documents have one
+unsupported rule each, all for glyph widths in rule `6.2.10.5-1`. There are
+zero false-compliant rows in these comparisons.
+
 ## Release Blockers
 
 - The automatic fallback still selects the ten-rule `pdfv-m4` profile. veraPDF
   selects the full fallback profile. The live comparison marks the two
   executions as incompatible.
-- PDF/A and PDF/UA fixtures still exercise runtime gaps. For example, several
-  COS primitive rule targets are mapped to the generic `object` family.
+- The two vendored PDF/A-1b positives remain incomplete. Rule `6.3.6-1` needs
+  actual glyph widths for rendered character codes, and rule `6.3.5-3` also
+  needs to check used CIDs against the embedded subset's CIDSet.
+  The fixtures use WinAnsi TrueType and Identity-H CID TrueType. The Identity-H
+  subset has 1,674 glyph slots and 19 CIDSet bits, so a glyph-slot count cannot
+  establish which rendered characters the CIDSet covers.
+- The four supplemental PDF/UA documents remain incomplete. The negative
+  controls exercise whether individual page and Form content items are tagged
+  or marked as artifacts. The positive controls also need more complete
+  structure and text semantics.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

@@ -74,8 +74,8 @@ pub use validation::{
     PageModel, ResourceUseModel, Validator,
 };
 pub use xmp::{
-    DetectedFlavours, FlavourClaim, FlavourDetector, NamespaceBinding, XmpIdentificationKind,
-    XmpPacket, XmpParser,
+    DetectedFlavours, FlavourClaim, FlavourDetector, NamespaceBinding, XmpExtensionRole,
+    XmpIdentificationKind, XmpPacket, XmpParser,
 };
 
 /// Current library version embedded in generated reports.
@@ -2069,6 +2069,25 @@ pub enum XmpFact {
         #[serde(skip_serializing_if = "Option::is_none")]
         xml_lang: Option<BoundedText>,
     },
+    /// A PDF/A extension container or one of its RDF resources.
+    ExtensionScope {
+        /// Packet-local resource identifier in XML element order.
+        id: u64,
+        /// Role determined by the surrounding RDF property.
+        role: XmpExtensionRole,
+        /// Identifier of the owning extension schema, where applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<u64>,
+        /// Namespace prefix of the element or list property introducing the resource.
+        prefix: Identifier,
+        /// Zero-based positions among this packet's RDF property facts.
+        #[serde(
+            default,
+            rename = "propertyIndices",
+            skip_serializing_if = "Vec::is_empty"
+        )]
+        property_indices: Vec<usize>,
+    },
     /// Duplicate identification property was encountered.
     DuplicateClaim {
         /// Source namespace URI.
@@ -3671,6 +3690,7 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
             value,
             array_kind,
             xml_lang,
+            ..
         } => format!(
             "rdfProperty namespaceUri={} prefix={} name={} value={} arrayKind={} xmlLang={}",
             namespace_uri.as_str(),
@@ -3680,6 +3700,14 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
             array_kind.as_ref().map_or("", Identifier::as_str),
             xml_lang.as_ref().map_or("", BoundedText::as_str)
         ),
+        XmpFact::ExtensionScope {
+            id, role, prefix, ..
+        } => {
+            format!(
+                "extensionScope id={id} role={role:?} prefix={}",
+                prefix.as_str()
+            )
+        }
         XmpFact::DuplicateClaim {
             namespace_uri,
             property,

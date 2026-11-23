@@ -1,6 +1,9 @@
 //! End-to-end validation session and validation model graph.
 
 mod cos;
+mod device_color;
+mod semantic_names;
+mod xmp_extension;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -11,7 +14,10 @@ use std::{
     time::Instant,
 };
 
-use self::cos::{CosOrigin, CosPrimitive, INTEGER_FAMILY, NAME_FAMILY, REAL_FAMILY, STRING_FAMILY};
+use self::{
+    cos::{CosOrigin, CosPrimitive, INTEGER_FAMILY, NAME_FAMILY, REAL_FAMILY, STRING_FAMILY},
+    xmp_extension::ExtensionResource,
+};
 use crate::{
     Assertion, BoundedText, BuiltinProfileRepository, ENGINE_VERSION, ErrorArgument, FeatureObject,
     FeatureReport, FeatureValue, Identifier, IndirectObject, InputKind, InputSummary, ModelValue,
@@ -430,6 +436,25 @@ const OBJECT_PROPERTIES: &[&str] = &[
     "isAssociatedFile",
     "AFRelationship",
     "presentInEmbeddedFiles",
+];
+const DOCUMENT_INFO_PROPERTIES: &[&str] = &[
+    "size",
+    "Author",
+    "Creator",
+    "Keywords",
+    "Producer",
+    "Subject",
+    "Title",
+    "ModDate",
+    "XMPCreator",
+    "XMPCreatorSize",
+    "XMPCreatorTool",
+    "XMPKeywords",
+    "XMPProducer",
+    "XMPDescription",
+    "XMPTitle",
+    "doCreationDatesMatch",
+    "doModDatesMatch",
 ];
 const DOCUMENT_PROPERTIES: &[&str] = &[
     "headerOffset",
@@ -2280,6 +2305,31 @@ impl ModelRegistry {
             family("document", DOCUMENT_PROPERTIES, DOCUMENT_LINKS),
             family("catalog", CATALOG_PROPERTIES, CATALOG_LINKS),
             family("metadata", METADATA_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "extensionSchemasContainer",
+                METADATA_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                "extensionSchemaDefinition",
+                METADATA_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                "extensionSchemaProperty",
+                METADATA_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                "extensionSchemaValueType",
+                METADATA_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                "extensionSchemaField",
+                METADATA_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("page", PAGE_PROPERTIES, PAGE_LINKS),
             family("pageTree", PAGE_TREE_PROPERTIES, EMPTY_LINK_NAMES),
             family("resource", RESOURCE_PROPERTIES, EMPTY_LINK_NAMES),
@@ -2329,6 +2379,30 @@ impl ModelRegistry {
             family("formField", FORM_FIELD_PROPERTIES, FORM_FIELD_LINKS),
             family("fileSpec", FILE_SPEC_PROPERTIES, EMPTY_LINK_NAMES),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "iccBasedCmyk",
+                &[
+                    "overprintFlag",
+                    "OPM",
+                    "ICCProfileIndirect",
+                    "gOutputProfileIndirect",
+                    "currentTransparencyProfileIndirect",
+                    "ICCProfileMD5",
+                    "gOutputICCProfileMD5",
+                    "currentTransparencyICCProfileMD5",
+                ],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                "halftone",
+                &[
+                    "HalftoneType",
+                    "HalftoneName",
+                    "colorantName",
+                    "TransferFunction",
+                ],
+                EMPTY_LINK_NAMES,
+            ),
             family("iccProfile", ICC_PROFILE_PROPERTIES, EMPTY_LINK_NAMES),
             family("extGState", EXT_GSTATE_PROPERTIES, EMPTY_LINK_NAMES),
             family("pattern", PATTERN_PROPERTIES, EMPTY_LINK_NAMES),
@@ -2366,6 +2440,31 @@ impl ModelRegistry {
             family("outputIntent", OUTPUT_INTENT_PROPERTIES, EMPTY_LINK_NAMES),
             family("stream", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("object", OBJECT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("documentInfo", DOCUMENT_INFO_PROPERTIES, EMPTY_LINK_NAMES),
+            family("cosIndirect", &["spacingCompliesPDFA"], EMPTY_LINK_NAMES),
+            family("deviceGray", device_color::PROPERTIES, EMPTY_LINK_NAMES),
+            family("deviceRgb", device_color::PROPERTIES, EMPTY_LINK_NAMES),
+            family("deviceCmyk", device_color::PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                semantic_names::INTENT,
+                &["internalRepresentation"],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                semantic_names::FILTER,
+                &["internalRepresentation", "decodeParms"],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                semantic_names::INLINE_FILTER,
+                &["internalRepresentation"],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                semantic_names::BLEND_MODE,
+                &["internalRepresentation"],
+                EMPTY_LINK_NAMES,
+            ),
             family(
                 INTEGER_FAMILY,
                 &["intValue", "fitsSigned32"],
@@ -3009,7 +3108,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::Metadata(model) => ObjectLocation {
                 object: Some(model.key),
                 offset: Some(model.offset),
-                path: Some(BoundedText::unchecked("root/catalog[0]/metadata[0]")),
+                path: Some(model.context()),
             },
             Self::Page(model) => ObjectLocation {
                 object: Some(model.key),
@@ -3077,7 +3176,7 @@ impl<'a> ModelObjectRef<'a> {
         match self {
             Self::Document(_) => BoundedText::unchecked("root"),
             Self::Catalog(_) => BoundedText::unchecked("root/catalog[0]"),
-            Self::Metadata(_) => BoundedText::unchecked("root/catalog[0]/metadata[0]"),
+            Self::Metadata(model) => model.context(),
             Self::Page(model) => BoundedText::unchecked(format!("root/page[{}]", model.ordinal)),
             Self::Font(model) => BoundedText::unchecked(format!(
                 "root/page[{}]/font[{}]",
@@ -3125,9 +3224,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::Catalog(model) => {
                 format!("catalog:{}:{}", model.key.number, model.key.generation)
             }
-            Self::Metadata(model) => {
-                format!("metadata:{}:{}", model.key.number, model.key.generation)
-            }
+            Self::Metadata(model) => model.identity_key(),
             Self::Page(model) => format!("page:{}:{}", model.key.number, model.key.generation),
             Self::Font(model) => format!(
                 "font:{}:{}:{}",
@@ -3146,10 +3243,7 @@ impl<'a> ModelObjectRef<'a> {
                 model.ordinal,
                 model.key.map_or(0, |key| key.number.get())
             ),
-            Self::ContentStream(model) => format!(
-                "contentStream:{}:{}:{}",
-                model.page_ordinal, model.key.number, model.key.generation
-            ),
+            Self::ContentStream(model) => model.identity_key(),
             Self::Operator(model) => format!(
                 "operator:{}:{}:{}:{}",
                 model.page_ordinal, model.stream_ordinal, model.source.number, model.ordinal
@@ -3302,6 +3396,23 @@ impl<'a> ModelGraph<'a> {
                 &mut materialized_families,
             );
         }
+        if materialized_families.iter().any(|family| {
+            family.as_str() == semantic_names::INTENT
+                || family.as_str() == semantic_names::INLINE_FILTER
+                || family.as_str() == semantic_names::BLEND_MODE
+                || family.as_str() == "halftone"
+                || family.as_str() == "resourceUse"
+                || device_color::FAMILIES.contains(&family.as_str())
+        }) {
+            materialized_families.insert(ObjectTypeName::unchecked("contentStream"));
+            materialized_families.insert(ObjectTypeName::unchecked("formXObject"));
+        }
+        if materialized_families
+            .iter()
+            .any(|family| family.as_str() == "iccBasedCmyk")
+        {
+            materialized_families.insert(ObjectTypeName::unchecked("colorSpace"));
+        }
         Self {
             document,
             limits,
@@ -3333,9 +3444,14 @@ impl<'a> ModelGraph<'a> {
     fn materializes_generic_roots(&self) -> bool {
         self.materialized_families.iter().any(|family| {
             !cos::is_primitive_family(family.as_str())
+                && !xmp_extension::FAMILIES.contains(&family.as_str())
+                && !semantic_names::FAMILIES.contains(&family.as_str())
+                && !device_color::FAMILIES.contains(&family.as_str())
                 && !matches!(
                     family.as_str(),
                     "document"
+                        | "documentInfo"
+                        | "cosIndirect"
                         | "catalog"
                         | "metadata"
                         | "page"
@@ -3347,6 +3463,7 @@ impl<'a> ModelGraph<'a> {
                         | "markedContent"
                         | "inlineImage"
                         | "resourceUse"
+                        | "halftone"
                         | "accessibilityDocument"
                         | "structureElement"
                         | "textChunk"
@@ -3437,7 +3554,14 @@ impl<'a> ModelGraph<'a> {
         page: &PageModel<'a>,
         max_objects: usize,
     ) -> Result<Vec<ContentStreamModel<'a>>> {
-        ContentStreamModel::from_page(self.document, page, max_objects)
+        let mut streams = ContentStreamModel::from_page(self.document, page, max_objects)?;
+        if self.active_flavour.is_some() && streams.len() > 1 {
+            let additional = streams.drain(1..).map(|model| model.stream).collect();
+            if let Some(first) = streams.first_mut() {
+                first.continuation = additional;
+            }
+        }
+        Ok(streams)
     }
 
     fn push_streams(
@@ -3597,9 +3721,10 @@ impl<'a> ModelGraph<'a> {
         collection: ResourceCollection<'a>,
         models: &mut Vec<GenericModel<'a>>,
     ) -> Result<()> {
-        let Some(crate::CosObject::Dictionary(resources)) =
-            collection.resources.get(collection.resource_name)
-        else {
+        let Some(resources) = resolve_dictionary_value(
+            self.document,
+            collection.resources.get(collection.resource_name),
+        ) else {
             return Ok(());
         };
         for (ordinal, (name, value)) in resources.iter().enumerate() {
@@ -3802,9 +3927,13 @@ impl<'a> DocumentModel<'a> {
             "containsInfo" => Some(Ok(ModelValue::Bool(
                 document_info_dictionary(self.document).is_some(),
             ))),
-            "spacingCompliesPDFA" => {
-                Some(Ok(ModelValue::Bool(stream_spacing_complies(self.document))))
-            }
+            "spacingCompliesPDFA" => Some(Ok(ModelValue::Bool(
+                self.document
+                    .objects
+                    .values()
+                    .filter_map(|object| object.spacing_compliant)
+                    .all(|compliant| compliant),
+            ))),
             "subsectionHeaderSpaceSeparated" => {
                 Some(Ok(ModelValue::Bool(syntax.xref_subsection_space_separated)))
             }
@@ -3857,7 +3986,15 @@ impl<'a> DocumentModel<'a> {
                         |value| Ok(ModelValue::from(value)),
                     ),
             ),
-            "NeedsRendering" | "Requirements" => Some(Ok(catalog_value(self.document, name)
+            "NeedsRendering" => Some(Ok(catalog_value(self.document, name).map_or(
+                ModelValue::Bool(false),
+                |value| {
+                    semantic_names::resolve(self.document, Some(value))
+                        .cloned()
+                        .map_or(ModelValue::Null, ModelValue::from)
+                },
+            ))),
+            "Requirements" => Some(Ok(catalog_value(self.document, name)
                 .cloned()
                 .map_or(ModelValue::Null, ModelValue::from))),
             "Marked" => Some(Ok(ModelValue::Bool(catalog_mark_info_bool(
@@ -4018,6 +4155,39 @@ impl ModelObject for DocumentModel<'_> {
         max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut objects = Vec::new();
+        if graph.materializes("documentInfo")
+            && let Some(dictionary) = document_info_dictionary(graph.document)
+        {
+            let mut info = GenericModel::new(
+                graph.document,
+                "documentInfo",
+                None,
+                None,
+                dictionary,
+                0,
+                "root/info",
+            );
+            info.supertypes.clear();
+            push_linked(&mut objects, ModelObjectRef::Generic(info), max_objects)?;
+        }
+        if graph.materializes("cosIndirect") {
+            for (ordinal, object) in graph.document.objects.values().enumerate() {
+                let Some(compliant) = object.spacing_compliant else {
+                    continue;
+                };
+                let mut model = GenericModel::new_value(
+                    graph.document,
+                    "cosIndirect",
+                    ModelValue::Bool(compliant),
+                    ordinal,
+                    format!("root/indirectObjects[{}]", object_key_text(object.key)),
+                );
+                model.key = Some(object.key);
+                model.offset = Some(object.offset);
+                model.supertypes.clear();
+                push_linked(&mut objects, ModelObjectRef::Generic(model), max_objects)?;
+            }
+        }
         if let Some(catalog) = graph.catalog() {
             push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
         }
@@ -4031,7 +4201,10 @@ impl ModelObject for DocumentModel<'_> {
                 max_objects,
             )?;
         }
-        if graph.materializes("stream") {
+        if graph.materializes("stream")
+            || graph.materializes(semantic_names::FILTER)
+            || graph.materializes(semantic_names::INTENT)
+        {
             graph.push_streams(&mut objects, max_objects)?;
         }
         if graph.materializes_generic_roots() {
@@ -4260,6 +4433,7 @@ pub struct MetadataModel<'a> {
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
+    extension: Option<ExtensionResource<'a>>,
 }
 
 impl<'a> MetadataModel<'a> {
@@ -4284,7 +4458,33 @@ impl<'a> MetadataModel<'a> {
                 ObjectTypeName::unchecked("object"),
             ],
             links: Vec::new(),
+            extension: None,
         })
+    }
+
+    fn identity_key(&self) -> String {
+        self.extension.as_ref().map_or_else(
+            || format!("metadata:{}:{}", self.key.number, self.key.generation),
+            |extension| {
+                format!(
+                    "metadata:{}:{}:{}",
+                    self.key.number, self.key.generation, extension.id
+                )
+            },
+        )
+    }
+
+    fn context(&self) -> BoundedText {
+        self.extension.as_ref().map_or_else(
+            || BoundedText::unchecked("root/catalog[0]/metadata[0]"),
+            |extension| {
+                BoundedText::unchecked(format!(
+                    "root/catalog[0]/metadata[0]/{}[{}]",
+                    extension.family(),
+                    extension.id
+                ))
+            },
+        )
     }
 
     fn xmp_rdf_property(&self, name: &str) -> Option<Result<ModelValue>> {
@@ -4538,7 +4738,7 @@ impl<'a> MetadataModel<'a> {
 impl ModelObject for MetadataModel<'_> {
     fn id(&self) -> Option<ObjectIdentity> {
         Some(ObjectIdentity {
-            key: format!("metadata:{}:{}", self.key.number, self.key.generation),
+            key: self.identity_key(),
         })
     }
 
@@ -4555,6 +4755,9 @@ impl ModelObject for MetadataModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        if let Some(extension) = &self.extension {
+            return extension.property(name);
+        }
         let family = self.active_family.as_ref().map(Identifier::as_str);
         if let Some(value) = self.xmp_rdf_property(name.as_str()) {
             return value;
@@ -4643,10 +4846,33 @@ impl ModelObject for MetadataModel<'_> {
 
     fn linked_objects<'a>(
         &self,
-        _graph: &ModelGraph<'a>,
-        _max_objects: usize,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
-        Ok(Vec::new())
+        let mut linked = Vec::new();
+        if self.extension.is_none()
+            && xmp_extension::FAMILIES
+                .iter()
+                .any(|family| graph.materializes(family))
+        {
+            for extension in xmp_extension::resources(graph.document, self.key) {
+                let family = extension.family();
+                if graph.materializes(family) {
+                    let object = MetadataModel {
+                        document: graph.document,
+                        key: self.key,
+                        offset: self.offset,
+                        active_family: None,
+                        object_type: ObjectTypeName::unchecked(family),
+                        supertypes: Vec::new(),
+                        links: Vec::new(),
+                        extension: Some(extension),
+                    };
+                    push_linked(&mut linked, ModelObjectRef::Metadata(object), max_objects)?;
+                }
+            }
+        }
+        Ok(linked)
     }
 }
 
@@ -5224,6 +5450,39 @@ impl ModelObject for AnnotationModel<'_> {
         max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut objects = Vec::new();
+        let pdf_2 =
+            graph
+                .active_flavour
+                .as_ref()
+                .map_or(self.document.version.major >= 2, |flavour| {
+                    match flavour.family.as_str() {
+                        "pdfa" => flavour.part.get() >= 4,
+                        "pdfua" => flavour.part.get() >= 2,
+                        "wtpdf" => true,
+                        _ => self.document.version.major >= 2,
+                    }
+                });
+        if pdf_2
+            && graph.materializes(semantic_names::BLEND_MODE)
+            && let Some(name) = semantic_names::name(self.document, self.dictionary.get("BM"))
+        {
+            let context = format!(
+                "root/page[{}]/annotation[{}]",
+                self.page_ordinal, self.ordinal
+            );
+            push_linked(
+                &mut objects,
+                semantic_names::model(
+                    graph.document,
+                    semantic_names::BLEND_MODE,
+                    name,
+                    None,
+                    0,
+                    &context,
+                )?,
+                max_objects,
+            )?;
+        }
         if self.dictionary.get("Subtype").is_some_and(
             |value| matches!(value, crate::CosObject::Name(name) if name.matches("Widget")),
         ) {
@@ -5437,13 +5696,16 @@ pub struct ContentStreamModel<'a> {
     document: &'a ParsedDocument,
     limits: &'a ResourceLimits,
     page_key: Option<ObjectKey>,
-    resource_context: Option<crate::Dictionary>,
+    is_form: bool,
+    initial_color_state: Option<device_color::GraphicsState>,
+    resource_context: Option<&'a crate::Dictionary>,
     context_prefix: String,
     page_ordinal: usize,
     ordinal: usize,
     key: ObjectKey,
     offset: u64,
     stream: &'a crate::StreamObject,
+    continuation: Vec<&'a crate::StreamObject>,
     summary_cache: Arc<OnceLock<std::result::Result<ContentStreamSummary, ParseError>>>,
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
@@ -5451,6 +5713,23 @@ pub struct ContentStreamModel<'a> {
 }
 
 impl<'a> ContentStreamModel<'a> {
+    fn identity_key(&self) -> String {
+        match self.page_key {
+            Some(page) => format!(
+                "contentStream:{}:{}:{}:{}:{:?}",
+                page.number,
+                page.generation,
+                self.key.number,
+                self.key.generation,
+                self.initial_color_state
+            ),
+            None => format!(
+                "contentStream:detached:{}:{}:{}",
+                self.key.number, self.key.generation, self.context_prefix
+            ),
+        }
+    }
+
     fn from_page(
         document: &'a ParsedDocument,
         page: &PageModel<'a>,
@@ -5474,7 +5753,25 @@ impl<'a> ContentStreamModel<'a> {
         let location_path = format!("{}/contentStream[{}]", self.context_prefix, self.ordinal);
         self.summary_cache
             .get_or_init(|| {
-                let decoded = self.stream.decoded_bytes(self.limits)?;
+                let mut decoded = self.stream.decoded_bytes(self.limits)?;
+                for stream in &self.continuation {
+                    let contents = stream.decoded_bytes(self.limits)?;
+                    let limit = || ParseError::LimitExceeded {
+                        limit: "max_stream_decode_bytes",
+                    };
+                    let size = decoded
+                        .len()
+                        .checked_add(contents.len())
+                        .and_then(|size| size.checked_add(1))
+                        .ok_or_else(limit)?;
+                    if u64::try_from(size).map_err(|_| limit())?
+                        > self.limits.max_stream_decode_bytes
+                    {
+                        return Err(limit());
+                    }
+                    decoded.push(b'\r');
+                    decoded.extend(contents);
+                }
                 crate::content::summarize_content_stream(
                     self.key,
                     &location_path,
@@ -5487,29 +5784,24 @@ impl<'a> ContentStreamModel<'a> {
     }
 
     fn effective_resources(&self, document: &'a ParsedDocument) -> Result<EffectiveResources<'_>> {
-        if let Some(resources) = &self.resource_context {
-            return Ok(EffectiveResources {
-                dictionaries: vec![resources],
-                cyclic: false,
-            });
-        }
-        let Some(page_key) = self.page_key else {
-            return Ok(EffectiveResources {
-                dictionaries: Vec::new(),
-                cyclic: false,
-            });
-        };
-        effective_resources_for_page_key(document, page_key, self.limits)
+        let page = self
+            .page_key
+            .map(|key| effective_resources_for_page_key(document, key, self.limits))
+            .transpose()?;
+        let nearest = page
+            .as_ref()
+            .and_then(|page| page.dictionaries.last().copied());
+        Ok(EffectiveResources {
+            dictionaries: nearest.into_iter().chain(self.resource_context).collect(),
+            cyclic: page.is_some_and(|page| page.cyclic),
+        })
     }
 }
 
 impl ModelObject for ContentStreamModel<'_> {
     fn id(&self) -> Option<ObjectIdentity> {
         Some(ObjectIdentity {
-            key: format!(
-                "contentStream:{}:{}:{}",
-                self.page_ordinal, self.key.number, self.key.generation
-            ),
+            key: self.identity_key(),
         })
     }
 
@@ -5536,10 +5828,27 @@ impl ModelObject for ContentStreamModel<'_> {
             "nestingLevel" => Ok(ModelValue::Number(u64_to_f64(u64::from(
                 content_stream_nesting_level(&self.summary()?),
             ))?)),
-            "inheritedResourceNames" => Ok(ModelValue::String(BoundedText::new(
-                inherited_resource_names(&self.effective_resources(self.document)?),
-                512,
-            )?)),
+            "inheritedResourceNames" => {
+                let effective = self.effective_resources(self.document)?;
+                let local = if self.is_form {
+                    self.resource_context
+                } else {
+                    self.page_key
+                        .and_then(|key| page_dictionary(self.document, key))
+                        .and_then(|page| {
+                            resolve_dictionary_value(self.document, page.get("Resources"))
+                        })
+                };
+                Ok(ModelValue::String(BoundedText::new(
+                    inherited_resource_names(
+                        self.document,
+                        local,
+                        &effective,
+                        &self.summary()?.resource_uses,
+                    ),
+                    512,
+                )?))
+            }
             "undefinedResourceNames" => Ok(ModelValue::String(BoundedText::new(
                 undefined_resource_names(
                     self.document,
@@ -5580,7 +5889,17 @@ impl ModelObject for ContentStreamModel<'_> {
         max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         let summary = self.summary()?;
+        if summary.truncated
+            && graph.active_flavour.is_some()
+            && graph.materializes("contentStream")
+        {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_content_stream_ops",
+            }
+            .into());
+        }
         let mut objects = Vec::new();
+        append_scoped_content_models(self, graph, &summary, &mut objects, max_objects)?;
         if graph.materializes("operator") {
             for (ordinal, fact) in summary.facts.iter().cloned().enumerate() {
                 push_linked(
@@ -5919,6 +6238,7 @@ impl ModelObject for InlineImageModel<'_> {
             color_space,
             bits_per_component,
             location,
+            ..
         } = &self.fact
         else {
             return Err(crate::ProfileError::UnknownProperty {
@@ -7470,24 +7790,6 @@ fn first_page_id(document: &ParsedDocument) -> Option<u64> {
         .map(|key| u64::from(key.number.get()))
 }
 
-fn stream_spacing_complies(document: &ParsedDocument) -> bool {
-    document.parse_facts.iter().all(|fact| {
-        !matches!(
-            fact,
-            crate::ParseFact::Stream {
-                fact: crate::StreamFact::KeywordSpacing {
-                    stream_keyword_crlf_compliant: false,
-                    ..
-                } | crate::StreamFact::KeywordSpacing {
-                    endstream_keyword_eol_compliant: false,
-                    ..
-                },
-                ..
-            }
-        )
-    })
-}
-
 fn effective_page_resources<'a>(
     document: &'a ParsedDocument,
     page: &PageModel<'a>,
@@ -7549,12 +7851,9 @@ fn resolve_resource_use(
             object_family: None,
         };
     }
-    let Some(value) = resources
-        .dictionaries
-        .iter()
-        .rev()
-        .find_map(|dictionary| resource_value(dictionary, use_fact.family, &use_fact.name))
-    else {
+    let Some(value) = resources.dictionaries.iter().rev().find_map(|dictionary| {
+        resource_value(document, dictionary, use_fact.family, &use_fact.name)
+    }) else {
         return ResolvedResourceUse {
             status: ResourceResolutionStatus::Missing,
             family: use_fact.family,
@@ -7588,8 +7887,25 @@ fn content_stream_nesting_level(summary: &ContentStreamSummary) -> u32 {
         .unwrap_or(0)
 }
 
-fn inherited_resource_names(resources: &EffectiveResources<'_>) -> String {
-    resource_names(resources)
+fn inherited_resource_names(
+    document: &ParsedDocument,
+    local: Option<&crate::Dictionary>,
+    effective: &EffectiveResources<'_>,
+    uses: &[ResourceUse],
+) -> String {
+    uses.iter()
+        .filter(|used| {
+            local.is_none_or(|local| {
+                resource_value(document, local, used.family, &used.name).is_none()
+            }) && effective.dictionaries.iter().any(|dictionary| {
+                resource_value(document, dictionary, used.family, &used.name).is_some()
+            })
+        })
+        .map(|used| String::from_utf8_lossy(used.name.as_bytes()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn undefined_resource_names(
@@ -7609,23 +7925,8 @@ fn undefined_resource_names(
         .join("&")
 }
 
-fn resource_names(resources: &EffectiveResources<'_>) -> String {
-    let mut names = BTreeSet::new();
-    for dictionary in &resources.dictionaries {
-        for resource_family in ["Font", "ColorSpace", "ExtGState", "Shading", "XObject"] {
-            let Some(crate::CosObject::Dictionary(collection)) = dictionary.get(resource_family)
-            else {
-                continue;
-            };
-            for (name, _value) in collection.iter() {
-                names.insert(String::from_utf8_lossy(name.as_bytes()).into_owned());
-            }
-        }
-    }
-    names.into_iter().collect::<Vec<_>>().join("&")
-}
-
 fn resource_value<'a>(
+    document: &'a ParsedDocument,
     resources: &'a crate::Dictionary,
     family: ResourceFamily,
     name: &PdfName,
@@ -7634,12 +7935,11 @@ fn resource_value<'a>(
         ResourceFamily::Font => "Font",
         ResourceFamily::ColorSpace => "ColorSpace",
         ResourceFamily::ExtGState => "ExtGState",
+        ResourceFamily::Pattern => "Pattern",
         ResourceFamily::Shading => "Shading",
         ResourceFamily::XObject => "XObject",
     };
-    let Some(crate::CosObject::Dictionary(collection)) = resources.get(dictionary_name) else {
-        return None;
-    };
+    let collection = resolve_dictionary_value(document, resources.get(dictionary_name))?;
     collection
         .iter()
         .find_map(|(key, value)| (key == name).then_some(value))
@@ -7659,6 +7959,9 @@ fn resolved_resource_family(
         ResourceFamily::ColorSpace => Some("colorSpace"),
         ResourceFamily::ExtGState => resolve_named_dictionary(document, value)
             .map(|(_key, _offset, _dictionary)| "extGState"),
+        ResourceFamily::Pattern => {
+            resolve_named_dictionary(document, value).map(|(_key, _offset, _dictionary)| "pattern")
+        }
         ResourceFamily::Shading => {
             resolve_named_dictionary(document, value).map(|(_key, _offset, _dictionary)| "shading")
         }
@@ -8776,9 +9079,11 @@ fn push_content_streams_from_value<'a>(
     max_objects: usize,
     streams: &mut Vec<ContentStreamModel<'a>>,
 ) -> Result<()> {
-    match value {
-        Some(crate::CosObject::Reference(key)) => {
-            push_content_stream(document, page, *key, 0, max_objects, streams)?;
+    match semantic_names::resolve(document, value) {
+        Some(crate::CosObject::Stream(_)) => {
+            if let Some(crate::CosObject::Reference(key)) = value {
+                push_content_stream(document, page, *key, 0, max_objects, streams)?;
+            }
         }
         Some(crate::CosObject::Array(values)) => {
             let mut ordinal = 0_usize;
@@ -8823,6 +9128,8 @@ fn push_content_stream<'a>(
         document,
         limits: page.limits,
         page_key: Some(page.key),
+        is_form: false,
+        initial_color_state: None,
         resource_context: None,
         context_prefix: format!("root/page[{}]", page.ordinal),
         page_ordinal: page.ordinal,
@@ -8830,6 +9137,7 @@ fn push_content_stream<'a>(
         key,
         offset: object.offset,
         stream,
+        continuation: Vec::new(),
         summary_cache: Arc::new(OnceLock::new()),
         object_type: ObjectTypeName::unchecked("contentStream"),
         supertypes: vec![
@@ -9387,6 +9695,7 @@ pub struct GenericModel<'a> {
     links: Vec<LinkName>,
     allowed_properties: &'static [&'static str],
     direct_value: Option<ModelValue>,
+    device_output: Option<device_color::OutputSpaces>,
     primitive: Option<CosPrimitive<'a>>,
     context: String,
     ordinal: usize,
@@ -9402,19 +9711,27 @@ impl<'a> GenericModel<'a> {
         ordinal: usize,
         context: impl Into<String>,
     ) -> Self {
+        let mut supertypes = vec![ObjectTypeName::unchecked("object")];
+        if family == "colorSpace"
+            && color_space_family(dictionary) == "ICCBased"
+            && color_space_component_count(dictionary) == Some(4)
+        {
+            supertypes.push(ObjectTypeName::unchecked("iccBasedCmyk"));
+        }
         Self {
             document,
             key,
             offset,
             dictionary: dictionary.clone(),
             object_type: ObjectTypeName::unchecked(family),
-            supertypes: vec![ObjectTypeName::unchecked("object")],
+            supertypes,
             links: family_links(family)
                 .iter()
                 .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
                 .collect(),
             allowed_properties: family_direct_properties(family),
             direct_value: None,
+            device_output: None,
             primitive: None,
             context: context.into(),
             ordinal,
@@ -9441,6 +9758,7 @@ impl<'a> GenericModel<'a> {
                 .collect(),
             allowed_properties: family_direct_properties(family),
             direct_value: Some(value),
+            device_output: None,
             primitive: None,
             context: context.into(),
             ordinal,
@@ -9463,6 +9781,7 @@ impl<'a> GenericModel<'a> {
             links: Vec::new(),
             allowed_properties: &[],
             direct_value: None,
+            device_output: None,
             primitive: Some(primitive),
             context: format!("root/{family}[{}]", origin.ordinal),
             ordinal: origin.ordinal,
@@ -9472,6 +9791,14 @@ impl<'a> GenericModel<'a> {
     fn identity_key(&self) -> String {
         if self.primitive.is_some() {
             return self.context.clone();
+        }
+        if self.object_type.as_str() == "halftone"
+            && let Some(key) = self.key
+        {
+            return format!(
+                "halftone:{}:{}:{:?}",
+                key.number, key.generation, self.direct_value
+            );
         }
         generic_identity_key(
             self.object_type.as_str(),
@@ -9835,8 +10162,65 @@ impl ModelObject for GenericModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        if self.object_type.as_str() == "documentInfo" {
+            if name.as_str() == "size" {
+                return usize_to_f64(self.dictionary.len()).map(ModelValue::Number);
+            }
+            let root = DocumentModel::new(self.document);
+            return root
+                .info_property(name.as_str())
+                .or_else(|| root.metadata_property(name.as_str()))
+                .unwrap_or_else(|| unknown_property(name));
+        }
+        if self.object_type.as_str() == "halftone" {
+            return Ok(match name.as_str() {
+                "HalftoneType"
+                    if self.dictionary.is_empty()
+                        && matches!(self.direct_value, Some(ModelValue::Bool(true))) =>
+                {
+                    ModelValue::Number(1.0)
+                }
+                "HalftoneType" | "HalftoneName" => {
+                    halftone_value(self.document, &self.dictionary, name.as_str())
+                }
+                "colorantName" if !self.dictionary.is_empty() => {
+                    self.direct_value.clone().unwrap_or(ModelValue::Null)
+                }
+                "colorantName" => ModelValue::Null,
+                "TransferFunction" => {
+                    semantic_names::resolve(self.document, self.dictionary.get("TransferFunction"))
+                        .filter(|value| !matches!(value, crate::CosObject::Null))
+                        .map_or(ModelValue::Null, |_| ModelValue::Bool(true))
+                }
+                _ => return unknown_property(name),
+            });
+        }
         if let Some(primitive) = self.primitive {
             return primitive.property(name);
+        }
+        if self.object_type.as_str() == "cosIndirect" && name.as_str() == "spacingCompliesPDFA" {
+            return Ok(self.direct_value.clone().unwrap_or(ModelValue::Null));
+        }
+        if let Some(output) = &self.device_output {
+            return match name.as_str() {
+                "gOutputCS" | "gDocumentOutputCS" => Ok(output.document.clone()),
+                "gPageOutputCS" => Ok(output.page.clone()),
+                "gTransparencyCS" => Ok(output.transparency.clone()),
+                _ => unknown_property(name),
+            };
+        }
+        if semantic_names::FAMILIES.contains(&self.object_type.as_str()) {
+            return match name.as_str() {
+                "internalRepresentation" => {
+                    Ok(self.direct_value.clone().unwrap_or(ModelValue::Null))
+                }
+                "decodeParms" if self.object_type.as_str() == semantic_names::FILTER => Ok(self
+                    .dictionary
+                    .get("Name")
+                    .cloned()
+                    .map_or(ModelValue::Null, ModelValue::from)),
+                _ => unknown_property(name),
+            };
         }
         if let Some(value) = self.acro_action_destination_property(name) {
             return value;
@@ -9923,8 +10307,231 @@ fn generic_linked_objects<'a>(
         "names" => names_linked_objects(model, graph, max_objects),
         "destination" => destination_linked_objects(model, graph, max_objects),
         "xObject" | "formXObject" => xobject_linked_objects(model, graph, max_objects),
+        "halftone" if model.dictionary.get("HalftoneType").and_then(cos_integer) == Some(5) => {
+            let mut objects = Vec::new();
+            for (ordinal, (name, value)) in model.dictionary.iter().enumerate() {
+                if let Some((key, offset, dictionary)) =
+                    resolve_named_dictionary(graph.document, value)
+                {
+                    let mut child = GenericModel::new(
+                        graph.document,
+                        "halftone",
+                        key,
+                        offset,
+                        dictionary,
+                        ordinal,
+                        format!("{}/halftone[{ordinal}]", model.context),
+                    );
+                    child.supertypes.clear();
+                    child.direct_value =
+                        Some(ModelValue::from(crate::CosObject::Name(name.clone())));
+                    push_linked(&mut objects, ModelObjectRef::Generic(child), max_objects)?;
+                }
+            }
+            Ok(objects)
+        }
         _ => Ok(Vec::new()),
     }
+}
+
+fn append_scoped_content_models<'a>(
+    model: &ContentStreamModel<'_>,
+    graph: &ModelGraph<'a>,
+    summary: &ContentStreamSummary,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max_objects: usize,
+) -> Result<()> {
+    append_content_semantic_names(model, graph, summary, objects, max_objects)?;
+    let invocation_states = if device_color::FAMILIES
+        .iter()
+        .any(|family| graph.materializes(family))
+    {
+        device_color::append(model, graph, summary, objects, max_objects)?
+    } else {
+        BTreeMap::new()
+    };
+    append_content_resources(
+        model,
+        graph,
+        &summary.resource_uses,
+        &invocation_states,
+        objects,
+        max_objects,
+    )?;
+    Ok(())
+}
+
+fn append_content_semantic_names<'a>(
+    model: &ContentStreamModel<'_>,
+    graph: &ModelGraph<'a>,
+    summary: &ContentStreamSummary,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max_objects: usize,
+) -> Result<()> {
+    if graph.materializes(semantic_names::INTENT) {
+        for (ordinal, (name, location)) in summary.rendering_intents.iter().enumerate() {
+            let path = location
+                .path
+                .as_ref()
+                .map_or(model.context_prefix.as_str(), BoundedText::as_str);
+            push_linked(
+                objects,
+                semantic_names::model(
+                    graph.document,
+                    semantic_names::INTENT,
+                    name,
+                    None,
+                    ordinal,
+                    path,
+                )?,
+                max_objects,
+            )?;
+        }
+    }
+    if graph.materializes(semantic_names::INLINE_FILTER) {
+        for fact in &summary.facts {
+            if let OperatorFact::InlineImage {
+                filters, location, ..
+            } = fact
+            {
+                let path = location
+                    .path
+                    .as_ref()
+                    .map_or(model.context_prefix.as_str(), BoundedText::as_str);
+                for (ordinal, filter) in filters.iter().enumerate() {
+                    push_linked(
+                        objects,
+                        semantic_names::model(
+                            graph.document,
+                            semantic_names::INLINE_FILTER,
+                            filter,
+                            None,
+                            ordinal,
+                            path,
+                        )?,
+                        max_objects,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn append_content_resources<'a>(
+    model: &ContentStreamModel<'_>,
+    graph: &ModelGraph<'a>,
+    uses: &[ResourceUse],
+    invocation_states: &BTreeMap<u64, device_color::GraphicsState>,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max_objects: usize,
+) -> Result<()> {
+    let check_graphics_states = graph.materializes(semantic_names::INTENT)
+        || graph.materializes(semantic_names::BLEND_MODE)
+        || graph.materializes("halftone");
+    let follow_content = graph.active_flavour.is_some() && graph.materializes("contentStream");
+    if !(check_graphics_states || follow_content) {
+        return Ok(());
+    }
+    let effective = model.effective_resources(graph.document)?;
+    for used in uses.iter().filter(|used| match used.family {
+        ResourceFamily::ExtGState => check_graphics_states,
+        ResourceFamily::Pattern | ResourceFamily::XObject => follow_content,
+        _ => false,
+    }) {
+        let Some(resource) = effective.dictionaries.iter().rev().find_map(|resources| {
+            resource_value(graph.document, resources, used.family, &used.name)
+        }) else {
+            continue;
+        };
+        let path = used
+            .location
+            .path
+            .as_ref()
+            .map_or(model.context_prefix.as_str(), BoundedText::as_str);
+        if used.family == ResourceFamily::ExtGState {
+            if let Some(dictionary) = resolve_dictionary_value(graph.document, Some(resource)) {
+                append_graphics_state_names(graph, dictionary, path, objects, max_objects)?;
+            }
+        } else if let (Some(page_key), crate::CosObject::Reference(key)) =
+            (model.page_key, resource)
+            && let Some(mut form) = resource_content_stream(
+                graph,
+                *key,
+                Some(page_key),
+                model.page_ordinal,
+                format!(
+                    "root/page[{}]/resourceStream[{}.{}]",
+                    model.page_ordinal, key.number, key.generation
+                ),
+            )
+        {
+            form.initial_color_state = used
+                .location
+                .offset
+                .and_then(|offset| invocation_states.get(&offset).copied());
+            push_linked(objects, ModelObjectRef::ContentStream(form), max_objects)?;
+        }
+    }
+    Ok(())
+}
+
+fn append_graphics_state_names<'a>(
+    graph: &ModelGraph<'a>,
+    dictionary: &crate::Dictionary,
+    context: &str,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max_objects: usize,
+) -> Result<()> {
+    for (key, family) in [
+        ("RI", semantic_names::INTENT),
+        ("BM", semantic_names::BLEND_MODE),
+    ] {
+        if graph.materializes(family)
+            && let Some(name) =
+                semantic_names::graphics_state_name(graph.document, dictionary.get(key), family)
+        {
+            push_linked(
+                objects,
+                semantic_names::model(graph.document, family, name, None, 0, context)?,
+                max_objects,
+            )?;
+        }
+    }
+    if graph.materializes("halftone")
+        && let Some(halftone) = semantic_names::resolve(graph.document, dictionary.get("HT"))
+    {
+        let context = format!("{context}/halftone");
+        let object = match halftone {
+            crate::CosObject::Name(name) if name.matches("Default") => {
+                Some(GenericModel::new_value(
+                    graph.document,
+                    "halftone",
+                    ModelValue::Bool(true),
+                    0,
+                    context,
+                ))
+            }
+            _ => resolve_named_dictionary_from_option(graph.document, dictionary.get("HT")).map(
+                |(key, offset, dictionary)| {
+                    GenericModel::new(
+                        graph.document,
+                        "halftone",
+                        key,
+                        offset,
+                        dictionary,
+                        0,
+                        context,
+                    )
+                },
+            ),
+        };
+        if let Some(mut object) = object {
+            object.supertypes.clear();
+            push_linked(objects, ModelObjectRef::Generic(object), max_objects)?;
+        }
+    }
+    Ok(())
 }
 
 fn xobject_linked_objects<'a>(
@@ -9938,25 +10545,51 @@ fn xobject_linked_objects<'a>(
     let Some(key) = model.key else {
         return Ok(Vec::new());
     };
-    let Some(object) = graph.document.objects.get(&key) else {
-        return Ok(Vec::new());
-    };
+    let mut objects = Vec::new();
+    if let Some(content) =
+        resource_content_stream(graph, key, None, model.ordinal, model.context.clone())
+    {
+        push_linked(
+            &mut objects,
+            ModelObjectRef::ContentStream(content),
+            max_objects,
+        )?;
+    }
+    Ok(objects)
+}
+
+fn resource_content_stream<'a>(
+    graph: &ModelGraph<'a>,
+    key: ObjectKey,
+    page_key: Option<ObjectKey>,
+    page_ordinal: usize,
+    context_prefix: String,
+) -> Option<ContentStreamModel<'a>> {
+    let object = graph.document.objects.get(&key)?;
     let crate::CosObject::Stream(stream) = &object.object else {
-        return Ok(Vec::new());
+        return None;
     };
+    let is_form = matches!(stream.dictionary.get("Subtype"), Some(crate::CosObject::Name(name)) if name.matches("Form"));
+    let is_tiling_pattern = stream.dictionary.get("PatternType").and_then(cos_integer) == Some(1);
+    if !is_form && !is_tiling_pattern {
+        return None;
+    }
     let resource_context =
-        resolve_dictionary_value(graph.document, model.dictionary.get("Resources")).cloned();
-    let model = ContentStreamModel {
+        resolve_dictionary_value(graph.document, stream.dictionary.get("Resources"));
+    Some(ContentStreamModel {
         document: graph.document,
         limits: graph.limits,
-        page_key: None,
+        page_key,
+        is_form: true,
+        initial_color_state: None,
         resource_context,
-        context_prefix: model.context.clone(),
-        page_ordinal: model.ordinal,
+        context_prefix,
+        page_ordinal,
         ordinal: 0,
         key,
         offset: object.offset,
         stream,
+        continuation: Vec::new(),
         summary_cache: Arc::new(OnceLock::new()),
         object_type: ObjectTypeName::unchecked("contentStream"),
         supertypes: vec![
@@ -9967,14 +10600,7 @@ fn xobject_linked_objects<'a>(
             .iter()
             .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
             .collect(),
-    };
-    let mut objects = Vec::new();
-    push_linked(
-        &mut objects,
-        ModelObjectRef::ContentStream(model),
-        max_objects,
-    )?;
-    Ok(objects)
+    })
 }
 
 fn generic_models_from_dictionary_value<'a>(
@@ -10530,10 +11156,56 @@ impl ModelObject for StreamModel<'_> {
 
     fn linked_objects<'a>(
         &self,
-        _graph: &ModelGraph<'a>,
-        _max_objects: usize,
+        graph: &ModelGraph<'a>,
+        max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
-        Ok(Vec::new())
+        let mut objects = Vec::new();
+        let dictionary = &self.stream.dictionary;
+        let context = format!("root/stream[{}:{}]", self.key.number, self.key.generation);
+        if graph.materializes(semantic_names::INTENT)
+            && matches!(dictionary.get("Subtype"), Some(crate::CosObject::Name(name)) if name.matches("Image"))
+            && let Some(name) = semantic_names::name(self.document, dictionary.get("Intent"))
+        {
+            push_linked(
+                &mut objects,
+                semantic_names::model(
+                    graph.document,
+                    semantic_names::INTENT,
+                    name,
+                    None,
+                    0,
+                    &context,
+                )?,
+                max_objects,
+            )?;
+        }
+        if graph.materializes(semantic_names::FILTER) {
+            let declaration = semantic_names::resolve(self.document, dictionary.get("Filter"));
+            let candidates = match declaration {
+                Some(crate::CosObject::Array(values)) => values.as_slice(),
+                Some(value) => std::slice::from_ref(value),
+                None => &[],
+            };
+            for (ordinal, candidate) in candidates.iter().enumerate() {
+                if let Some(name) = semantic_names::name(self.document, Some(candidate)) {
+                    let parameter =
+                        semantic_names::filter_parameter(self.document, dictionary, name, ordinal)?;
+                    push_linked(
+                        &mut objects,
+                        semantic_names::model(
+                            graph.document,
+                            semantic_names::FILTER,
+                            name,
+                            parameter.as_ref(),
+                            ordinal,
+                            &context,
+                        )?,
+                        max_objects,
+                    )?;
+                }
+            }
+        }
+        Ok(objects)
     }
 }
 
@@ -11199,6 +11871,9 @@ fn xmp_first_present_prefix(
 }
 
 fn xmp_extension_value_type_defined(document: &ParsedDocument, object: ObjectKey) -> bool {
+    if let Some(valid) = xmp_extension::declared_value_types_valid(document, object) {
+        return valid;
+    }
     let defined_types = xmp_property_values(document, Some(object), XMP_NS_PDFA_TYPE, "type")
         .iter()
         .filter_map(|property| property.value.map(BoundedText::as_str))
@@ -11215,24 +11890,30 @@ fn xmp_extension_value_type_defined(document: &ParsedDocument, object: ObjectKey
         .collect::<Vec<_>>();
     values.is_empty()
         || values.iter().all(|value| {
-            matches!(
-                *value,
-                "Text"
-                    | "URI"
-                    | "URL"
-                    | "XPath"
-                    | "Boolean"
-                    | "Integer"
-                    | "Real"
-                    | "Date"
-                    | "AgentName"
-                    | "ProperName"
-                    | "MIMEType"
-                    | "Lang Alt"
-                    | "Seq"
-                    | "Bag"
-            ) || defined_types.iter().any(|defined| defined == value)
+            is_predefined_xmp_value_type(value)
+                || defined_types.iter().any(|defined| defined == value)
         })
+}
+
+fn is_predefined_xmp_value_type(value: &str) -> bool {
+    [
+        "Text",
+        "URI",
+        "URL",
+        "XPath",
+        "Boolean",
+        "Integer",
+        "Real",
+        "Date",
+        "AgentName",
+        "ProperName",
+        "MIMEType",
+        "Lang Alt",
+        "Seq",
+        "Bag",
+    ]
+    .iter()
+    .any(|name| value.eq_ignore_ascii_case(name))
 }
 
 fn xmp_declared_extension_namespaces(
@@ -11633,6 +12314,323 @@ mod tests {
                 .all(|unsupported| unsupported.rule_id != rule)
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_should_validate_xmp_extension_fields_per_declared_schema() -> crate::Result<()> {
+        let xmp = br#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:pdfaExtension="http://www.aiim.org/pdfa/ns/extension/"
+                   xmlns:pdfaSchema="http://www.aiim.org/pdfa/ns/schema#">
+    <pdfaExtension:schemas><rdf:Bag>
+      <rdf:li rdf:parseType="Resource">
+        <pdfaSchema:schema>Schema One</pdfaSchema:schema>
+        <pdfaSchema:namespaceURI>urn:example:one</pdfaSchema:namespaceURI>
+        <pdfaSchema:prefix>one</pdfaSchema:prefix>
+      </rdf:li>
+      <rdf:li rdf:parseType="Resource">
+        <pdfaSchema:namespaceURI>urn:example:two</pdfaSchema:namespaceURI>
+        <pdfaSchema:prefix>two</pdfaSchema:prefix>
+      </rdf:li>
+    </rdf:Bag></pdfaExtension:schemas>
+  </rdf:Description>
+</rdf:RDF>"#;
+        let mut pdf = format!(
+            "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Metadata 2 0 R >>\nendobj\n2 0 obj\n<< /Type \
+             /Metadata /Subtype /XML /Length {} >>\nstream\n",
+            xmp.len()
+        )
+        .into_bytes();
+        pdf.extend(xmp);
+        pdf.extend(b"\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile =
+            validate_test_profile(&pdf, ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-7-8-3", 1, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_scope_rendering_intents_to_names_used_by_content_and_images() -> crate::Result<()>
+    {
+        let content = b"/WrongIntent ri\n/RelativeColorimetric ri\n";
+        let mut pdf = format!(
+            "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Intent /UnrelatedName \
+             >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< \
+             /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources <<>> >>\nendobj\n4 0 obj\n<< \
+             /Length {} >>\nstream\n",
+            content.len()
+        )
+        .into_bytes();
+        pdf.extend(content);
+        pdf.extend(b"endstream\nendobj\n5 0 obj\n<< /Type /XObject /Subtype /Image /Intent /Saturation /Length 0 >>\nstream\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile =
+            validate_test_profile(&pdf, ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-2-9-1", 2, 1);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("", 0, 1)]
+    #[case("/DefaultRGB [/CalRGB << /WhitePoint [1 1 1] >>]", 0, 0)]
+    fn test_should_check_pdfa4_device_rgb_at_its_use_site(
+        #[case] default_rgb: &str,
+        #[case] expected_passes: usize,
+        #[case] expected_failures: usize,
+    ) -> crate::Result<()> {
+        let mut bytes = format!(
+            "%PDF-2.0\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type \
+             /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R \
+             /Contents 4 0 R /Resources << /ColorSpace << {default_rgb} >> >> >>\nendobj\n"
+        )
+        .into_bytes();
+        append_test_stream(&mut bytes, "4 0 obj", "", b"0.3 0.4 0.5 rg 0 0 20 20 re f");
+        bytes.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &bytes,
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(4).ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "testFlavour",
+                })?,
+                "none",
+            )?,
+        )?;
+        assert_distinct_test_rule(
+            &profile,
+            "iso-19005-4-6-2-4-3-2",
+            expected_passes,
+            expected_failures,
+        );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(3, false)]
+    #[case(4, true)]
+    fn test_should_scope_cmyk_profile_identity_checks_to_four_component_spaces(
+        #[case] components: u8,
+        #[case] applicable: bool,
+    ) -> crate::Result<()> {
+        let mut bytes = b"%PDF-2.0
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /ColorSpace << /CS [/ICCBased 4 0 R] >> >> >>
+endobj
+"
+        .to_vec();
+        append_test_stream(&mut bytes, "4 0 obj", &format!("/N {components}"), b"");
+        bytes.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &bytes,
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(4).ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "testFlavour",
+                })?,
+                "none",
+            )?,
+        )?;
+        assert_eq!(
+            profile
+                .unsupported_rules
+                .iter()
+                .any(|rule| rule.rule_id.0.as_str() == "iso-19005-4-6-2-4-2-3"),
+            applicable,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_check_indirect_spacing_at_each_object() -> crate::Result<()> {
+        let bytes = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n2  0 obj\nnull\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let profile =
+            validate_test_profile(bytes, ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-1-8-1", 1, 1);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("n", 1)]
+    #[case("f", 0)]
+    fn test_should_check_spacing_only_for_objects_in_use(
+        #[case] marker: &str,
+        #[case] expected_failures: usize,
+    ) -> crate::Result<()> {
+        let mut bytes = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".to_vec();
+        let second_object = bytes.len();
+        bytes.extend(b"2  0 obj\nnull\nendobj\n");
+        let xref_offset = bytes.len();
+        bytes.extend(
+            format!(
+                "xref\n0 3\n0000000000 65535 f\r\n0000000009 00000 n\r\n{second_object:010} 00000 \
+                 {marker}\r\ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        let profile = validate_test_profile(
+            &bytes,
+            ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-1-8-1", 1, expected_failures);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("/Type /XObject /Subtype /Form", b"0 0 10 10 re f")]
+    #[case("/Type /XObject /Subtype /Image /Width 8 /Height 1 /ImageMask true", &[0_u8])]
+    fn test_should_apply_inherited_fill_to_form_paint_and_stencil(
+        #[case] entries: &str,
+        #[case] appearance: &[u8],
+    ) -> crate::Result<()> {
+        let mut bytes = b"%PDF-2.0
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Paint 5 0 R >> >> >>
+endobj
+"
+        .to_vec();
+        append_test_stream(&mut bytes, "4 0 obj", "", b"/Paint Do");
+        append_test_stream(&mut bytes, "5 0 obj", entries, appearance);
+        bytes.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &bytes,
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(4).ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "testFlavour",
+                })?,
+                "none",
+            )?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-4-6-2-4-3-4", 0, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_follow_rendering_intent_operands_across_page_streams_and_in_forms()
+    -> crate::Result<()> {
+        let mut bytes = b"%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents [4 0 R 5 0 R]
+   /Resources << /XObject << /Fm 6 0 R >> /ExtGState 7 0 R >> >>
+endobj
+"
+        .to_vec();
+        append_test_stream(&mut bytes, "4 0 obj", "", b"/BadAcrossMembers");
+        append_test_stream(&mut bytes, "5 0 obj", "", b"ri /Fm Do");
+        append_test_stream(
+            &mut bytes,
+            "6 0 obj",
+            "/Type /XObject /Subtype /Form",
+            b"/Used gs",
+        );
+        bytes.extend(b"7 0 obj\n<< /Used << /RI /BadInForm >> /Unused << /RI /FalsePositive >> >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &bytes,
+            ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-2-9-1", 0, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_reject_scalar_xmp_extension_schema_attribute() -> crate::Result<()> {
+        let mut bytes =
+            b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Metadata 2 0 R >>\nendobj\n".to_vec();
+        append_test_stream(
+            &mut bytes,
+            "2 0 obj",
+            "/Type /Metadata /Subtype /XML",
+            br#"
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:pdfaExtension="http://www.aiim.org/pdfa/ns/extension/"
+                   pdfaExtension:schemas="not an RDF bag"/>
+</rdf:RDF>"#,
+        );
+        bytes.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &bytes,
+            ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-7-8-2", 0, 1);
+        Ok(())
+    }
+
+    fn append_test_stream(pdf: &mut Vec<u8>, header: &str, entries: &str, body: &[u8]) {
+        pdf.extend(
+            format!("{header}\n<< /Length {} {entries} >>\nstream\n", body.len()).as_bytes(),
+        );
+        pdf.extend(body);
+        pdf.extend(b"\nendstream\nendobj\n");
+    }
+
+    fn validate_test_profile(
+        pdf: &[u8],
+        flavour: ValidationFlavour,
+    ) -> crate::Result<crate::ProfileReport> {
+        let validator = Validator::new(
+            ValidationOptions::builder()
+                .flavour(FlavourSelection::Explicit { flavour })
+                .max_failed_assertions_per_rule(crate::MaxDisplayedFailures::new(NonZeroU32::MAX))
+                .record_passed_assertions(true)
+                .build(),
+        )?;
+        validator
+            .validate_reader(Cursor::new(pdf), InputName::memory())?
+            .profile_reports
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "testProfile",
+                }
+                .into()
+            })
+    }
+
+    fn assert_distinct_test_rule(
+        profile: &crate::ProfileReport,
+        rule: &str,
+        passed: usize,
+        failed: usize,
+    ) {
+        assert_eq!(
+            profile
+                .passed_assertions
+                .iter()
+                .filter(|assertion| assertion.rule_id.0.as_str() == rule)
+                .count(),
+            passed
+        );
+        assert_eq!(
+            profile
+                .failed_assertions
+                .iter()
+                .filter(|assertion| assertion.rule_id.0.as_str() == rule)
+                .count(),
+            failed
+        );
+        assert!(
+            profile
+                .unsupported_rules
+                .iter()
+                .all(|unsupported| unsupported.rule_id.0.as_str() != rule)
+        );
     }
 
     fn m1_model_pdf() -> &'static [u8] {
@@ -12278,7 +13276,7 @@ trailer
                 Some(crate::FeatureValue::String(value)) if value.as_str() == "Inherited"
             ) && matches!(
                 object.properties.get(&status),
-                Some(crate::FeatureValue::String(value)) if value.as_str() == "resolved"
+                Some(crate::FeatureValue::String(value)) if value.as_str() == "missing"
             )
         }));
         assert!(uses.iter().any(|object| {

@@ -577,6 +577,8 @@ pub struct IndirectObject {
     pub offset: u64,
     /// Materialized COS object.
     pub object: CosObject,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) spacing_compliant: Option<bool>,
 }
 
 /// Parsed trailer dictionary.
@@ -979,6 +981,14 @@ struct ByteParser<'a> {
     parse_facts: Vec<ParseFact>,
     warnings: Vec<ValidationWarning>,
     file_syntax: FileSyntax,
+    startxref: Option<u64>,
+    active_xref: Option<ActiveXrefSection>,
+}
+
+#[derive(Debug)]
+struct ActiveXrefSection {
+    offset: u64,
+    in_use: BTreeMap<ObjectKey, u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -987,11 +997,19 @@ enum NumberToken {
     Real(f64),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 struct XrefStreamSummary {
     decoded_bytes: usize,
     entries: u64,
     compressed_entries: u64,
+    in_use: BTreeMap<ObjectKey, u64>,
+}
+
+fn xref_in_use_key(number: u64, generation: u64) -> Option<ObjectKey> {
+    Some(ObjectKey::new(
+        NonZeroU32::try_from(u32::try_from(number).ok()?).ok()?,
+        u16::try_from(generation).ok()?,
+    ))
 }
 
 impl<'a> ByteParser<'a> {
@@ -1010,6 +1028,8 @@ impl<'a> ByteParser<'a> {
             parse_facts: Vec::new(),
             warnings: Vec::new(),
             file_syntax: FileSyntax::default(),
+            startxref: None,
+            active_xref: None,
         }
     }
 
@@ -1095,6 +1115,17 @@ impl<'a> ByteParser<'a> {
         }
 
         self.materialize_stream_backed_structures(&mut objects, &mut trailers)?;
+        if let Some(section) = self
+            .active_xref
+            .take()
+            .filter(|section| Some(section.offset) == self.startxref)
+        {
+            for object in objects.values_mut() {
+                if section.in_use.get(&object.key) != Some(&object.offset) {
+                    object.spacing_compliant = None;
+                }
+            }
+        }
         let catalog = trailers
             .iter()
             .rev()
@@ -1123,6 +1154,12 @@ impl<'a> ByteParser<'a> {
                 return Ok(());
             }
             if self.starts_with(b"startxref") {
+                let start = self.pos;
+                self.consume_bytes(b"startxref")?;
+                self.startxref = self.parse_unsigned::<u64>().ok().flatten();
+                if self.startxref.is_none() {
+                    self.pos = start;
+                }
                 self.skip_line();
                 continue;
             }
@@ -1184,6 +1221,12 @@ impl<'a> ByteParser<'a> {
             if matches!(stream.dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("XRef"))
             {
                 let summary = self.parse_xref_stream(key, &stream)?;
+                if Some(offset) == self.startxref && stream.dictionary.get("Prev").is_none() {
+                    self.active_xref = Some(ActiveXrefSection {
+                        offset,
+                        in_use: summary.in_use,
+                    });
+                }
                 let decoded_len = u64::try_from(summary.decoded_bytes).map_err(|_| {
                     ParseError::ArithmeticOverflow {
                         context: "decoded xref stream length",
@@ -1297,15 +1340,22 @@ impl<'a> ByteParser<'a> {
 
         let mut pos = 0_usize;
         let mut compressed_entries = 0_u64;
-        for (_first_object, count) in indexes {
-            for _ in 0..count {
+        let mut in_use = BTreeMap::new();
+        for (first_object, count) in indexes {
+            for index in 0..count {
                 let entry_type = if widths[0] == 0 {
                     1
                 } else {
                     read_be_uint(&decoded, &mut pos, widths[0])?
                 };
-                let _field_two = read_be_uint(&decoded, &mut pos, widths[1])?;
-                let _field_three = read_be_uint(&decoded, &mut pos, widths[2])?;
+                let field_two = read_be_uint(&decoded, &mut pos, widths[1])?;
+                let field_three = read_be_uint(&decoded, &mut pos, widths[2])?;
+                if entry_type == 1
+                    && let Some(number) = first_object.checked_add(index)
+                    && let Some(key) = xref_in_use_key(number, field_three)
+                {
+                    in_use.insert(key, field_two);
+                }
                 if entry_type == 2 {
                     compressed_entries = compressed_entries.checked_add(1).ok_or(
                         ParseError::ArithmeticOverflow {
@@ -1319,6 +1369,7 @@ impl<'a> ByteParser<'a> {
             decoded_bytes: decoded.len(),
             entries: total_entries,
             compressed_entries,
+            in_use,
         })
     }
 
@@ -1430,6 +1481,7 @@ impl<'a> ByteParser<'a> {
                 key,
                 offset,
                 object,
+                spacing_compliant: None,
             });
         }
         Ok(objects)
@@ -1491,17 +1543,28 @@ impl<'a> ByteParser<'a> {
         let Some(number) = self.parse_unsigned_u32()? else {
             return Ok(None);
         };
+        let after_number = self.pos;
         self.skip_required_ws()?;
+        let first_separator = self.pos.saturating_sub(after_number) == 1;
         let Some(generation) = self.parse_unsigned_u16()? else {
             self.pos = start;
             return Ok(None);
         };
+        let after_generation = self.pos;
         self.skip_required_ws()?;
+        let second_separator = self.pos.saturating_sub(after_generation) == 1;
         if !self.starts_with(b"obj") {
             self.pos = start;
             return Ok(None);
         }
         self.consume_bytes(b"obj")?;
+        let starts_line = start
+            .checked_sub(1)
+            .and_then(|index| self.source.byte(index));
+        let header_spacing = first_separator
+            && second_separator
+            && matches!(starts_line, Some(b'\r' | b'\n'))
+            && matches!(self.peek_byte(), Some(b'\r' | b'\n'));
         let Some(number) = NonZeroU32::new(number) else {
             return Err(ParseError::Malformed {
                 message: bounded("object number must be non-zero"),
@@ -1520,13 +1583,22 @@ impl<'a> ByteParser<'a> {
             other => other,
         };
         self.skip_ws_and_comments();
-        if self.starts_with(ENDOBJ_MARKER) {
+        let end_spacing = if self.starts_with(ENDOBJ_MARKER) {
+            let before_end = self
+                .pos
+                .checked_sub(1)
+                .and_then(|index| self.source.byte(index));
             self.consume_bytes(ENDOBJ_MARKER)?;
-        }
+            matches!(before_end, Some(b'\r' | b'\n'))
+                && matches!(self.peek_byte(), Some(b'\r' | b'\n'))
+        } else {
+            false
+        };
         Ok(Some(IndirectObject {
             key,
             offset: object_start,
             object,
+            spacing_compliant: Some(header_spacing && end_spacing),
         }))
     }
 
@@ -1962,7 +2034,48 @@ impl<'a> ByteParser<'a> {
             .and_then(|offset| self.source.byte(offset))
             .is_some_and(|byte| byte.is_ascii_digit());
         self.file_syntax.xref_keyword_eol_compliant &= keyword_eol_compliant;
-        let mut compliant = keyword_eol_compliant;
+        let (entries_well_formed, in_use) = self.read_classic_xref_entries()?;
+        self.push_fact(ParseFact::Xref {
+            section: ObjectLocation {
+                object: None,
+                offset: Some(section_offset),
+                path: None,
+            },
+            fact: if keyword_eol_compliant
+                && entries_well_formed
+                && self.file_syntax.xref_subsection_space_separated
+            {
+                XrefFact::EolMarkersComply
+            } else {
+                XrefFact::MalformedClassic
+            },
+        });
+        if self.starts_with(b"trailer") {
+            self.consume_bytes(b"trailer")?;
+            self.skip_ws_and_comments();
+            let offset = self.offset()?;
+            let dictionary = self.parse_dictionary(0)?;
+            self.push_xref_chain_facts(None, offset, &dictionary)?;
+            if entries_well_formed
+                && !in_use.is_empty()
+                && dictionary.get("Prev").is_none()
+                && dictionary.get("XRefStm").is_none()
+            {
+                self.active_xref = Some(ActiveXrefSection {
+                    offset: section_offset,
+                    in_use,
+                });
+            }
+            trailers.push(Trailer { dictionary, offset });
+        }
+        Ok(())
+    }
+
+    fn read_classic_xref_entries(
+        &mut self,
+    ) -> std::result::Result<(bool, BTreeMap<ObjectKey, u64>), ParseError> {
+        let mut compliant = true;
+        let mut in_use = BTreeMap::new();
         let mut parsed_entries = 0_u64;
         loop {
             self.skip_ws_and_comments();
@@ -1972,7 +2085,7 @@ impl<'a> ByteParser<'a> {
             if self.starts_with(b"startxref") || self.starts_with(EOF_MARKER) {
                 break;
             }
-            let Some(_first_object) = self.parse_unsigned_u32()? else {
+            let Some(first_object) = self.parse_unsigned_u32()? else {
                 compliant = false;
                 self.skip_line();
                 continue;
@@ -1983,14 +2096,13 @@ impl<'a> ByteParser<'a> {
                 && self.pos == separator_start.saturating_add(1)
                 && self.peek_byte().is_some_and(|byte| byte.is_ascii_digit());
             self.file_syntax.xref_subsection_space_separated &= space_separated;
-            compliant &= space_separated;
             let Some(count) = self.parse_unsigned_u32()? else {
                 compliant = false;
                 self.skip_line();
                 continue;
             };
             self.skip_line();
-            for _ in 0..count {
+            for index in 0..count {
                 let next_line = next_line_start(&self.source, self.pos);
                 let offset = self.parse_fixed_digits(10);
                 self.skip_xref_spaces();
@@ -2003,6 +2115,11 @@ impl<'a> ByteParser<'a> {
                     || next_line.is_none()
                 {
                     compliant = false;
+                }
+                if let (Some(offset), Some(generation), Some(b'n')) = (offset, generation, marker) {
+                    let key =
+                        xref_in_use_key(u64::from(first_object) + u64::from(index), generation);
+                    compliant &= key.is_some_and(|key| in_use.insert(key, offset).is_none());
                 }
                 parsed_entries =
                     parsed_entries
@@ -2018,37 +2135,7 @@ impl<'a> ByteParser<'a> {
                 self.pos = next_line.unwrap_or_else(|| self.source.len());
             }
         }
-        self.push_fact(ParseFact::Xref {
-            section: ObjectLocation {
-                object: None,
-                offset: Some(section_offset),
-                path: None,
-            },
-            fact: if compliant {
-                XrefFact::EolMarkersComply
-            } else {
-                XrefFact::MalformedClassic
-            },
-        });
-        loop {
-            self.skip_ws_and_comments();
-            if self.pos >= self.source.len() {
-                return Ok(());
-            }
-            if self.starts_with(b"trailer") {
-                self.consume_bytes(b"trailer")?;
-                self.skip_ws_and_comments();
-                let offset = self.offset()?;
-                let dictionary = self.parse_dictionary(0)?;
-                self.push_xref_chain_facts(None, offset, &dictionary)?;
-                trailers.push(Trailer { dictionary, offset });
-                return Ok(());
-            }
-            if self.starts_with(b"startxref") || self.starts_with(EOF_MARKER) {
-                return Ok(());
-            }
-            self.skip_line();
-        }
+        Ok((compliant, in_use))
     }
 
     fn parse_post_eof_fact(&mut self) -> std::result::Result<(), ParseError> {

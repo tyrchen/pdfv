@@ -21,8 +21,28 @@ const PDF_UA_ID_NS: &str = "http://www.aiim.org/pdfua/ns/id/";
 const PDF_D_NS: &str = "http://pdfa.org/declarations/";
 const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
+pub(crate) const PDFA_EXTENSION_NS: &str = "http://www.aiim.org/pdfa/ns/extension/";
+pub(crate) const PDFA_SCHEMA_NS: &str = "http://www.aiim.org/pdfa/ns/schema#";
+pub(crate) const PDFA_TYPE_NS: &str = "http://www.aiim.org/pdfa/ns/type#";
 const WTPDF_ACCESSIBILITY_DECLARATION: &str = "http://pdfa.org/declarations/wtpdf#accessibility1.0";
 const WTPDF_REUSE_DECLARATION: &str = "http://pdfa.org/declarations/wtpdf#reuse1.0";
+
+/// Resource roles in a PDF/A XMP extension schema.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "camelCase")]
+pub enum XmpExtensionRole {
+    /// The `pdfaExtension:schemas` container.
+    Container,
+    /// One declared extension schema.
+    Definition,
+    /// One property declaration within a schema.
+    Property,
+    /// One custom value type within a schema.
+    ValueType,
+    /// One field declaration within a custom value type.
+    Field,
+}
 
 /// Namespace declaration retained from an XMP packet.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -456,7 +476,7 @@ impl<'a> PacketBuilder<'a> {
         self.read_namespaces(element)?;
         let namespace = self.resolve_prefix(&prefix)?;
         let in_pdfd_declarations = is_pdfd_declarations_context(&self.stack, &namespace, &local);
-        let frame = ElementFrame {
+        let mut frame = ElementFrame {
             namespace,
             prefix,
             local,
@@ -465,11 +485,42 @@ impl<'a> PacketBuilder<'a> {
             text: String::new(),
             previous_namespaces,
             in_pdfd_declarations,
+            extension_scope: self.direct_extension_scope(),
+            extension_role: None,
+            saw_array: false,
         };
-        self.capture_attr_properties(element)?;
+        if let Some((role, prefix)) = self.extension_role(&frame) {
+            let id = self.next_extension_scope()?;
+            frame.extension_scope = Some(id);
+            frame.extension_role = Some(role);
+            let schema = if role == XmpExtensionRole::Definition {
+                Some(id)
+            } else {
+                self.stack
+                    .iter()
+                    .rev()
+                    .find(|parent| parent.extension_role == Some(XmpExtensionRole::Definition))
+                    .and_then(|parent| parent.extension_scope)
+            };
+            self.facts.push(XmpFact::ExtensionScope {
+                id,
+                role,
+                schema,
+                prefix,
+                property_indices: Vec::new(),
+            });
+        }
+        let attribute_scope = if frame.extension_role.is_some()
+            || (frame.namespace.as_str() == RDF_NS && frame.local.as_str() == "Description")
+        {
+            frame.extension_scope
+        } else {
+            None
+        };
+        self.capture_attr_properties(element, attribute_scope)?;
         if frame.namespace.as_str() == RDF_NS
             && matches!(frame.local.as_str(), "Alt" | "Bag" | "Seq")
-            && let Some(property) = self.stack.last()
+            && let Some(property) = self.stack.last_mut()
             && is_rdf_property(&property.namespace, &property.local)
         {
             let container = ElementFrame {
@@ -481,11 +532,63 @@ impl<'a> PacketBuilder<'a> {
                 text: String::new(),
                 previous_namespaces: BTreeMap::new(),
                 in_pdfd_declarations: property.in_pdfd_declarations,
+                extension_scope: property.extension_scope,
+                extension_role: None,
+                saw_array: false,
             };
+            property.saw_array = true;
             self.insert_property(&container, "")?;
         }
         self.stack.push(frame);
         Ok(())
+    }
+
+    fn next_extension_scope(&self) -> Result<u64> {
+        u64::try_from(self.facts.len()).map_err(|_| {
+            ParseError::LimitExceeded {
+                limit: "max_xmp_elements",
+            }
+            .into()
+        })
+    }
+
+    fn direct_extension_scope(&self) -> Option<u64> {
+        let parent = self.stack.last()?;
+        if parent.extension_role.is_some() {
+            return parent.extension_scope;
+        }
+        if parent.namespace.as_str() == RDF_NS && parent.local.as_str() == "Description" {
+            let owner = self.stack.iter().rev().nth(1)?;
+            if owner.extension_role.is_some() {
+                return owner.extension_scope;
+            }
+        }
+        None
+    }
+
+    fn extension_role(&self, frame: &ElementFrame) -> Option<(XmpExtensionRole, Identifier)> {
+        if frame.namespace.as_str() == PDFA_EXTENSION_NS && frame.local.as_str() == "schemas" {
+            return Some((XmpExtensionRole::Container, frame.prefix.clone()));
+        }
+        if frame.namespace.as_str() != RDF_NS || frame.local.as_str() != "li" {
+            return None;
+        }
+        let array = self.stack.last()?;
+        if array.namespace.as_str() != RDF_NS
+            || !matches!(array.local.as_str(), "Bag" | "Seq" | "Alt")
+        {
+            return None;
+        }
+        let property = self.stack.iter().rev().nth(1)?;
+        property.extension_scope?;
+        let role = match (property.namespace.as_str(), property.local.as_str()) {
+            (PDFA_EXTENSION_NS, "schemas") => XmpExtensionRole::Definition,
+            (PDFA_SCHEMA_NS, "property") => XmpExtensionRole::Property,
+            (PDFA_SCHEMA_NS, "valueType") => XmpExtensionRole::ValueType,
+            (PDFA_TYPE_NS, "field") => XmpExtensionRole::Field,
+            _ => return None,
+        };
+        Some((role, property.prefix.clone()))
     }
 
     fn end(&mut self) -> Result<()> {
@@ -496,7 +599,11 @@ impl<'a> PacketBuilder<'a> {
             .into());
         };
         let value = frame.text.trim().to_owned();
-        if !value.is_empty() {
+        if !value.is_empty()
+            || (frame.extension_scope.is_some()
+                && !frame.saw_array
+                && is_rdf_property(&frame.namespace, &frame.local))
+        {
             if let Some(array_property) = self.array_item_property(&frame) {
                 self.insert_property(&array_property, &value)?;
             } else if is_rdf_property(&frame.namespace, &frame.local) {
@@ -560,6 +667,7 @@ impl<'a> PacketBuilder<'a> {
                 conformance_prefix: claim.conformance_prefix.clone(),
             });
         }
+        self.record_extension_properties();
         for property in &self.properties {
             self.facts.push(XmpFact::RdfProperty {
                 namespace_uri: property.namespace.clone(),
@@ -587,6 +695,26 @@ impl<'a> PacketBuilder<'a> {
             identification,
             facts: self.facts,
         })
+    }
+
+    fn record_extension_properties(&mut self) {
+        let mut indices = BTreeMap::<u64, Vec<usize>>::new();
+        for (index, property) in self.properties.iter().enumerate() {
+            if let Some(id) = property.extension_scope {
+                indices.entry(id).or_default().push(index);
+            }
+        }
+        for fact in &mut self.facts {
+            if let XmpFact::ExtensionScope {
+                id,
+                property_indices,
+                ..
+            } = fact
+                && let Some(indices) = indices.remove(id)
+            {
+                *property_indices = indices;
+            }
+        }
     }
 
     fn read_namespaces(&mut self, element: &quick_xml::events::BytesStart<'_>) -> Result<()> {
@@ -626,6 +754,7 @@ impl<'a> PacketBuilder<'a> {
     fn capture_attr_properties(
         &mut self,
         element: &quick_xml::events::BytesStart<'_>,
+        extension_scope: Option<u64>,
     ) -> Result<()> {
         for attr in element.attributes().with_checks(true) {
             let attr = attr.map_err(|error| crate::ProfileError::InvalidXml {
@@ -642,6 +771,20 @@ impl<'a> PacketBuilder<'a> {
             let namespace = self.resolve_prefix(&prefix)?;
             if is_rdf_property(&namespace, &local) {
                 let value = String::from_utf8_lossy(attr.value.as_ref()).into_owned();
+                let scope =
+                    if namespace.as_str() == PDFA_EXTENSION_NS && local.as_str() == "schemas" {
+                        let id = self.next_extension_scope()?;
+                        self.facts.push(XmpFact::ExtensionScope {
+                            id,
+                            role: XmpExtensionRole::Container,
+                            schema: None,
+                            prefix: prefix.clone(),
+                            property_indices: Vec::new(),
+                        });
+                        Some(id)
+                    } else {
+                        extension_scope
+                    };
                 let frame = ElementFrame {
                     namespace,
                     prefix,
@@ -654,6 +797,9 @@ impl<'a> PacketBuilder<'a> {
                         .stack
                         .last()
                         .is_some_and(|frame| frame.in_pdfd_declarations),
+                    extension_scope: scope,
+                    extension_role: None,
+                    saw_array: false,
                 };
                 self.insert_property(&frame, value.trim())?;
             }
@@ -687,6 +833,7 @@ impl<'a> PacketBuilder<'a> {
             array_kind: frame.array_kind.clone(),
             xml_lang: frame.xml_lang.clone(),
             in_pdfd_declarations: frame.in_pdfd_declarations,
+            extension_scope: frame.extension_scope,
         });
         Ok(())
     }
@@ -769,6 +916,9 @@ impl<'a> PacketBuilder<'a> {
             text: String::new(),
             previous_namespaces: BTreeMap::new(),
             in_pdfd_declarations: property.in_pdfd_declarations,
+            extension_scope: None,
+            extension_role: None,
+            saw_array: false,
         })
     }
 
@@ -890,6 +1040,9 @@ struct ElementFrame {
     text: String,
     previous_namespaces: BTreeMap<String, BoundedText>,
     in_pdfd_declarations: bool,
+    extension_scope: Option<u64>,
+    extension_role: Option<XmpExtensionRole>,
+    saw_array: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -901,6 +1054,7 @@ struct XmpProperty {
     array_kind: Option<Identifier>,
     xml_lang: Option<BoundedText>,
     in_pdfd_declarations: bool,
+    extension_scope: Option<u64>,
 }
 
 fn catalog_xmp_bytes(
@@ -1089,7 +1243,8 @@ fn packet_warnings(packet: &XmpPacket) -> Result<Vec<ValidationWarning>> {
             XmpFact::PacketParsed { .. }
             | XmpFact::FlavourClaim { .. }
             | XmpFact::PacketHeader { .. }
-            | XmpFact::RdfProperty { .. } => None,
+            | XmpFact::RdfProperty { .. }
+            | XmpFact::ExtensionScope { .. } => None,
         })
         .map(|message| {
             Ok(ValidationWarning::AutoDetection {
@@ -1402,6 +1557,7 @@ mod tests {
                 value: Some(value),
                 array_kind: Some(array_kind),
                 xml_lang: Some(xml_lang),
+                ..
             } if namespace_uri.as_str() == "http://purl.org/dc/elements/1.1/"
                 && prefix.as_str() == "dc"
                 && name.as_str() == "title"
