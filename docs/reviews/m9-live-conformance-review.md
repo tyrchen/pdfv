@@ -199,11 +199,28 @@ The PDF/A-2 and PDF/A-3 size rule applies to the five named page boundaries.
 are read from the page. The T2 PDF/A-2b controls exercise a 100-unit
 `MediaBox` that passes and a 2-unit `MediaBox` that fails `6.1.13-11`.
 
+## PDF/UA File Specifications
+
+File specification rules for PDF/UA and WTPDF use typed COS dictionaries and
+entries in the catalog's `EmbeddedFiles` name tree. A typed entry in that
+tree receives both evaluations. PDF/UA-1 checks that an embedded file has
+nonempty string values for `F` and `UF`. PDF/UA-2 and WTPDF require `Desc` on
+name-tree entries.
+
+veraPDF Greenfield 1.30.4 and pdfv agree on the pass and fail counts for all
+four targeted upstream files. The two PDF/UA-1 negatives each have two
+failures for `7.11-1`, and the positive has two passes. The PDF/UA-2 negative
+has one pass for the physical dictionary and one failure for its name-tree
+entry under `8.14.1-1`. [PDF/UA-1 fixtures](https://github.com/veraPDF/veraPDF-corpus/tree/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_UA-1/7.11%20Embedded%20files) · [PDF/UA-2 fixture](https://github.com/veraPDF/veraPDF-corpus/blob/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_UA-2/8.14%20Use%20of%20embedded%20files/8.14.1%20Descriptions%20for%20embedded%20files/8.14.1-t01-fail-a.pdf)
+
+The original four supplemental PDF/UA fixtures now have 73 unsupported
+evaluations, down from 90. All four document decisions remain `Incomplete`.
+
 ## Release Blockers
 
 - The four supplemental PDF/UA documents remain incomplete. Open work includes
   inherited and predefined non-Identity font encodings, symbolic TrueType
-  font evidence, and rules scoped to language strings and file specifications.
+  font evidence, and the scope of language, alternative, and replacement text.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

@@ -2550,7 +2550,8 @@ fn import_verapdf_profile_xml_impl(xml: &str) -> Result<ProfileImportSummary> {
                             }
                             .into());
                         }
-                        current_rule = Some(XmlRuleBuilder::from_rule_start(&element)?);
+                        current_rule =
+                            Some(XmlRuleBuilder::from_rule_start(&element, flavour.as_ref())?);
                     }
                     b"name" if current_rule.is_none() => {
                         current_text = XmlTextTarget::ProfileName;
@@ -2777,9 +2778,13 @@ struct XmlRuleBuilder {
 }
 
 impl XmlRuleBuilder {
-    fn from_rule_start(element: &quick_xml::events::BytesStart<'_>) -> Result<Self> {
+    fn from_rule_start(
+        element: &quick_xml::events::BytesStart<'_>,
+        flavour: Option<&ValidationFlavour>,
+    ) -> Result<Self> {
         let source_object_type = required_attr(element, b"object")?;
-        let (object_type, unsupported_reason) = map_verapdf_object_type(&source_object_type)?;
+        let (object_type, unsupported_reason) =
+            map_verapdf_object_type(&source_object_type, flavour)?;
         Ok(Self {
             object_type: Some(object_type),
             unsupported_reason,
@@ -2841,6 +2846,20 @@ impl XmlRuleBuilder {
             }
             "cosName" => lower_cos_byte_lengths(&mut test, "internalRepresentation")?,
             "cosString" => lower_cos_byte_lengths(&mut test, "value")?,
+            crate::validation::file_spec::FAMILY
+                if source_test.as_str()
+                    == "containsEF == false || (F != null && F != '' && UF != null && UF != \
+                        '')" =>
+            {
+                test = RuleExpr::Binary {
+                    op: BinaryOp::Or,
+                    left: Box::new(RuleExpr::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(property_expr("containsEF")?),
+                    }),
+                    right: Box::new(property_expr("hasNonemptyFileNames")?),
+                };
+            }
             _ => {}
         }
         let message = self.message.unwrap_or_else(|| description.clone());
@@ -3146,7 +3165,10 @@ fn profile_id_for_flavour(flavour: &ValidationFlavour) -> Result<Identifier> {
     clippy::too_many_lines,
     reason = "veraPDF object taxonomy mapping is intentionally centralized for schema checks"
 )]
-fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<BoundedText>)> {
+fn map_verapdf_object_type(
+    value: &str,
+    flavour: Option<&ValidationFlavour>,
+) -> Result<(ObjectTypeName, Option<BoundedText>)> {
     let mapped = match value {
         "CosDocument" | "PDDocument" | "CosXRef" | "CosTrailer" => Some("document"),
         "CosIndirect" => Some("cosIndirect"),
@@ -3163,6 +3185,12 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "CosArray" => Some("cosArray"),
         "CosDict" => Some("cosDictionary"),
         "CosBBox" => Some("pageBox"),
+        "CosFileSpecification"
+            if flavour
+                .is_some_and(|flavour| matches!(flavour.family.as_str(), "pdfua" | "wtpdf")) =>
+        {
+            Some(crate::validation::file_spec::FAMILY)
+        }
         "CosTextString"
         | "CosUnicodeName"
         | "CosLang"

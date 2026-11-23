@@ -38,7 +38,8 @@ pub(super) enum CosPrimitive<'a> {
     Name(&'a PdfName),
     String(&'a PdfString),
     Array(usize),
-    Dictionary(usize),
+    Dictionary(&'a Dictionary),
+    StreamOrTrailerDictionary(usize),
 }
 
 impl CosPrimitive<'_> {
@@ -49,7 +50,7 @@ impl CosPrimitive<'_> {
             Self::Name(_) => NAME_FAMILY,
             Self::String(_) => STRING_FAMILY,
             Self::Array(_) => ARRAY_FAMILY,
-            Self::Dictionary(_) => DICTIONARY_FAMILY,
+            Self::Dictionary(_) | Self::StreamOrTrailerDictionary(_) => DICTIONARY_FAMILY,
         }
     }
 
@@ -60,7 +61,10 @@ impl CosPrimitive<'_> {
                 Ok(ModelValue::Bool(i32::try_from(value).is_ok()))
             }
             (Self::Real(value), "realValue") => Ok(ModelValue::Number(value)),
-            (Self::Array(size) | Self::Dictionary(size), "size") => {
+            (Self::Dictionary(dictionary), "size") => {
+                usize_to_f64(dictionary.len()).map(ModelValue::Number)
+            }
+            (Self::Array(size) | Self::StreamOrTrailerDictionary(size), "size") => {
                 usize_to_f64(size).map(ModelValue::Number)
             }
             (Self::Name(value), "byteLength") => byte_length(value.as_bytes()),
@@ -123,11 +127,18 @@ pub(super) struct CosOrigin {
     pub(super) ordinal: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) enum WalkScope {
+    All,
+    Containers,
+}
+
 // References are leaves. The object store already visits every referenced
 // indirect object once, including objects loaded from object streams.
 pub(super) fn walk_primitives<'a>(
     document: &'a ParsedDocument,
     max_nodes: usize,
+    scope: WalkScope,
     mut visit: impl FnMut(CosPrimitive<'a>, CosOrigin) -> Result<()>,
 ) -> Result<()> {
     let xref_stream_offsets = document.objects.values().filter_map(|object| {
@@ -169,23 +180,35 @@ pub(super) fn walk_primitives<'a>(
     for (root, owner, offset) in roots {
         let mut current = Some(root);
         while let Some(node) = current {
-            if ordinal >= max_nodes {
-                return Err(ValidationError::LimitExceeded {
-                    limit: "max_objects",
-                }
-                .into());
-            }
-            if let Some(primitive) = node.primitive() {
-                visit(
+            let primitive = node.primitive();
+            if matches!(scope, WalkScope::All)
+                || matches!(
                     primitive,
-                    CosOrigin {
-                        owner,
-                        offset,
-                        ordinal,
-                    },
-                )?;
+                    Some(
+                        CosPrimitive::Dictionary(_)
+                            | CosPrimitive::StreamOrTrailerDictionary(_)
+                            | CosPrimitive::Array(_)
+                    )
+                )
+            {
+                if ordinal >= max_nodes {
+                    return Err(ValidationError::LimitExceeded {
+                        limit: "max_objects",
+                    }
+                    .into());
+                }
+                if let Some(primitive) = primitive {
+                    visit(
+                        primitive,
+                        CosOrigin {
+                            owner,
+                            offset,
+                            ordinal,
+                        },
+                    )?;
+                }
+                ordinal = ordinal.saturating_add(1);
             }
-            ordinal = ordinal.saturating_add(1);
             if let Some(children) = node.children() {
                 stack.push(children);
             }
@@ -222,12 +245,11 @@ impl<'a> CosNode<'a> {
             }
             Self::Value(CosObject::String(value)) => Some(CosPrimitive::String(value)),
             Self::Value(CosObject::Array(values)) => Some(CosPrimitive::Array(values.len())),
-            Self::Value(CosObject::Dictionary(values)) | Self::Dictionary(values) => {
-                Some(CosPrimitive::Dictionary(values.len()))
-            }
-            Self::Value(CosObject::Stream(stream)) => {
-                Some(CosPrimitive::Dictionary(stream.dictionary.len()))
-            }
+            Self::Value(CosObject::Dictionary(values)) => Some(CosPrimitive::Dictionary(values)),
+            Self::Dictionary(values) => Some(CosPrimitive::StreamOrTrailerDictionary(values.len())),
+            Self::Value(CosObject::Stream(stream)) => Some(
+                CosPrimitive::StreamOrTrailerDictionary(stream.dictionary.len()),
+            ),
             Self::Value(_) => None,
         }
     }
@@ -281,7 +303,7 @@ impl<'a> CosChildren<'a> {
 mod tests {
     use std::{io::Cursor, iter::repeat_n, num::NonZeroU32};
 
-    use super::{CosPrimitive, walk_primitives};
+    use super::{CosPrimitive, WalkScope, walk_primitives};
     use crate::{
         FeatureSelection, FlavourSelection, InputName, MaxDisplayedFailures, ObjectTypeName,
         Parser, PdfvError, ProfileError, ProfileReport, PropertyName, ResourceLimits, Result,
@@ -304,13 +326,34 @@ mod tests {
         let input = include_bytes!("../../tests/fixtures/xref-stream-object-stream-valid.pdf");
         let document = Parser::default().parse(Cursor::new(input))?;
         let mut root_keys = 0_usize;
-        walk_primitives(&document, 256, |primitive, _origin| {
+        walk_primitives(&document, 256, WalkScope::All, |primitive, _origin| {
             if matches!(primitive, CosPrimitive::Name(name) if name.matches("Root")) {
                 root_keys = root_keys.saturating_add(1);
             }
             Ok(())
         })?;
         assert_eq!(root_keys, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_exclude_scalar_tokens_from_the_container_walk_budget() -> Result<()> {
+        let document = Parser::default().parse(Cursor::new(
+            b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Numbers [0 1 2 3 4 5 6 7] >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n",
+        ))?;
+        let mut containers = 0_usize;
+        walk_primitives(&document, 3, WalkScope::Containers, |_, _| {
+            containers = containers.saturating_add(1);
+            Ok(())
+        })?;
+
+        assert_eq!(containers, 3);
+        assert!(matches!(
+            walk_primitives(&document, 3, WalkScope::All, |_, _| Ok(())),
+            Err(PdfvError::Validation(ValidationError::LimitExceeded {
+                limit: "max_objects"
+            }))
+        ));
         Ok(())
     }
 

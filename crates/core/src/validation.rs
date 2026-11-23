@@ -3,6 +3,7 @@
 mod cmap;
 mod cos;
 mod device_color;
+pub(crate) mod file_spec;
 pub(crate) mod glyphs;
 mod icc;
 mod semantic_names;
@@ -1822,27 +1823,17 @@ impl ValidationSession {
                 stack.push(linked);
             }
         }
-        if profile.rules.iter().any(|rule| {
-            cos::is_primitive_family(rule.object_type.as_str())
-                && !matches!(rule.test, crate::RuleExpr::Unsupported { .. })
-        }) {
+        if let Some(scope) = index.physical_scope() {
             let budget = remaining_object_budget(&self.limits, visited.len(), 0)?;
-            cos::walk_primitives(&self.document, budget, |primitive, origin| {
-                if let Some(rules) = index.by_type.get(primitive.family()) {
-                    let object = ModelObjectRef::Generic(GenericModel::new_primitive(
-                        &self.document,
-                        primitive,
-                        origin,
-                    ));
-                    for rule in rules {
-                        if matches!(rule.test, crate::RuleExpr::Unsupported { .. }) {
-                            continue;
-                        }
-                        if rule.deferred {
-                            deferred.push((object.clone(), *rule));
-                        } else {
-                            state.apply_rule(&object, rule, &mut evaluator)?;
-                        }
+            index.walk_physical_objects(&self.document, budget, scope, |object, rules| {
+                for rule in rules {
+                    if matches!(rule.test, crate::RuleExpr::Unsupported { .. }) {
+                        continue;
+                    }
+                    if rule.deferred {
+                        deferred.push((object.clone(), *rule));
+                    } else {
+                        state.apply_rule(&object, rule, &mut evaluator)?;
                     }
                 }
                 Ok(())
@@ -2422,6 +2413,7 @@ impl ModelRegistry {
             family("action", ACTION_PROPERTIES, ACTION_LINKS),
             family("formField", FORM_FIELD_PROPERTIES, FORM_FIELD_LINKS),
             family("fileSpec", FILE_SPEC_PROPERTIES, EMPTY_LINK_NAMES),
+            family(file_spec::FAMILY, file_spec::PROPERTIES, EMPTY_LINK_NAMES),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 glyphs::WIDTH_FAMILY,
@@ -2591,6 +2583,7 @@ impl ModelRegistry {
 
     fn has_feature_family(&self, family: &ObjectTypeName) -> bool {
         !cos::is_primitive_family(family.as_str())
+            && family.as_str() != file_spec::FAMILY
             && structure_roles::rule_family(family.as_str()).is_none()
             && !matches!(
                 family.as_str(),
@@ -3558,6 +3551,7 @@ impl<'a> ModelGraph<'a> {
     fn materializes_generic_roots(&self) -> bool {
         self.materialized_families.iter().any(|family| {
             !cos::is_primitive_family(family.as_str())
+                && family.as_str() != file_spec::FAMILY
                 && structure_roles::rule_family(family.as_str()).is_none()
                 && !xmp_extension::FAMILIES.contains(&family.as_str())
                 && !semantic_names::FAMILIES.contains(&family.as_str())
@@ -4320,6 +4314,14 @@ impl ModelObject for DocumentModel<'_> {
         }
         if graph.materializes(icc::INPUT_FAMILY) || graph.materializes(icc::OUTPUT_FAMILY) {
             icc::append(graph, &mut objects, max_objects)?;
+        }
+        if graph.active_flavour.is_some() && graph.materializes(file_spec::FAMILY) {
+            file_spec::append_embedded_files(
+                graph.document,
+                max_objects,
+                graph.limits.max_file_bytes,
+                &mut objects,
+            )?;
         }
         if let Some(catalog) = graph.catalog() {
             push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
@@ -10072,6 +10074,7 @@ pub struct GenericModel<'a> {
     parsed_cmap: Option<Arc<cmap::CMap>>,
     tagged_content: Option<tagged_content::Evidence>,
     primitive: Option<CosPrimitive<'a>>,
+    file_spec: Option<file_spec::Evidence<'a>>,
     context: String,
     ordinal: usize,
 }
@@ -10112,6 +10115,7 @@ impl<'a> GenericModel<'a> {
             parsed_cmap: None,
             tagged_content: None,
             primitive: None,
+            file_spec: None,
             context: context.into(),
             ordinal,
         }
@@ -10143,6 +10147,7 @@ impl<'a> GenericModel<'a> {
             parsed_cmap: None,
             tagged_content: None,
             primitive: None,
+            file_spec: None,
             context: context.into(),
             ordinal,
         }
@@ -10170,6 +10175,7 @@ impl<'a> GenericModel<'a> {
             parsed_cmap: None,
             tagged_content: None,
             primitive: Some(primitive),
+            file_spec: None,
             context: format!("root/{family}[{}]", origin.ordinal),
             ordinal: origin.ordinal,
         }
@@ -10177,6 +10183,7 @@ impl<'a> GenericModel<'a> {
 
     fn identity_key(&self) -> String {
         if self.primitive.is_some()
+            || self.file_spec.is_some()
             || self.tagged_content.is_some()
             || self.object_type.as_str() == glyphs::UNICODE_FAMILY
         {
@@ -10196,6 +10203,15 @@ impl<'a> GenericModel<'a> {
             self.ordinal,
             self.context.as_str(),
         )
+    }
+
+    fn cos_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        self.primitive
+            .map(|primitive| primitive.property(name))
+            .or_else(|| {
+                self.file_spec
+                    .map(|evidence| evidence.property(self.document, name))
+            })
     }
 
     fn acro_action_destination_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
@@ -10633,8 +10649,8 @@ impl ModelObject for GenericModel<'_> {
                 _ => return unknown_property(name),
             });
         }
-        if let Some(primitive) = self.primitive {
-            return primitive.property(name);
+        if let Some(value) = self.cos_property(name) {
+            return value;
         }
         if let Some(evidence) = &self.glyph_evidence {
             return evidence.property(name);
@@ -11767,6 +11783,55 @@ impl<'a> RuleIndex<'a> {
                 .push(rule);
         }
         Self { by_type }
+    }
+
+    fn physical_scope(&self) -> Option<cos::WalkScope> {
+        let has_executable_rule = |rules: &[&Rule]| {
+            rules
+                .iter()
+                .any(|rule| !matches!(rule.test, crate::RuleExpr::Unsupported { .. }))
+        };
+        if self
+            .by_type
+            .iter()
+            .any(|(family, rules)| cos::is_primitive_family(family) && has_executable_rule(rules))
+        {
+            Some(cos::WalkScope::All)
+        } else if self
+            .by_type
+            .get(file_spec::FAMILY)
+            .is_some_and(|rules| has_executable_rule(rules))
+        {
+            Some(cos::WalkScope::Containers)
+        } else {
+            None
+        }
+    }
+
+    fn walk_physical_objects<'document>(
+        &self,
+        document: &'document ParsedDocument,
+        budget: usize,
+        scope: cos::WalkScope,
+        mut visit: impl FnMut(ModelObjectRef<'document>, &[&'a Rule]) -> Result<()>,
+    ) -> Result<()> {
+        let file_spec_rules = self.by_type.get(file_spec::FAMILY);
+        cos::walk_primitives(document, budget, scope, |primitive, origin| {
+            if let Some(rules) = file_spec_rules
+                && let Some(object) = file_spec::physical_model(document, primitive, origin)
+            {
+                visit(object, rules)?;
+            }
+            if let Some(rules) = self.by_type.get(primitive.family()) {
+                visit(
+                    ModelObjectRef::Generic(GenericModel::new_primitive(
+                        document, primitive, origin,
+                    )),
+                    rules,
+                )?;
+            }
+            Ok(())
+        })
     }
 
     fn rules_for(&self, object: &ModelObjectRef<'_>) -> Vec<&'a Rule> {
