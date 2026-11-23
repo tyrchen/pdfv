@@ -1,6 +1,10 @@
 //! Bounded parsing of declarative character maps embedded in PDF files.
 
+mod unicode;
+
 use std::{collections::BTreeMap, sync::Arc};
+
+pub(super) use unicode::{Lookup as UnicodeLookup, UnicodeMap, load_unicode, registry_map};
 
 use super::{GenericModel, ModelGraph, ModelObjectRef, push_linked, semantic_names};
 use crate::{
@@ -23,13 +27,20 @@ pub(super) struct CMap {
     maximal_cid: u32,
     unicode: bool,
     inherits: bool,
+    unicode_mappings: Option<Box<unicode::UnicodeMappings>>,
 }
 
 pub(super) fn load(stream: &StreamObject, limits: &ResourceLimits) -> Result<Option<CMap>> {
+    decode(stream, limits).map(|bytes| {
+        bytes.and_then(|bytes| parse(&bytes, stream.dictionary.get("UseCMap").is_some()))
+    })
+}
+
+fn decode(stream: &StreamObject, limits: &ResourceLimits) -> Result<Option<Vec<u8>>> {
     let mut limits = limits.clone();
     limits.max_stream_decode_bytes = limits.max_stream_decode_bytes.min(MAX_BYTES);
     match stream.decoded_bytes(&limits) {
-        Ok(bytes) => Ok(parse(&bytes, stream.dictionary.get("UseCMap").is_some())),
+        Ok(bytes) => Ok(Some(bytes)),
         Err(error @ ParseError::LimitExceeded { .. }) => Err(error.into()),
         Err(_) => Ok(None),
     }
@@ -117,20 +128,30 @@ impl CMap {
     }
 
     pub(super) fn supports_horizontal_cids(&self) -> bool {
-        self.writing_mode == 0 && !self.unicode && !self.inherits && !self.spaces.is_empty()
+        self.writing_mode == 0 && self.supports_cids()
+    }
+
+    pub(super) fn supports_cids(&self) -> bool {
+        !self.unicode && !self.inherits && !self.spaces.is_empty()
     }
 
     pub(super) fn next_cid(&self, input: &mut &[u8]) -> Option<CidSelection> {
+        self.next_character_code(input).map(|(_, cid)| cid)
+    }
+
+    pub(super) fn next_character_code(&self, input: &mut &[u8]) -> Option<(Code, CidSelection)> {
         let space = self.spaces.iter().find(|space| space.matches(input))?;
         let (code, tail) = input.split_at_checked(usize::from(space.len))?;
         *input = tail;
-        let code = code
-            .iter()
-            .fold(0_u32, |value, byte| (value << 8) | u32::from(*byte));
-        Some(CidSelection {
-            preferred: self.mappings.get(space.len, code),
-            fallback: self.notdef.get(space.len, code).unwrap_or(0),
-        })
+        let code = Code::from_slice(code)?;
+        let value = code.value();
+        Some((
+            code,
+            CidSelection {
+                preferred: self.mappings.get(space.len, value),
+                fallback: self.notdef.get(space.len, value).unwrap_or(0),
+            },
+        ))
     }
 }
 
@@ -140,14 +161,26 @@ pub(super) struct CidSelection {
     pub(super) fallback: u32,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Code {
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct Code {
     bytes: [u8; 4],
     len: u8,
 }
 
 impl Code {
-    fn value(self) -> u32 {
+    pub(super) fn from_slice(bytes: &[u8]) -> Option<Self> {
+        if bytes.is_empty() {
+            return None;
+        }
+        let mut code = Self {
+            bytes: [0; 4],
+            len: u8::try_from(bytes.len()).ok()?,
+        };
+        code.bytes.get_mut(..bytes.len())?.copy_from_slice(bytes);
+        Some(code)
+    }
+
+    pub(super) fn value(self) -> u32 {
         self.bytes
             .iter()
             .take(usize::from(self.len))
@@ -299,7 +332,7 @@ fn preserve_tail(
 enum Token<'a> {
     Word(&'a [u8]),
     Name(&'a [u8]),
-    Code(Code),
+    Hex(&'a [u8]),
     Opaque,
 }
 
@@ -320,10 +353,7 @@ impl<'a> Lexer<'a> {
                 let end = tail.iter().position(|byte| *byte == b'>')?;
                 let text = tail.get(..end)?;
                 self.remaining = tail.get(end.checked_add(1)?..)?;
-                Some(Token::Code(hex_code(text).unwrap_or(Code {
-                    bytes: [0; 4],
-                    len: 0,
-                })))
+                Some(Token::Hex(text))
             }
             b'/' => {
                 self.remaining = tail;
@@ -337,6 +367,8 @@ impl<'a> Lexer<'a> {
                 Some(Token::Word(match first {
                     b'{' => b"{",
                     b'}' => b"}",
+                    b'[' => b"[",
+                    b']' => b"]",
                     _ => b"",
                 }))
             }
@@ -381,7 +413,7 @@ impl<'a> Lexer<'a> {
 
     fn next_code(&mut self) -> Option<Code> {
         match self.token()? {
-            Token::Code(code) if code.len != 0 => Some(code),
+            Token::Hex(text) => hex_code(text),
             _ => None,
         }
     }
@@ -421,12 +453,7 @@ fn hex_code(input: &[u8]) -> Option<Code> {
     let mut bytes = [0_u8; 4];
     let mut digits = 0_u8;
     for byte in input.iter().copied().filter(|byte| !whitespace(*byte)) {
-        let value = match byte {
-            b'0'..=b'9' => byte.checked_sub(b'0')?,
-            b'a'..=b'f' => byte.checked_sub(b'a')?.checked_add(10)?,
-            b'A'..=b'F' => byte.checked_sub(b'A')?.checked_add(10)?,
-            _ => return None,
-        };
+        let value = hex_digit(byte)?;
         let target = bytes.get_mut(usize::from(digits / 2))?;
         *target |= if digits.is_multiple_of(2) {
             value << 4
@@ -439,6 +466,29 @@ fn hex_code(input: &[u8]) -> Option<Code> {
         bytes,
         len: digits.div_ceil(2),
     })
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => byte.checked_sub(b'0'),
+        b'a'..=b'f' => byte.checked_sub(b'a')?.checked_add(10),
+        b'A'..=b'F' => byte.checked_sub(b'A')?.checked_add(10),
+        _ => None,
+    }
+}
+
+fn codespace_covers(spaces: &[Space], length: u8, first: u32, last: u32) -> bool {
+    let covered: u64 = spaces
+        .iter()
+        .filter(|space| space.len == length)
+        .map(|space| {
+            space.count_through(last)
+                - first
+                    .checked_sub(1)
+                    .map_or(0, |before| space.count_through(before))
+        })
+        .sum();
+    covered == u64::from(last) - u64::from(first) + 1
 }
 
 fn number(word: &[u8]) -> Option<u32> {
@@ -494,21 +544,8 @@ impl Block {
         if start.len != end.len || first > last {
             return None;
         }
-        if !cmap.inherits {
-            let covered: u64 = cmap
-                .spaces
-                .iter()
-                .filter(|space| space.len == start.len)
-                .map(|space| {
-                    space.count_through(last)
-                        - first
-                            .checked_sub(1)
-                            .map_or(0, |before| space.count_through(before))
-                })
-                .sum();
-            if covered != u64::from(last) - u64::from(first) + 1 {
-                return None;
-            }
+        if !cmap.inherits && !codespace_covers(&cmap.spaces, start.len, first, last) {
+            return None;
         }
         let interval = Interval {
             end: last,
@@ -526,6 +563,10 @@ impl Block {
 }
 
 fn parse(bytes: &[u8], inherits: bool) -> Option<CMap> {
+    parse_map(bytes, inherits, false)
+}
+
+fn parse_map(bytes: &[u8], inherits: bool, read_unicode: bool) -> Option<CMap> {
     let mut lexer = Lexer { remaining: bytes };
     let mut cmap = CMap {
         inherits,
@@ -556,8 +597,16 @@ fn parse(bytes: &[u8], inherits: bool) -> Option<CMap> {
                     cmap.unicode = true;
                 }
             }
-            Token::Word(b"beginbfchar" | b"beginbfrange") if in_body => {
+            Token::Word(op @ (b"beginbfchar" | b"beginbfrange")) if in_body => {
                 cmap.unicode = true;
+                if read_unicode {
+                    if cmap.spaces.is_empty() && !cmap.inherits {
+                        return None;
+                    }
+                    let count = previous.filter(|count| *count <= MAX_BLOCK_ENTRIES)?;
+                    let mappings = cmap.unicode_mappings.get_or_insert_with(Box::default);
+                    mappings.read_block(&mut lexer, count, op == b"beginbfrange")?;
+                }
             }
             Token::Word(word) if in_body => {
                 if let Some((block, end)) = Block::operator(word) {
@@ -594,7 +643,9 @@ fn parse(bytes: &[u8], inherits: bool) -> Option<CMap> {
 fn cmap_word(word: &[u8]) -> bool {
     matches!(
         word,
-        b"" | b"dict"
+        b"" | b"["
+            | b"]"
+            | b"dict"
             | b"dup"
             | b"begin"
             | b"end"

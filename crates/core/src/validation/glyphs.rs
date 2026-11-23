@@ -2,6 +2,7 @@
 
 mod cff;
 mod sfnt;
+mod unicode;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,6 +24,7 @@ use crate::{
 
 pub(crate) const WIDTH_FAMILY: &str = "glyphWidth";
 pub(crate) const CID_SET_FAMILY: &str = "usedCidSet";
+pub(crate) const UNICODE_FAMILY: &str = unicode::FAMILY;
 
 #[derive(Clone, Copy, Debug)]
 enum Measurement {
@@ -53,6 +55,7 @@ pub(super) enum Evidence {
     Width(WidthEvidence),
     CidSet(CidSet),
     UnresolvedCidFont,
+    Unicode(unicode::Mapping),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,6 +92,17 @@ impl Evidence {
                 Coverage::Missing => Ok(ModelValue::Bool(false)),
                 Coverage::Unavailable => unknown_property(name),
             },
+            (Self::Unicode(unicode::Mapping::Unavailable), _) => unknown_property(name),
+            (Self::Unicode(mapping), "hasUnicodeMapping") => Ok(ModelValue::Bool(matches!(
+                mapping,
+                unicode::Mapping::Mapped { .. }
+            ))),
+            (Self::Unicode(mapping), "hasForbiddenUnicode") => Ok(ModelValue::Bool(matches!(
+                mapping,
+                unicode::Mapping::Mapped {
+                    contains_forbidden: true
+                }
+            ))),
             _ => unknown_property(name),
         }
     }
@@ -266,21 +280,14 @@ pub(super) fn inspect<'a>(
             .unresolved
             .get_or_insert_with(|| content.context_prefix.clone());
     }
-    if graph.materializes(WIDTH_FAMILY)
-        && let Some(sample) = uses.unresolved
-    {
-        push_width(
-            objects,
-            graph.document,
-            sample,
-            Measurement::Unavailable,
-            Measurement::Unavailable,
-            content,
-            max,
-        )?;
+    if let Some(sample) = uses.unresolved {
+        push_unresolved_glyph(content, graph, sample, objects, max)?;
     }
     for (font, samples) in uses.fonts.values() {
         if let Some(dictionary) = font.dictionary(graph.document) {
+            if graph.materializes(UNICODE_FAMILY) {
+                unicode::inspect(content, graph, dictionary, samples, objects, max)?;
+            }
             if cmap::FAMILIES
                 .iter()
                 .any(|family| graph.materializes(family))
@@ -308,21 +315,42 @@ pub(super) fn inspect<'a>(
                     max,
                 )?;
             }
-        } else if graph.materializes(WIDTH_FAMILY)
-            && let Some(sample) = samples.first().copied()
-        {
-            push_width(
-                objects,
-                graph.document,
-                sample,
-                Measurement::Unavailable,
-                Measurement::Unavailable,
-                content,
-                max,
-            )?;
+        } else if let Some(sample) = samples.first().copied() {
+            push_unresolved_glyph(content, graph, sample, objects, max)?;
         }
     }
     Ok(uses.invocations)
+}
+
+fn push_unresolved_glyph<'a>(
+    content: &ContentStreamModel<'_>,
+    graph: &ModelGraph<'a>,
+    sample: Sample<'_>,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max: usize,
+) -> Result<()> {
+    if graph.materializes(WIDTH_FAMILY) {
+        push_width(
+            objects,
+            graph.document,
+            sample,
+            Measurement::Unavailable,
+            Measurement::Unavailable,
+            content,
+            max,
+        )?;
+    }
+    if graph.materializes(UNICODE_FAMILY) {
+        unicode::push(
+            content,
+            graph.document,
+            sample,
+            unicode::Mapping::Unavailable,
+            objects,
+            max,
+        )?;
+    }
+    Ok(())
 }
 
 fn collect_uses<'a>(

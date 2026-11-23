@@ -2823,11 +2823,21 @@ impl XmlRuleBuilder {
         {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::CID_SET_FAMILY);
         }
+        let unicode_test = if self.source_is_glyph && !id.0.as_str().starts_with("iso-19005-1-") {
+            glyph_unicode_rule(source_test.as_str())?
+        } else {
+            None
+        };
+        if unicode_test.is_some() {
+            object_type = ObjectTypeName::unchecked(crate::validation::glyphs::UNICODE_FAMILY);
+        }
         let mut test = if let Some(reason) = self.unsupported_reason {
             RuleExpr::Unsupported {
                 fragment: source_test.clone(),
                 reason,
             }
+        } else if let Some(unicode_test) = unicode_test {
+            unicode_test
         } else {
             parse_imported_expr(source_test.as_str()).unwrap_or_else(|reason| {
                 RuleExpr::Unsupported {
@@ -2856,6 +2866,26 @@ impl XmlRuleBuilder {
             references: self.references,
         })
     }
+}
+
+fn glyph_unicode_rule(source: &str) -> Result<Option<RuleExpr>> {
+    const FORBIDDEN_CHECK: &str = r#"toUnicode == null || (toUnicode.indexOf("\u0000") == -1 && toUnicode.indexOf("\uFFFE") == -1 && toUnicode.indexOf("\uFEFF") == -1)"#;
+    if source == "toUnicode != null" {
+        return property_expr("hasUnicodeMapping").map(Some);
+    }
+    if source.contains("toUnicode.indexOf")
+        && let (Ok(test), Ok(canonical)) = (
+            parse_imported_expr(source),
+            parse_imported_expr(FORBIDDEN_CHECK),
+        )
+        && test == canonical
+    {
+        return Ok(Some(RuleExpr::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(property_expr("hasForbiddenUnicode")?),
+        }));
+    }
+    Ok(None)
 }
 
 fn validate_element(element: &quick_xml::events::BytesStart<'_>) -> Result<()> {

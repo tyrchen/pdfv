@@ -50,6 +50,15 @@ update-submodule:
 generate-profiles:
 	@cargo run -p pdfv-core --example generate_profiles -- crates/core/src/generated_profiles.rs
 
+sync-adobe-unicode-maps:
+	@mkdir -p crates/core/data/cmap
+	@for collection in CNS1 GB1 Japan1 Korea1 KR; do \
+		sed 's/[[:blank:]]*$$//' "vendors/veraPDF-parser/src/main/resources/font/cmap/Adobe-$$collection-UCS2" > "crates/core/data/cmap/Adobe-$$collection-UCS2" || exit; \
+	done
+	@# The last Japan1 range block in the pinned source declares 41 but contains 42 entries.
+	@sed '/^41 beginbfrange$$/s/^41 /42 /' "crates/core/data/cmap/Adobe-Japan1-UCS2" > "crates/core/data/cmap/Adobe-Japan1-UCS2.tmp" && \
+		mv "crates/core/data/cmap/Adobe-Japan1-UCS2.tmp" "crates/core/data/cmap/Adobe-Japan1-UCS2"
+
 parity-model-schema:
 	@cargo run -p pdfv-core --example parity_model_schema
 
@@ -81,4 +90,4 @@ readiness-release-gate: standard-gates
 	@$(MAKE) readiness-gates
 	@PDFV_ORACLE_REQUIRE_T3_RELEASE=1 cargo run -p pdfv-core --example oracle_corpus_summary
 
-.PHONY: build test standard-gates test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down oracle-corpus oracle-corpus-summary oracle-t3-manifest readiness-gates readiness-release-gate
+.PHONY: build test standard-gates test-conformance-verapdf check-agent-sync release update-submodule generate-profiles sync-adobe-unicode-maps parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down oracle-corpus oracle-corpus-summary oracle-t3-manifest readiness-gates readiness-release-gate

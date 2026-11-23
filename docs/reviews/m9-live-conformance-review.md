@@ -168,14 +168,29 @@ The live PDF/UA-1 negative now reports both page-content failures for
 Across the four PDF/UA fixtures, the unsupported rule observations dropped
 from 347 to 90. The nine supplemental PDF/A fixtures still match veraPDF.
 
+## Unicode Mapping Follow-up
+
+The Unicode presence and forbidden-value rules inspect the character codes
+used at text-show operators. The encoding determines code boundaries.
+Explicit ToUnicode mappings take precedence over font mappings for the same
+code. The validator supports UTF-16BE sequences, range and array declarations,
+and collection fallback for Adobe Japan1, GB1, CNS1, Korea1, and KR.
+Rule reports retain operator locations and outcomes.
+[Adobe CMap specification](https://adobe-type-tools.github.io/font-tech-notes/pdfs/5014.CIDFont_Spec.pdf)
+
+The PDF/UA-2 fixture `8.4.5.8-t01-pass-a` maps its eight used codes through
+Adobe-Japan1 even though the font dictionary omits ToUnicode. Both Unicode
+rules now pass for all eight codes. The document still has incomplete
+assertions outside those rules.
+
 ## Release Blockers
 
 - The automatic fallback still selects the ten-rule `pdfv-m4` profile. veraPDF
   selects the full fallback profile. The live comparison marks the two
   executions as incompatible.
 - The four supplemental PDF/UA documents remain incomplete. Open work includes
-  Unicode mappings at text-show operators, symbolic TrueType font evidence,
-  and rules scoped to language strings and file specifications.
+  inherited and predefined non-Identity font encodings, symbolic TrueType
+  font evidence, and rules scoped to language strings and file specifications.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

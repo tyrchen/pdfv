@@ -2436,6 +2436,11 @@ impl ModelRegistry {
                 EMPTY_LINK_NAMES,
             ),
             family(
+                glyphs::UNICODE_FAMILY,
+                &["hasUnicodeMapping", "hasForbiddenUnicode"],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 "iccBasedCmyk",
                 &[
                     "overprintFlag",
@@ -2587,7 +2592,7 @@ impl ModelRegistry {
             && structure_roles::rule_family(family.as_str()).is_none()
             && !matches!(
                 family.as_str(),
-                glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY
+                glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY | glyphs::UNICODE_FAMILY
             )
             && self.has_family(family)
     }
@@ -3481,7 +3486,7 @@ impl<'a> ModelGraph<'a> {
                 || family.as_str() == "resourceUse"
                 || matches!(
                     family.as_str(),
-                    glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY
+                    glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY | glyphs::UNICODE_FAMILY
                 )
                 || cmap::FAMILIES.contains(&family.as_str())
                 || matches!(
@@ -3533,6 +3538,7 @@ impl<'a> ModelGraph<'a> {
         self.active_flavour.is_some()
             && (self.materializes(glyphs::WIDTH_FAMILY)
                 || self.materializes(glyphs::CID_SET_FAMILY)
+                || self.materializes(glyphs::UNICODE_FAMILY)
                 || cmap::FAMILIES
                     .iter()
                     .any(|family| self.materializes(family)))
@@ -10100,7 +10106,10 @@ impl<'a> GenericModel<'a> {
     }
 
     fn identity_key(&self) -> String {
-        if self.primitive.is_some() || self.tagged_content.is_some() {
+        if self.primitive.is_some()
+            || self.tagged_content.is_some()
+            || self.object_type.as_str() == glyphs::UNICODE_FAMILY
+        {
             return self.context.clone();
         }
         if self.object_type.as_str() == "halftone"
@@ -10868,7 +10877,9 @@ fn append_content_resources<'a>(
                 .location
                 .offset
                 .and_then(|offset| states.tags.get(&offset).cloned());
-            if form.initial_tag_context.is_some() {
+            if form.initial_tag_context.is_some()
+                || (form.initial_text_state.is_some() && graph.materializes(glyphs::UNICODE_FAMILY))
+            {
                 form.context_prefix = format!("{path}/form[{}]", object_key_text(*key));
             }
             push_linked(objects, ModelObjectRef::ContentStream(form), max_objects)?;
@@ -13248,6 +13259,91 @@ endobj
         )?;
         assert_distinct_test_rule(&profile, "iso-14289-2-8-2-5-2-1", passed, failed);
         assert_distinct_test_rule(&profile, "iso-14289-2-8-2-5-2-2", 1, 0);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("Japan1", "<00290046>", "", 2, 0, 0)]
+    #[case("Identity", "<00290046>", "", 0, 2, 0)]
+    #[case("Japan1", "<00290046>", "<0029> <0041FEFF0042>", 2, 0, 1)]
+    #[case("Japan1", "<00290046>", "<0029> <004100000042>", 2, 0, 1)]
+    #[case("Japan1", "<00290046>", "<0066> <FFFE>", 2, 0, 0)]
+    #[case("Identity", "<00290046>", "<0029> <D83DDE000042>", 1, 1, 0)]
+    fn test_should_validate_unicode_of_used_codes_with_per_code_collection_fallback(
+        #[case] ordering: &str,
+        #[case] operand: &str,
+        #[case] mapping: &str,
+        #[case] mapped: usize,
+        #[case] missing: usize,
+        #[case] forbidden: usize,
+    ) -> crate::Result<()> {
+        let mut pdf = format!(
+            "%PDF-2.0\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type \
+             /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R \
+             /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n5 0 obj\n<< /Type \
+             /Font /Subtype /Type0 /Encoding /Identity-H /BaseFont /Test /DescendantFonts [6 0 R] \
+             {} >>\nendobj\n6 0 obj\n<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Test \
+             /CIDSystemInfo 7 0 R >>\nendobj\n7 0 obj\n<< /Registry (Adobe) /Ordering \
+             ({ordering}) /Supplement 0 >>\nendobj\n",
+            if mapping.is_empty() {
+                ""
+            } else {
+                "/ToUnicode 8 0 R"
+            },
+        )
+        .into_bytes();
+        let page = format!("BT /F1 12 Tf 3 Tr [{operand} -120 {operand}] TJ ET");
+        append_test_stream(&mut pdf, "4 0 obj", "", page.as_bytes());
+        if !mapping.is_empty() {
+            let cmap = format!(
+                "begincmap 1 begincodespacerange <0000> <ffff> endcodespacerange 1 beginbfchar \
+                 {mapping} endbfchar endcmap"
+            );
+            append_test_stream(&mut pdf, "8 0 obj", "", cmap.as_bytes());
+        }
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let part = NonZeroU32::new(2).ok_or(crate::ValidationError::SubsystemUnavailable {
+            subsystem: "testFlavour",
+        })?;
+        let profile =
+            validate_test_profile(&pdf, ValidationFlavour::new("pdfua", part, "iso32005")?)?;
+        assert_distinct_test_rule(&profile, "iso-14289-2-8-4-5-8-1", mapped, missing);
+        assert_distinct_test_rule(
+            &profile,
+            "iso-14289-2-8-4-5-8-2",
+            mapped + missing - forbidden,
+            forbidden,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_recheck_unicode_when_a_form_inherits_different_fonts() -> crate::Result<()> {
+        let mut pdf = b"%PDF-2.0\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\
+            2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\
+            3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R \
+            /Resources << /XObject << /Fm 5 0 R >> /Font << /F1 6 0 R /F2 7 0 R >> >> >>\nendobj\n\
+            6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n\
+            7 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 8 0 R >>\nendobj\n".to_vec();
+        append_test_stream(
+            &mut pdf,
+            "4 0 obj",
+            "",
+            b"BT /F1 12 Tf ET /Fm Do BT /F2 12 Tf ET /Fm Do",
+        );
+        append_test_stream(
+            &mut pdf,
+            "5 0 obj",
+            "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+            b"BT (A) Tj ET",
+        );
+        append_test_stream(&mut pdf, "8 0 obj", "", b"begincmap 1 begincodespacerange <0000> <ffff> endcodespacerange 1 beginbfchar <41> <fffe> endbfchar endcmap");
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let part = NonZeroU32::new(4).ok_or(crate::ValidationError::SubsystemUnavailable {
+            subsystem: "testFlavour",
+        })?;
+        let profile = validate_test_profile(&pdf, ValidationFlavour::new("pdfa", part, "none")?)?;
+        assert_distinct_test_rule(&profile, "iso-19005-4-6-2-10-7-1", 1, 1);
         Ok(())
     }
 

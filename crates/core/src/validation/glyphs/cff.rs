@@ -82,6 +82,12 @@ impl<'data> Metrics<'data> {
         u16::try_from(self.font.charset()?.glyph_id(Sid::new(cid))?.to_u32()).ok()
     }
 
+    pub(super) fn embedded_name(&self, code: u8) -> Option<&str> {
+        let glyph = self.font.encoding()?.map(code)?;
+        let name = self.font.string(self.font.charset()?.string_id(glyph)?)?;
+        std::str::from_utf8(name).ok()
+    }
+
     pub(super) fn simple_gid(&self, encoding: &Encoding, code: u8) -> Option<u16> {
         if let Some(name) = encoding.differences.get(&code) {
             return self.names.get(name.as_bytes()).copied();
