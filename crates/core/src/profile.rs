@@ -732,7 +732,8 @@ impl ClusterKey {
             return "G5";
         }
         match self.object_type.as_str() {
-            "font" | "fontDescriptor" | "fontProgram" | "cMap" | "embeddedFontFile" => "G3",
+            "font" | "fontDescriptor" | "fontProgram" | "cMap" | "cMapFile" | "referencedCMap"
+            | "embeddedFontFile" => "G3",
             "resource" | "colorSpace" | "iccProfile" | "extGState" | "pattern" | "shading"
             | "function" | "xObject" | "formXObject" | "postScriptXObject" | "image"
             | "outputIntent" => "G4",
@@ -3172,7 +3173,9 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDType0Font" => Some("type0Font"),
         "PDType1Font" => Some("type1Font"),
         "PDCIDFont" => Some("cidFont"),
-        "PDCMap" | "PDReferencedCMap" | "CMapFile" => Some("cMap"),
+        "PDCMap" => Some("cMap"),
+        "PDReferencedCMap" => Some("referencedCMap"),
+        "CMapFile" => Some("cMapFile"),
         "EmbeddedFile" => Some("embeddedFontFile"),
         "PDAnnotation"
         | "Annotation"
@@ -3365,6 +3368,23 @@ fn signed_32_bit_range() -> Result<RuleExpr> {
         right: Box::new(comparison(BinaryOp::Ge, i32::MIN)?),
     })
 }
+// Preserve the evaluation order and short-circuit behavior of flat boolean chains.
+fn balanced_logical_chain(
+    count: usize,
+    terms: &mut impl Iterator<Item = RuleExpr>,
+    op: BinaryOp,
+) -> Option<RuleExpr> {
+    if count < 2 {
+        return terms.next();
+    }
+    let mid = count / 2;
+    Some(RuleExpr::Binary {
+        op,
+        left: Box::new(balanced_logical_chain(mid, terms, op)?),
+        right: Box::new(balanced_logical_chain(count.checked_sub(mid)?, terms, op)?),
+    })
+}
+
 #[derive(Debug)]
 struct ExprParser<'a> {
     input: &'a str,
@@ -3420,29 +3440,32 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse_or(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
-        let mut expr = self.parse_and()?;
-        while self.consume("||") {
-            let right = self.parse_and()?;
-            expr = RuleExpr::Binary {
-                op: BinaryOp::Or,
-                left: Box::new(expr),
-                right: Box::new(right),
-            };
-        }
-        Ok(expr)
+        self.parse_logical_chain("||", BinaryOp::Or, Self::parse_and)
     }
 
     fn parse_and(&mut self) -> std::result::Result<RuleExpr, BoundedText> {
-        let mut expr = self.parse_comparison()?;
-        while self.consume("&&") {
-            let right = self.parse_comparison()?;
-            expr = RuleExpr::Binary {
-                op: BinaryOp::And,
-                left: Box::new(expr),
-                right: Box::new(right),
-            };
+        self.parse_logical_chain("&&", BinaryOp::And, Self::parse_comparison)
+    }
+
+    fn parse_logical_chain(
+        &mut self,
+        token: &str,
+        op: BinaryOp,
+        parse_term: fn(&mut Self) -> std::result::Result<RuleExpr, BoundedText>,
+    ) -> std::result::Result<RuleExpr, BoundedText> {
+        let first = parse_term(self)?;
+        if !self.consume(token) {
+            return Ok(first);
         }
-        Ok(expr)
+        let mut terms = vec![first];
+        loop {
+            terms.push(parse_term(self)?);
+            if !self.consume(token) {
+                break;
+            }
+        }
+        balanced_logical_chain(terms.len(), &mut terms.into_iter(), op)
+            .ok_or_else(|| BoundedText::unchecked("empty logical expression"))
     }
 
     fn parse_comparison(&mut self) -> std::result::Result<RuleExpr, BoundedText> {

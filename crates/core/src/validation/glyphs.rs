@@ -10,10 +10,11 @@ use std::{
 
 use super::{
     ContentStreamModel, ContentStreamSummary, EffectiveResources, GenericModel, ModelGraph,
-    ModelObjectRef, OperatorFact, ResourceFamily, array_values, cos_integer,
-    descendant_font_dictionary, descendant_font_value, font_descriptor_dictionary, font_name,
-    font_program_stream, push_linked, resolve_named_dictionary, resource_value, semantic_names,
-    stream_from_value, unknown_property,
+    ModelObjectRef, OperatorFact, ResourceFamily, array_values,
+    cmap::{self, CMap, CidSelection},
+    cos_integer, descendant_font_dictionary, descendant_font_value, font_descriptor_dictionary,
+    font_name, font_program_stream, push_linked, resolve_named_dictionary, resource_value,
+    semantic_names, stream_from_value, unknown_property,
 };
 use crate::{
     BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument,
@@ -148,6 +149,7 @@ impl TextState {
 #[derive(Debug, Default)]
 pub(super) struct CidAudit {
     fonts: BTreeMap<FontId, (CidSet, String)>,
+    modeled_cmaps: BTreeSet<FontId>,
     unresolved: Option<String>,
     type3_procedures: u64,
 }
@@ -279,16 +281,33 @@ pub(super) fn inspect<'a>(
     }
     for (font, samples) in uses.fonts.values() {
         if let Some(dictionary) = font.dictionary(graph.document) {
-            inspect_font(
-                content,
-                graph,
-                font.id,
-                dictionary,
-                samples,
-                &mut cid_audit,
-                objects,
-                max,
-            )?;
+            if cmap::FAMILIES
+                .iter()
+                .any(|family| graph.materializes(family))
+                && semantic_names::name(graph.document, dictionary.get("Subtype"))
+                    .is_some_and(|name| name.matches("Type0"))
+                && cid_audit.modeled_cmaps.insert(font.id)
+            {
+                cmap::append_encoding_models(
+                    graph,
+                    dictionary.get("Encoding"),
+                    &content.context_prefix,
+                    objects,
+                    max,
+                )?;
+            }
+            if graph.materializes(WIDTH_FAMILY) || graph.materializes(CID_SET_FAMILY) {
+                inspect_font(
+                    content,
+                    graph,
+                    font.id,
+                    dictionary,
+                    samples,
+                    &mut cid_audit,
+                    objects,
+                    max,
+                )?;
+            }
         } else if graph.materializes(WIDTH_FAMILY)
             && let Some(sample) = samples.first().copied()
         {
@@ -511,10 +530,25 @@ fn font_selection(
 enum Encoding {
     WinAnsi,
     CffSimple(cff::Encoding),
-    CffCid,
+    CffCid(CidEncoding),
     Type3(BTreeMap<u8, PdfName>),
-    Identity(CidToGid),
+    CidTrueType(CidEncoding, CidToGid),
     Unsupported,
+}
+
+#[derive(Debug)]
+enum CidEncoding {
+    Identity,
+    Embedded(Box<CMap>),
+}
+
+impl Encoding {
+    fn cid_encoding(&self) -> Option<&CidEncoding> {
+        match self {
+            Self::CffCid(cmap) | Self::CidTrueType(cmap, _) => Some(cmap),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -545,7 +579,8 @@ fn encoding(
     let subtype = semantic_names::name(document, metric_font.get("Subtype"));
     let embedded_subtype = super::font_program_dictionary(document, font)
         .and_then(|program| semantic_names::name(document, program.get("Subtype")));
-    if subtype.is_some_and(|subtype| subtype.matches("Type1"))
+    // A PDF can retain the MMType1 subtype after embedding an instantiated Type 1C program.
+    if subtype.is_some_and(|subtype| subtype.matches("Type1") || subtype.matches("MMType1"))
         && embedded_subtype.is_some_and(|subtype| subtype.matches("Type1C"))
     {
         return Ok(
@@ -554,9 +589,10 @@ fn encoding(
     }
     if subtype.is_some_and(|subtype| subtype.matches("CIDFontType0"))
         && embedded_subtype.is_some_and(|subtype| subtype.matches("CIDFontType0C"))
-        && identity_h(document, font)
     {
-        return Ok(Encoding::CffCid);
+        return Ok(
+            cid_encoding(document, font, limits)?.map_or(Encoding::Unsupported, Encoding::CffCid)
+        );
     }
     if subtype.is_some_and(|subtype| subtype.matches("Type3")) {
         let differences = simple_font_differences(document, font);
@@ -568,21 +604,24 @@ fn encoding(
     {
         return Ok(Encoding::WinAnsi);
     }
-    if !subtype.is_some_and(|subtype| subtype.matches("CIDFontType2"))
-        || !identity_h(document, font)
-    {
+    if !subtype.is_some_and(|subtype| subtype.matches("CIDFontType2")) {
         return Ok(Encoding::Unsupported);
     }
+    let Some(cmap) = cid_encoding(document, font, limits)? else {
+        return Ok(Encoding::Unsupported);
+    };
     Ok(
         match semantic_names::resolve(document, metric_font.get("CIDToGIDMap")) {
             None if metric_font.get("CIDToGIDMap").is_none() => {
-                Encoding::Identity(CidToGid::Identity)
+                Encoding::CidTrueType(cmap, CidToGid::Identity)
             }
             Some(CosObject::Name(name)) if name.matches("Identity") => {
-                Encoding::Identity(CidToGid::Identity)
+                Encoding::CidTrueType(cmap, CidToGid::Identity)
             }
             Some(CosObject::Stream(stream)) => match sfnt::decode(stream, limits)? {
-                Some(bytes) if bytes.len() % 2 == 0 => Encoding::Identity(CidToGid::Map(bytes)),
+                Some(bytes) if bytes.len() % 2 == 0 => {
+                    Encoding::CidTrueType(cmap, CidToGid::Map(bytes))
+                }
                 _ => Encoding::Unsupported,
             },
             _ => Encoding::Unsupported,
@@ -590,9 +629,21 @@ fn encoding(
     )
 }
 
-fn identity_h(document: &ParsedDocument, font: &Dictionary) -> bool {
-    semantic_names::name(document, font.get("Encoding"))
-        .is_some_and(|encoding| encoding.matches("Identity-H"))
+fn cid_encoding(
+    document: &ParsedDocument,
+    font: &Dictionary,
+    limits: &ResourceLimits,
+) -> Result<Option<CidEncoding>> {
+    let encoding = font.get("Encoding");
+    if semantic_names::name(document, encoding).is_some_and(|name| name.matches("Identity-H")) {
+        return Ok(Some(CidEncoding::Identity));
+    }
+    let Some(stream) = stream_from_value(document, encoding) else {
+        return Ok(None);
+    };
+    Ok(cmap::load(stream, limits)?
+        .filter(CMap::supports_horizontal_cids)
+        .map(|cmap| CidEncoding::Embedded(Box::new(cmap))))
 }
 
 fn simple_font_differences(
@@ -680,18 +731,20 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
         bytes: Option<&'program [u8]>,
     ) -> Self {
         let (sfnt, cff) = match encoding {
-            Encoding::CffSimple(_) | Encoding::CffCid => (
+            Encoding::CffSimple(_) | Encoding::CffCid(_) => (
                 None,
                 bytes.and_then(|bytes| {
-                    cff::Metrics::read(bytes, matches!(encoding, Encoding::CffCid))
+                    cff::Metrics::read(bytes, matches!(encoding, Encoding::CffCid(_)))
                 }),
             ),
-            Encoding::WinAnsi | Encoding::Identity(_) => {
+            Encoding::WinAnsi | Encoding::CidTrueType(..) => {
                 (bytes.and_then(sfnt::Metrics::read), None)
             }
             Encoding::Type3(_) | Encoding::Unsupported => (None, None),
         };
-        let cid_widths = matches!(encoding, Encoding::Identity(_) | Encoding::CffCid)
+        let cid_widths = encoding
+            .cid_encoding()
+            .is_some()
             .then(|| cid_widths(document, metric_font))
             .flatten();
         Self {
@@ -720,14 +773,41 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
                 .sfnt
                 .as_ref()?
                 .unicode_gid(sfnt::win_ansi_unicode(u8::try_from(code).ok()?)?),
-            Encoding::Identity(map) => map.gid(code),
+            Encoding::CidTrueType(_, map) => map.gid(code),
             Encoding::CffSimple(encoding) => self
                 .cff
                 .as_ref()?
                 .simple_gid(encoding, u8::try_from(code).ok()?),
-            Encoding::CffCid => self.cff.as_ref()?.cid_gid(code),
+            Encoding::CffCid(_) => self.cff.as_ref()?.cid_gid(code),
             Encoding::Type3(_) | Encoding::Unsupported => None,
         }
+    }
+
+    fn select(&self, code: CharacterCode) -> Option<(u16, Option<u16>, bool)> {
+        match code {
+            CharacterCode::Direct(code) => Some((code, self.glyph(code), true)),
+            CharacterCode::Cid(selection) => {
+                if let Some(preferred) = selection.preferred {
+                    let cid = u16::try_from(preferred).ok()?;
+                    let gid = self.glyph(cid);
+                    if self.has_mapped_glyph(cid, gid)? {
+                        return Some((cid, gid, true));
+                    }
+                }
+                let cid = u16::try_from(selection.fallback).ok()?;
+                let gid = self.glyph(cid);
+                if cid != 0 && !self.has_mapped_glyph(cid, gid)? {
+                    return Some((0, self.glyph(0), false));
+                }
+                Some((cid, gid, false))
+            }
+        }
+    }
+
+    fn has_mapped_glyph(&self, cid: u16, gid: Option<u16>) -> Option<bool> {
+        // In a CIDToGIDMap, GID zero designates .notdef for an unmapped CID.
+        self.contains_gid(gid)
+            .map(|present| present && (cid == 0 || gid != Some(0)))
     }
 
     fn width(
@@ -764,7 +844,7 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
             Encoding::WinAnsi | Encoding::Type3(_) | Encoding::CffSimple(_) => {
                 simple_width(self.document, self.dictionary, code)
             }
-            Encoding::Identity(_) | Encoding::CffCid => {
+            Encoding::CidTrueType(..) | Encoding::CffCid(_) => {
                 self.cid_widths.as_ref().map(|widths| widths.get(code))
             }
             Encoding::Unsupported => None,
@@ -843,29 +923,29 @@ fn inspect_font<'a>(
         {
             for string in &text.0 {
                 let data = string.as_bytes();
-                if matches!(encoding, Encoding::Identity(_) | Encoding::CffCid)
-                    && data.len() % 2 != 0
-                {
-                    coverage = coverage.include(Coverage::Unavailable);
-                    if graph.materializes(WIDTH_FAMILY) {
-                        push_width(
-                            objects,
-                            document,
-                            *sample,
-                            Measurement::Unavailable,
-                            Measurement::Unavailable,
-                            content,
-                            max,
-                        )?;
-                    }
-                    continue;
-                }
-                for code in character_codes(data, &encoding) {
-                    if !seen.insert((sample.mode, code)) {
+                for decoded in character_codes(data, encoding.cid_encoding()) {
+                    let Some((code, gid, exact)) =
+                        decoded.and_then(|code| measurements.select(code))
+                    else {
+                        coverage = coverage.include(Coverage::Unavailable);
+                        if graph.materializes(WIDTH_FAMILY) && seen.insert((sample.mode, 0, false))
+                        {
+                            push_width(
+                                objects,
+                                document,
+                                *sample,
+                                Measurement::Unavailable,
+                                Measurement::Unavailable,
+                                content,
+                                max,
+                            )?;
+                        }
+                        continue;
+                    };
+                    if !seen.insert((sample.mode, code, exact)) {
                         continue;
                     }
-                    let gid = measurements.glyph(code);
-                    if matches!(encoding, Encoding::Identity(_) | Encoding::CffCid) {
+                    if encoding.cid_encoding().is_some() {
                         coverage = coverage.include(check_cid(
                             code,
                             measurements.contains_gid(gid),
@@ -877,8 +957,16 @@ fn inspect_font<'a>(
                             objects,
                             document,
                             *sample,
-                            measurements.width(code, gid, audit, graph.limits)?,
-                            measurements.expected(code),
+                            if exact {
+                                measurements.width(code, gid, audit, graph.limits)?
+                            } else {
+                                Measurement::Unavailable
+                            },
+                            if exact {
+                                measurements.expected(code)
+                            } else {
+                                Measurement::Unavailable
+                            },
                             content,
                             max,
                         )?;
@@ -887,7 +975,7 @@ fn inspect_font<'a>(
             }
         } else {
             coverage = coverage.include(Coverage::Unavailable);
-            if graph.materializes(WIDTH_FAMILY) && seen.insert((sample.mode, 0)) {
+            if graph.materializes(WIDTH_FAMILY) && seen.insert((sample.mode, 0, false)) {
                 push_width(
                     objects,
                     document,
@@ -908,19 +996,39 @@ fn inspect_font<'a>(
     Ok(())
 }
 
-fn character_codes<'a>(bytes: &'a [u8], encoding: &Encoding) -> impl Iterator<Item = u16> + 'a {
-    let size = if matches!(encoding, Encoding::Identity(_) | Encoding::CffCid) {
-        2
-    } else {
-        1
-    };
-    bytes
-        .chunks_exact(size)
-        .filter_map(move |chunk| match chunk {
-            [single] => Some(u16::from(*single)),
-            [high, low] => Some(u16::from_be_bytes([*high, *low])),
-            _ => None,
-        })
+#[derive(Clone, Copy, Debug)]
+enum CharacterCode {
+    Direct(u16),
+    Cid(CidSelection),
+}
+
+fn character_codes<'a>(
+    mut bytes: &'a [u8],
+    encoding: Option<&'a CidEncoding>,
+) -> impl Iterator<Item = Option<CharacterCode>> + 'a {
+    std::iter::from_fn(move || {
+        if bytes.is_empty() {
+            return None;
+        }
+        let code = match encoding {
+            Some(CidEncoding::Embedded(cmap)) => cmap.next_cid(&mut bytes).map(CharacterCode::Cid),
+            Some(CidEncoding::Identity) => bytes.split_at_checked(2).and_then(|(code, rest)| {
+                bytes = rest;
+                Some(CharacterCode::Cid(CidSelection {
+                    preferred: Some(u32::from(u16::from_be_bytes(code.try_into().ok()?))),
+                    fallback: 0,
+                }))
+            }),
+            None => bytes.split_first().map(|(code, rest)| {
+                bytes = rest;
+                CharacterCode::Direct(u16::from(*code))
+            }),
+        };
+        if code.is_none() {
+            bytes = &[];
+        }
+        Some(code)
+    })
 }
 
 fn check_cid(cid: u16, has_glyph: Option<bool>, bits: Option<&[u8]>) -> Coverage {

@@ -127,13 +127,32 @@ Eleven decisions agree with veraPDF, including every positive. The five
 incomplete rows exercise legacy multiple-master CFF fonts or embedded CMaps.
 None of the comparisons classified an oracle-negative file as valid.
 
+## Embedded CMaps and MMType1 Follow-up
+
+Text shown with an embedded horizontal CMap is decoded according to its
+declared code spaces. The validator checks the selected CID against the font
+program and the CIDSet. Ordinary CID mappings take precedence over
+`.notdef` mappings when the preferred glyph is present. The model checks the
+stream's writing mode and maximum declared CID on the active Type 0 font.
+Embedded encodings and their `/UseCMap` references have separate validation
+scopes. Inherited maps with unresolved bases withhold glyph evidence.
+[Adobe CMap specification](https://adobe-type-tools.github.io/font-tech-notes/pdfs/5014.CIDFont_Spec.pdf)
+
+The three PDF/A-1b CMap negatives now agree with veraPDF on rule `6.3.5-3`.
+A copy of `6-3-5-t03-fail-b` with its CIDSet enlarged to contain the used CIDs
+passes in both engines. The two PDF/A-4 `MMType1` fonts embed instantiated
+Type 1C programs. Reading those programs through the existing CFF path
+finds the width discrepancies in rule `6.2.10.5-1`. A copy of
+`6-2-10-5-t01-fail-b` with corrected dictionary widths passes in both engines.
+The supplemental manifest includes all five original negative controls.
+All 18 font comparisons and all 25 PDF/A-4 colour comparisons agree with
+veraPDF on the document outcome, with zero false-compliant rows.
+
 ## Release Blockers
 
 - The automatic fallback still selects the ten-rule `pdfv-m4` profile. veraPDF
   selects the full fallback profile. The live comparison marks the two
   executions as incompatible.
-- Several additional font controls remain incomplete. The remaining cases
-  need legacy multiple-master CFF widths and embedded CMap evidence.
 - The four supplemental PDF/UA documents remain incomplete. The negative
   controls exercise whether individual page and Form content items are tagged
   or marked as artifacts. The positive controls also need more complete

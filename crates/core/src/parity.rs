@@ -627,7 +627,7 @@ trailer
 }
 
 fn subset_font_missing_cidset_pdf() -> Vec<u8> {
-    let stream = b"BT /F1 12 Tf ET";
+    let stream = b"BT /F1 12 Tf <0041> Tj ET";
     let mut pdf = br"%PDF-1.7
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -662,7 +662,10 @@ endobj
 << /Type /FontDescriptor /FontName /ABCDEF+Faux /Flags 4 /FontFile2 10 0 R >>
 endobj
 8 0 obj
-<< /Type /CMap /CMapName /Identity-H /WMode 0 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>
+<< /Type /CMap /CMapName /Example /UseCMap /Identity-H /Length 37 >>
+stream
+begincmap /Identity-H usecmap endcmap
+endstream
 endobj
 9 0 obj
 << /Type /CMap /CMapName /Identity-H /WMode 0 >>

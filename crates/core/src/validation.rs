@@ -1,5 +1,6 @@
 //! End-to-end validation session and validation model graph.
 
+mod cmap;
 mod cos;
 mod device_color;
 pub(crate) mod glyphs;
@@ -2374,6 +2375,12 @@ impl ModelRegistry {
             ),
             family("fontProgram", FONT_PROGRAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("cMap", CMAP_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "cMapFile",
+                &["WMode", "dictWMode", "maximalCID"],
+                EMPTY_LINK_NAMES,
+            ),
+            family("referencedCMap", &["CMapName"], EMPTY_LINK_NAMES),
             family("embeddedFontFile", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("image", IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
             family("xObject", XOBJECT_PROPERTIES, XOBJECT_LINKS),
@@ -2694,6 +2701,13 @@ impl ModelRegistry {
 }
 
 fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvidence {
+    if family == "cMapFile" {
+        return if property == "dictWMode" {
+            PropertySourceEvidence::DirectCos
+        } else {
+            PropertySourceEvidence::DecodedStream
+        };
+    }
     if cos::is_primitive_family(family) || direct_properties_for_family(family).contains(&property)
     {
         return PropertySourceEvidence::DirectCos;
@@ -3454,6 +3468,7 @@ impl<'a> ModelGraph<'a> {
                     family.as_str(),
                     glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY
                 )
+                || cmap::FAMILIES.contains(&family.as_str())
                 || device_color::FAMILIES.contains(&family.as_str())
         }) {
             materialized_families.insert(ObjectTypeName::unchecked("contentStream"));
@@ -3498,7 +3513,10 @@ impl<'a> ModelGraph<'a> {
     fn needs_glyph_evidence(&self) -> bool {
         self.active_flavour.is_some()
             && (self.materializes(glyphs::WIDTH_FAMILY)
-                || self.materializes(glyphs::CID_SET_FAMILY))
+                || self.materializes(glyphs::CID_SET_FAMILY)
+                || cmap::FAMILIES
+                    .iter()
+                    .any(|family| self.materializes(family)))
     }
 
     fn cid_audit_mut(&self) -> Result<std::cell::RefMut<'_, glyphs::CidAudit>> {
@@ -3875,6 +3893,9 @@ impl<'a> ModelGraph<'a> {
                 family,
                 "catalog" | "page" | "font" | "annotation" | "outputIntent" | "metadata"
             ) {
+                continue;
+            }
+            if family == "cMap" && self.active_flavour.is_some() {
                 continue;
             }
             push_generic_model(
@@ -9835,6 +9856,7 @@ pub struct GenericModel<'a> {
     device_output: Option<device_color::OutputSpaces>,
     glyph_evidence: Option<glyphs::Evidence>,
     icc_header: Option<Arc<IccHeader>>,
+    parsed_cmap: Option<Arc<cmap::CMap>>,
     primitive: Option<CosPrimitive<'a>>,
     context: String,
     ordinal: usize,
@@ -9873,6 +9895,7 @@ impl<'a> GenericModel<'a> {
             device_output: None,
             glyph_evidence: None,
             icc_header: None,
+            parsed_cmap: None,
             primitive: None,
             context: context.into(),
             ordinal,
@@ -9902,6 +9925,7 @@ impl<'a> GenericModel<'a> {
             device_output: None,
             glyph_evidence: None,
             icc_header: None,
+            parsed_cmap: None,
             primitive: None,
             context: context.into(),
             ordinal,
@@ -9927,6 +9951,7 @@ impl<'a> GenericModel<'a> {
             device_output: None,
             glyph_evidence: None,
             icc_header: None,
+            parsed_cmap: None,
             primitive: Some(primitive),
             context: format!("root/{family}[{}]", origin.ordinal),
             ordinal: origin.ordinal,
@@ -10263,9 +10288,48 @@ impl<'a> GenericModel<'a> {
                 self.dictionary.get("UseCMap").is_some(),
             ))),
             ("cMap", "embedded" | "containsEmbeddedFile") => {
-                Some(Ok(ModelValue::Bool(self.key.is_some())))
+                let embedded = match self.direct_value {
+                    Some(ModelValue::Bool(embedded)) => embedded,
+                    _ => self.key.is_some_and(|key| {
+                        self.document.objects.get(&key).is_some_and(|object| {
+                            matches!(object.object, crate::CosObject::Stream(_))
+                        })
+                    }),
+                };
+                Some(Ok(ModelValue::Bool(embedded)))
             }
-            ("cMap", "dictWMode" | "maximalCID") => Some(unknown_property(name)),
+            ("cMap" | "referencedCMap", "CMapName") => Some(Ok(semantic_names::name(
+                self.document,
+                self.dictionary.get("CMapName"),
+            )
+            .cloned()
+            .map_or(ModelValue::Null, |name| {
+                ModelValue::from(crate::CosObject::Name(name))
+            }))),
+            ("cMapFile", "WMode" | "maximalCID") => Some(
+                self.parsed_cmap
+                    .as_ref()
+                    .and_then(|cmap| {
+                        if name.as_str() == "WMode" {
+                            Some(cmap.writing_mode())
+                        } else {
+                            cmap.maximal_cid()
+                        }
+                    })
+                    .map_or_else(
+                        || unknown_property(name),
+                        |value| Ok(ModelValue::Number(f64::from(value))),
+                    ),
+            ),
+            ("cMapFile", "dictWMode") => Some(match self.dictionary.get("WMode") {
+                None => Ok(ModelValue::Number(0.0)),
+                Some(value) => semantic_names::resolve(self.document, Some(value))
+                    .and_then(cos_integer)
+                    .map_or_else(
+                        || unknown_property(name),
+                        |value| i64_to_f64(value).map(ModelValue::Number),
+                    ),
+            }),
             ("cMap", "CMapRegistry") => Some(Ok(optional_string_model_value(
                 cmap_system_info_text(&self.dictionary, "Registry"),
             ))),
@@ -12873,6 +12937,59 @@ endobj
         Ok(())
     }
 
+    #[rstest]
+    #[case("", 0, 0)]
+    #[case("/UseCMap /Identity-H", 1, 0)]
+    #[case("/UseCMap /CustomParent", 0, 1)]
+    fn test_should_check_embedded_cmap_and_referenced_parent_in_their_own_roles(
+        #[case] parent: &str,
+        #[case] parent_passes: usize,
+        #[case] parent_failures: usize,
+    ) -> crate::Result<()> {
+        let mut pdf = b"%PDF-2.0\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\
+            2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n\
+            3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R \
+            /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n\
+            5 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /Example \
+            /Encoding 6 0 R /ToUnicode 7 0 R >>\nendobj\n"
+            .to_vec();
+        append_test_stream(&mut pdf, "4 0 obj", "", b"BT /F1 12 Tf (A) Tj ET");
+        let cmap = b"begincmap /WMode 0 def 1 begincodespacerange <00> <ff> endcodespacerange \
+            1 begincidchar <41> 7 endcidchar endcmap";
+        append_test_stream(
+            &mut pdf,
+            "6 0 obj",
+            &format!("/Type /CMap /CMapName /CustomEncoding /WMode 1 {parent}"),
+            cmap,
+        );
+        append_test_stream(
+            &mut pdf,
+            "7 0 obj",
+            "/Type /CMap /CMapName /TextToUnicode",
+            cmap,
+        );
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(4).ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "testFlavour",
+                })?,
+                "none",
+            )?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-4-6-2-10-3-3-1", 1, 0);
+        assert_distinct_test_rule(&profile, "iso-19005-4-6-2-10-3-3-2", 0, 1);
+        assert_distinct_test_rule(
+            &profile,
+            "iso-19005-4-6-2-10-3-3-3",
+            parent_passes,
+            parent_failures,
+        );
+        Ok(())
+    }
+
     fn append_test_stream(pdf: &mut Vec<u8>, header: &str, entries: &str, body: &[u8]) {
         pdf.extend(
             format!("{header}\n<< /Length {} {entries} >>\nstream\n", body.len()).as_bytes(),
@@ -13242,7 +13359,9 @@ endobj
 << /ShadingType 2 /ColorSpace /DeviceRGB /Function 15 0 R >>
 endobj
 12 0 obj
-<< /Type /CMap /CMapName /Identity-H /WMode 0 >>
+<< /Type /CMap /CMapName /Identity-H /WMode 0 /Length 0 >>
+stream
+endstream
 endobj
 13 0 obj
 << /Type /EmbeddedFile /Length 4 /Length1 4 >>

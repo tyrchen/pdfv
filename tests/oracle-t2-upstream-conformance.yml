@@ -65,6 +65,81 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+  - id: pdfa-1-6-3-5-t03-fail-a
+    path: "PDF_A-1b/6.3 Fonts/6.3.5 Font subsets/veraPDF test suite 6-3-5-t03-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: b
+    expectedFeatures:
+      - font
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-1-6-3-5-t03-fail-b
+    path: "PDF_A-1b/6.3 Fonts/6.3.5 Font subsets/veraPDF test suite 6-3-5-t03-fail-b.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: b
+    expectedFeatures:
+      - font
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-1-6-3-5-t03-fail-c
+    path: "PDF_A-1b/6.3 Fonts/6.3.5 Font subsets/veraPDF test suite 6-3-5-t03-fail-c.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: b
+    expectedFeatures:
+      - font
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-4-6-2-10-5-t01-fail-b
+    path: "PDF_A-4/6.2 Graphics/6.2.10 Fonts/6.2.10.5 Font metrics/veraPDF test suite 6-2-10-5-t01-fail-b.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 4
+        conformance: none
+    expectedFeatures:
+      - font
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-4-6-2-10-5-t01-fail-g
+    path: "PDF_A-4/6.2 Graphics/6.2.10 Fonts/6.2.10.5 Font metrics/veraPDF test suite 6-2-10-5-t01-fail-g.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 4
+        conformance: none
+    expectedFeatures:
+      - font
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
   - id: pdfua-1-7-2-t17-pass-d
     path: "PDF_UA-1/7.2 Text/7.2-t17-pass-d.pdf"
     tier: t2PublicConformance
