@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## [pdfv-v0.1.3](https://github.com/tyrchen/pdfv/compare/pdfv-v0.1.2...pdfv-v0.1.3) - 2026-11-23
+
+- Validate PDF/A glyph widths and CIDSet entries using the characters shown in text operators and their embedded font programs.
+- Check PDF/UA marked content at page and Form paint sites and apply structure rules to the resolved standard roles.
+- Validate used Unicode mappings from embedded ToUnicode streams, supported simple font encodings, and the packaged Adobe CID collections. Report missing mappings and forbidden values at the text operator.
+- Strengthen veraPDF comparisons and retain incomplete results for rules whose evidence still needs implementation.
+
 ## [pdfv-v0.1.2](https://github.com/compare/pdfv-v0.1.1..pdfv-v0.1.2) - 2026-11-23
 
 ### Miscellaneous Chores
