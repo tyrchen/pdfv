@@ -20,6 +20,7 @@ mod generated_profiles;
 mod oracle;
 mod parity;
 mod parser;
+mod pdf_text;
 mod profile;
 mod validation;
 mod xmp;

@@ -24,6 +24,7 @@ Read in this order when implementing:
 16. [26-unsupported-rule-burn-down-design.md](./26-unsupported-rule-burn-down-design.md) — unsupported-rule clustering, priority, and closure gates.
 17. [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md) — live veraPDF oracle corpus tiers, agreement classification, and release gates.
 18. [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md) — dependency-ordered implementation plan for readiness.
+    [29-rule-check-completion-impl-plan.md](./29-rule-check-completion-impl-plan.md) orders the remaining runtime gaps and their verification gates.
 19. [19-verapdf-product-surface-parity-design.md](./19-verapdf-product-surface-parity-design.md) — feature extraction, policy, repair, raw/HTML reports, and CLI parity surfaces.
 20. [20-reporting-design.md](./20-reporting-design.md) — JSON/text/XML output and batch summaries.
 21. [50-cli-design.md](./50-cli-design.md) — CLI UX, config, exit codes, concurrency.
@@ -51,6 +52,7 @@ Read in this order when implementing:
                                                           -> 26-unsupported-rule-burn-down-design
                                                               -> 27-oracle-corpus-verification-plan
                                                                   -> 28-verapdf-grade-validation-impl-plan
+                                                                      -> 29-rule-check-completion-impl-plan
                                                       -> 19-verapdf-product-surface-parity-design
                                                           -> 20-reporting-design
                                                               -> 50-cli-design
@@ -86,6 +88,7 @@ Read in this order when implementing:
 | [26-unsupported-rule-burn-down-design.md](./26-unsupported-rule-burn-down-design.md) | Component design | Defines unsupported-rule clustering, prioritization, acceptance gates, and burn-down reports. |
 | [27-oracle-corpus-verification-plan.md](./27-oracle-corpus-verification-plan.md) | Verification plan | Defines generated, public, real-world, adversarial, and live veraPDF oracle corpus gates. |
 | [28-verapdf-grade-validation-impl-plan.md](./28-verapdf-grade-validation-impl-plan.md) | Implementation plan | Defines the dependency-ordered readiness phases after the base engine exists. |
+| [29-rule-check-completion-impl-plan.md](./29-rule-check-completion-impl-plan.md) | Implementation plan | Orders the remaining runtime rule gaps and requires rule-level and corpus evidence for closure. |
 | [50-cli-design.md](./50-cli-design.md) | CLI design | Defines CLI commands, config loading, exit codes, and bounded parallelism. |
 | [61-crates-and-features.md](./61-crates-and-features.md) | Workspace design | Defines crate layout, feature flags, and dependency policy. |
 | [70-security.md](./70-security.md) | Cross-cut | Threat model, resource limits, hostile input handling, and unsafe policy. |

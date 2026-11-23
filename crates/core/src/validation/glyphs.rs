@@ -123,13 +123,17 @@ enum FontId {
 }
 
 #[derive(Clone, Debug)]
-struct FontSelection {
+pub(super) struct FontSelection {
     id: FontId,
     direct: Option<Arc<Dictionary>>,
 }
 
 impl FontSelection {
-    fn dictionary<'a>(&'a self, document: &'a ParsedDocument) -> Option<&'a Dictionary> {
+    pub(super) fn identity(&self) -> String {
+        format!("{:?}", self.id)
+    }
+
+    pub(super) fn dictionary<'a>(&'a self, document: &'a ParsedDocument) -> Option<&'a Dictionary> {
         match self.id {
             FontId::Indirect(key) => document.objects.get(&key)?.object.as_dictionary(),
             FontId::Direct(..) => self.direct.as_deref(),
@@ -441,6 +445,29 @@ fn collect_uses<'a>(
         }
     }
     Ok(uses)
+}
+
+pub(super) fn shown_fonts(
+    content: &ContentStreamModel<'_>,
+    document: &ParsedDocument,
+    resources: &EffectiveResources<'_>,
+    summary: &ContentStreamSummary,
+    limits: &ResourceLimits,
+) -> Result<Vec<FontSelection>> {
+    Ok(collect_uses(content, document, resources, summary, limits)?
+        .fonts
+        .into_values()
+        .map(|(font, _samples)| font)
+        .collect())
+}
+
+pub(super) fn text_invocations(
+    content: &ContentStreamModel<'_>,
+    graph: &ModelGraph<'_>,
+    summary: &ContentStreamSummary,
+) -> Result<BTreeMap<u64, TextState>> {
+    let resources = content.effective_resources(graph.document)?;
+    Ok(collect_uses(content, graph.document, &resources, summary, graph.limits)?.invocations)
 }
 
 #[derive(Clone, Debug)]

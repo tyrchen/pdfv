@@ -7,7 +7,7 @@ of the current implementation phase.
 
 ## Open M9 Findings
 
-- **P1.** Context-dependent targets such as `CosLang` and `CosTextString`
+- **P1.** Context-dependent targets such as `CosActualText`, `CosAlt`, and `CosTextString`
   still map to the generic `object` target. Preserve their
   actual use-site semantics and compare each assertion on passing and failing
   fixtures. See [the type mapping](../crates/core/src/profile.rs).
@@ -17,6 +17,12 @@ of the current implementation phase.
   Verify reachable catalog, page, structure, resource, and marked-content
   association sites against the oracle. See
   [the associated-file property](../crates/core/src/validation.rs).
+- **P1.** Resolve active object identity across incremental xref sections for
+  generation changes, free entries, and compressed replacements. Linked
+  revision detection identifies the current sections. The object store still
+  needs authoritative entry selection beyond sequential replacements. See
+  [the parser design](./11-parser-core-design.md) and
+  [the remaining audit](./29-rule-check-completion-impl-plan.md).
 
 ## Resolved M9 Findings
 
@@ -27,3 +33,6 @@ of the current implementation phase.
   and `EmbeddedFiles` name-tree scopes. The four targeted public PDF/UA fixtures
   agree on assertion outcomes and counts. See the
   [file specification follow-up](../docs/reviews/m9-live-conformance-review.md#pdfua-file-specifications).
+- **P1.** The language rule uses scoped PDF text evidence. Seventy-two public
+  controls agree with the oracle on language assertions. See
+  [the language review](../docs/reviews/m9-live-conformance-review.md#language-and-incremental-revisions).

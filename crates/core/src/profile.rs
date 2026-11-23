@@ -2846,6 +2846,24 @@ impl XmlRuleBuilder {
             }
             "cosName" => lower_cos_byte_lengths(&mut test, "internalRepresentation")?,
             "cosString" => lower_cos_byte_lengths(&mut test, "value")?,
+            crate::validation::language::FAMILY => {
+                if let Some(property) = match source_test.as_str() {
+                    "/^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/.test(unicodeValue)" => {
+                        Some("isLanguageTag")
+                    }
+                    "unicodeValue == '' || \
+                     /^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/.test(unicodeValue)" => {
+                        Some("isLanguageTagOrEmpty")
+                    }
+                    "unicodeValue == '' || \
+                     /^[a-zA-Z]{1,8}(-[a-zA-Z]{1,8})*$/.test(unicodeValue)" => {
+                        Some("isAlphabeticLanguageTagOrEmpty")
+                    }
+                    _ => None,
+                } {
+                    test = property_expr(property)?;
+                }
+            }
             crate::validation::file_spec::FAMILY
                 if source_test.as_str()
                     == "containsEF == false || (F != null && F != '' && UF != null && UF != \
@@ -3185,6 +3203,7 @@ fn map_verapdf_object_type(
         "CosArray" => Some("cosArray"),
         "CosDict" => Some("cosDictionary"),
         "CosBBox" => Some("pageBox"),
+        "CosLang" => Some(crate::validation::language::FAMILY),
         "CosFileSpecification"
             if flavour
                 .is_some_and(|flavour| matches!(flavour.family.as_str(), "pdfua" | "wtpdf")) =>
@@ -3193,7 +3212,6 @@ fn map_verapdf_object_type(
         }
         "CosTextString"
         | "CosUnicodeName"
-        | "CosLang"
         | "CosActualText"
         | "CosAlt"
         | "CosFileSpecification" => Some("object"),

@@ -368,6 +368,8 @@ pub(crate) struct MarkedContentSpan {
     pub properties_name: Option<PdfName>,
     /// Presence of the text and language entries in a direct property list.
     pub inline_text: MarkedTextProperties,
+    /// Language value declared in a direct marked-content property list.
+    pub inline_language: Option<InlineLanguage>,
     /// Whether the begin operator has a valid form and a matching end operator.
     pub valid_sequence: bool,
     /// Whether text-show operators appeared inside this span.
@@ -376,6 +378,12 @@ pub(crate) struct MarkedContentSpan {
     pub has_image: bool,
     /// Deterministic location.
     pub location: ObjectLocation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum InlineLanguage {
+    Text(crate::PdfString),
+    Reference(ObjectKey),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -749,14 +757,14 @@ fn classify_operator(
                 None
             };
             let properties_name =
-                if let ("BDC", [Operand::Name(_), Operand::Name(name)]) = (op_name, operands) {
+                if let ("BDC", [.., Operand::Name(_), Operand::Name(name)]) = (op_name, operands) {
                     Some(name.clone())
                 } else {
                     None
                 };
             if matches!(op_name, "BMC" | "BDC") {
                 let inline = match operands {
-                    [Operand::Name(_), Operand::Composite(bytes)] if op_name == "BDC" => {
+                    [.., Operand::Name(_), Operand::Composite(bytes)] if op_name == "BDC" => {
                         match parse_content_dictionary(bytes, limits) {
                             Ok(dictionary) => Some(dictionary),
                             Err(error @ ParseError::LimitExceeded { .. }) => return Err(error),
@@ -767,6 +775,7 @@ fn classify_operator(
                 };
                 let mcid = inline
                     .as_ref()
+                    .filter(|_| operands.len() == 2)
                     .and_then(|dictionary| match dictionary.get("MCID") {
                         Some(CosObject::Integer(value)) => Some(*value),
                         _ => None,
@@ -775,17 +784,30 @@ fn classify_operator(
                 let span_index = summary.marked_content.len();
                 let valid_begin = matches!((op_name, operands), ("BMC", [Operand::Name(_)]))
                     || (op_name == "BDC"
-                        && (inline.is_some() || properties.is_some() || properties_name.is_some()));
+                        && (properties.is_some()
+                            || (operands.len() == 2
+                                && (inline.is_some() || properties_name.is_some()))));
                 summary.marked_content.push(MarkedContentSpan {
                     tag: tag.clone(),
                     nesting_depth: *marked_depth,
                     mcid,
                     properties,
                     properties_name,
-                    inline_text: inline.as_ref().map_or_else(
+                    inline_text: inline.as_ref().filter(|_| operands.len() == 2).map_or_else(
                         MarkedTextProperties::default,
                         MarkedTextProperties::from_dictionary,
                     ),
+                    inline_language: inline.as_ref().and_then(|dictionary| {
+                        match dictionary.get("Lang") {
+                            Some(CosObject::String(text)) => {
+                                Some(InlineLanguage::Text(text.clone()))
+                            }
+                            Some(CosObject::Reference(key)) => {
+                                Some(InlineLanguage::Reference(*key))
+                            }
+                            _ => None,
+                        }
+                    }),
                     valid_sequence: operands_complete && valid_begin,
                     has_text: false,
                     has_image: false,

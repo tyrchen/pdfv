@@ -221,6 +221,8 @@ pub(crate) struct AccessibilityNode {
     pub has_language: bool,
     /// Bounded `/Lang` value.
     pub language: Option<String>,
+    /// Indirect local language string declaration for use-site validation.
+    pub language_reference: Option<ObjectKey>,
     /// Whether `/A` attributes exist.
     pub has_attributes: bool,
     /// Bounded role attribute value from `/A` when present.
@@ -413,7 +415,8 @@ pub(crate) fn build_accessibility_graph(
     let parent_tree_owners = collect_parent_tree_owners(document, &pages);
     let catalog = catalog_dictionary(document);
     let tagged = catalog.is_some_and(|catalog| catalog_marked(document, catalog));
-    let language = catalog.and_then(|catalog| text_string(catalog.get("Lang")));
+    let language =
+        catalog.and_then(|catalog| language_string(resolved_value(document, catalog.get("Lang"))));
     let Some(struct_tree) =
         catalog.and_then(|catalog| dictionary_from_value(document, catalog.get("StructTreeRoot")))
     else {
@@ -615,7 +618,8 @@ fn traverse_structure_tree(
             has_expansion_text: dictionary.get("E").is_some(),
             expansion_text_bytes: text_bytes(dictionary.get("E")),
             has_language: dictionary.get("Lang").is_some(),
-            language: text_string(dictionary.get("Lang")),
+            language: language_string(dictionary.get("Lang")),
+            language_reference: dictionary.get("Lang").and_then(object_ref),
             has_attributes: dictionary.get("A").is_some(),
             role_attribute: attribute_text(document, dictionary, "Role"),
             list_numbering: attribute_text(document, dictionary, "ListNumbering"),
@@ -1649,6 +1653,13 @@ fn name_value(value: &CosObject) -> Option<String> {
 fn text_string(value: Option<&CosObject>) -> Option<String> {
     match value? {
         CosObject::String(value) => Some(String::from_utf8_lossy(value.as_bytes()).into_owned()),
+        _ => None,
+    }
+}
+
+fn language_string(value: Option<&CosObject>) -> Option<String> {
+    match value? {
+        CosObject::String(value) => Some(crate::pdf_text::decode(value.as_bytes())),
         _ => None,
     }
 }

@@ -978,10 +978,13 @@ struct ByteParser<'a> {
     decoder_registry: Option<DecoderRegistry>,
     options: ParseOptions<'a>,
     pos: usize,
+    end: usize,
     parse_facts: Vec<ParseFact>,
     warnings: Vec<ValidationWarning>,
     file_syntax: FileSyntax,
     startxref: Option<u64>,
+    startxref_marker: Option<usize>,
+    revision_probe_budget: usize,
     active_xref: Option<ActiveXrefSection>,
 }
 
@@ -1066,16 +1069,21 @@ impl<'a> ByteParser<'a> {
         decoder_registry: Option<DecoderRegistry>,
         options: ParseOptions<'a>,
     ) -> Self {
+        let end = source.len();
+        let revision_probe_budget = end.saturating_mul(2);
         Self {
             source,
             limits,
             decoder_registry,
             options,
             pos: 0,
+            end,
             parse_facts: Vec::new(),
             warnings: Vec::new(),
             file_syntax: FileSyntax::default(),
             startxref: None,
+            startxref_marker: None,
+            revision_probe_budget,
             active_xref: None,
         }
     }
@@ -1194,9 +1202,13 @@ impl<'a> ByteParser<'a> {
         objects: &mut ObjectStore,
         trailers: &mut Vec<Trailer>,
     ) -> Result<()> {
-        while self.pos < self.source.len() {
+        while self.pos < self.end {
             self.skip_ws_and_comments();
             if self.starts_with(EOF_MARKER) {
+                if self.has_linked_revision(objects)? {
+                    self.consume_bytes(EOF_MARKER)?;
+                    continue;
+                }
                 self.parse_post_eof_fact()?;
                 return Ok(());
             }
@@ -1204,6 +1216,7 @@ impl<'a> ByteParser<'a> {
                 let start = self.pos;
                 self.consume_bytes(b"startxref")?;
                 self.startxref = self.parse_unsigned::<u64>().ok().flatten();
+                self.startxref_marker = self.startxref.map(|_| start);
                 if self.startxref.is_none() {
                     self.pos = start;
                 }
@@ -1248,6 +1261,192 @@ impl<'a> ByteParser<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn has_linked_revision(
+        &mut self,
+        objects: &ObjectStore,
+    ) -> std::result::Result<bool, ParseError> {
+        let Some(previous) = self.startxref else {
+            return Ok(false);
+        };
+        let eof_end = self.pos.saturating_add(EOF_MARKER.len());
+        let mut cursor = eof_end;
+        let mut examined = 0_u64;
+        while let Some(marker) = self.source.find_bytes(b"startxref", cursor, self.end) {
+            cursor = marker.saturating_add(b"startxref".len());
+            examined = examined.saturating_add(1);
+            if examined > self.limits.max_objects {
+                return Err(ParseError::LimitExceeded {
+                    limit: "revision_markers",
+                });
+            }
+            let Some((section, eof)) = self.revision_marker(marker) else {
+                continue;
+            };
+            if previous > 0 && (eof_end..marker).contains(&section) {
+                if self
+                    .revision_trailer(section, marker)?
+                    .and_then(|dictionary| {
+                        optional_non_negative_offset(&dictionary, "Prev")
+                            .ok()
+                            .flatten()
+                    })
+                    == Some(previous)
+                {
+                    return Ok(true);
+                }
+            } else if previous == 0
+                && section < self.pos
+                && self.closes_linearized_body(objects, section, marker, eof)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn revision_marker(&self, marker: usize) -> Option<(usize, usize)> {
+        if !line_starts_at(&self.source, marker) {
+            return None;
+        }
+        let source = self.source.clone();
+        let cursor = marker.checked_add(b"startxref".len())?;
+        let mut probe = Self::new(source, self.limits.clone(), None, ParseOptions::default());
+        probe.pos = cursor;
+        // The integer and EOF must occupy their own lines.
+        probe.skip_xref_spaces();
+        probe.pos = offset_after_eol(&probe.source, probe.pos)?;
+        probe.skip_xref_spaces();
+        if !probe.peek_byte()?.is_ascii_digit() {
+            return None;
+        }
+        let section = probe.parse_unsigned::<usize>().ok()??;
+        probe.skip_xref_spaces();
+        probe.pos = offset_after_eol(&probe.source, probe.pos)?;
+        let eof = probe.pos;
+        if !probe.starts_with(EOF_MARKER) {
+            return None;
+        }
+        probe.pos = probe.pos.checked_add(EOF_MARKER.len())?;
+        probe.skip_xref_spaces();
+        (probe.pos == probe.source.len() || offset_after_eol(&probe.source, probe.pos).is_some())
+            .then_some((section, eof))
+    }
+
+    fn closes_linearized_body(
+        &mut self,
+        objects: &ObjectStore,
+        section: usize,
+        marker: usize,
+        eof: usize,
+    ) -> std::result::Result<bool, ParseError> {
+        let Some(dictionary) = objects
+            .values()
+            .min_by_key(|object| object.offset)
+            .and_then(|object| object.object.as_dictionary())
+        else {
+            return Ok(false);
+        };
+        if !matches!(dictionary.get("Linearized"), Some(CosObject::Integer(1))) {
+            return Ok(false);
+        }
+        let Some(body_end) =
+            integer_from_dictionary(dictionary, "L").and_then(|value| usize::try_from(value).ok())
+        else {
+            return Ok(false);
+        };
+        let eof_end = eof.saturating_add(EOF_MARKER.len());
+        if !(eof_end..=self.end).contains(&body_end) {
+            return Ok(false);
+        }
+        self.charge_revision_probe(body_end.saturating_sub(eof_end))?;
+        if !self
+            .source
+            .slice(eof_end, body_end)?
+            .iter()
+            .copied()
+            .all(is_ws)
+        {
+            return Ok(false);
+        }
+        let Some(early_marker) = self.startxref_marker.filter(|marker| section < *marker) else {
+            return Ok(false);
+        };
+        let Some(main_section) = self
+            .revision_trailer(section, early_marker)?
+            .and_then(|dictionary| {
+                optional_non_negative_offset(&dictionary, "Prev")
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|offset| usize::try_from(offset).ok())
+            .filter(|offset| (self.pos..marker).contains(offset))
+        else {
+            return Ok(false);
+        };
+        Ok(self.revision_trailer(main_section, marker)?.is_some())
+    }
+
+    fn revision_trailer(
+        &mut self,
+        section: usize,
+        marker: usize,
+    ) -> std::result::Result<Option<Dictionary>, ParseError> {
+        self.charge_revision_probe(marker.saturating_sub(section))?;
+        let mut probe = Self::new(
+            self.source.clone(),
+            self.limits.clone(),
+            None,
+            ParseOptions::default(),
+        );
+        probe.pos = section;
+        probe.end = marker;
+        let dictionary = if probe.starts_with(b"xref") {
+            let Some(dictionary) = probe.probe_classic_trailer().ok().flatten() else {
+                return Ok(None);
+            };
+            dictionary
+        } else {
+            let Ok(Some(object)) = probe.parse_indirect_object() else {
+                return Ok(None);
+            };
+            let CosObject::Stream(stream) = object.object else {
+                return Ok(None);
+            };
+            if !matches!(stream.dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("XRef"))
+            {
+                return Ok(None);
+            }
+            stream.dictionary
+        };
+        probe.skip_ws_and_comments();
+        Ok((probe.pos == probe.end).then_some(dictionary))
+    }
+
+    fn probe_classic_trailer(&mut self) -> std::result::Result<Option<Dictionary>, ParseError> {
+        self.consume_bytes(b"xref")?;
+        self.skip_xref_spaces();
+        if offset_after_eol(&self.source, self.pos).is_none() {
+            return Ok(None);
+        }
+        let (well_formed, _, entries) = self.read_classic_xref_entries()?;
+        if !well_formed || entries == 0 || !self.starts_with(b"trailer") {
+            return Ok(None);
+        }
+        self.consume_bytes(b"trailer")?;
+        self.skip_ws_and_comments();
+        self.parse_dictionary(0).map(Some)
+    }
+
+    fn charge_revision_probe(&mut self, bytes: usize) -> std::result::Result<(), ParseError> {
+        self.revision_probe_budget =
+            self.revision_probe_budget
+                .checked_sub(bytes)
+                .ok_or(ParseError::LimitExceeded {
+                    limit: "revision_probe_bytes",
+                })?;
         Ok(())
     }
 
@@ -1334,6 +1533,7 @@ impl<'a> ByteParser<'a> {
                 objects.insert(object);
             }
         }
+        trailers.sort_by_key(|trailer| trailer.offset);
         Ok(())
     }
 
@@ -1535,7 +1735,7 @@ impl<'a> ByteParser<'a> {
     }
 
     fn parse_header(&mut self) -> std::result::Result<(u64, PdfVersion), ParseError> {
-        let Some(header_pos) = self.source.find_bytes(HEADER_MARKER, 0, self.source.len()) else {
+        let Some(header_pos) = self.source.find_bytes(HEADER_MARKER, 0, self.end) else {
             return Err(ParseError::Malformed {
                 message: bounded("missing PDF header"),
             });
@@ -2018,7 +2218,7 @@ impl<'a> ByteParser<'a> {
                     })?;
                 let scan_end = data_start
                     .checked_add(max_scan)
-                    .map_or(self.source.len(), |end| end.min(self.source.len()));
+                    .map_or(self.end, |end| end.min(self.end));
                 let keyword_pos = self
                     .source
                     .find_bytes(ENDSTREAM_MARKER, data_start, scan_end)
@@ -2081,7 +2281,7 @@ impl<'a> ByteParser<'a> {
             .and_then(|offset| self.source.byte(offset))
             .is_some_and(|byte| byte.is_ascii_digit());
         self.file_syntax.xref_keyword_eol_compliant &= keyword_eol_compliant;
-        let (entries_well_formed, in_use) = self.read_classic_xref_entries()?;
+        let (entries_well_formed, in_use, _) = self.read_classic_xref_entries()?;
         self.push_fact(ParseFact::Xref {
             section: ObjectLocation {
                 object: None,
@@ -2120,13 +2320,13 @@ impl<'a> ByteParser<'a> {
 
     fn read_classic_xref_entries(
         &mut self,
-    ) -> std::result::Result<(bool, BTreeMap<ObjectKey, u64>), ParseError> {
+    ) -> std::result::Result<(bool, BTreeMap<ObjectKey, u64>, u64), ParseError> {
         let mut compliant = true;
         let mut in_use = BTreeMap::new();
         let mut parsed_entries = 0_u64;
         loop {
             self.skip_ws_and_comments();
-            if self.pos >= self.source.len() || self.starts_with(b"trailer") {
+            if self.pos >= self.end || self.starts_with(b"trailer") {
                 break;
             }
             if self.starts_with(b"startxref") || self.starts_with(EOF_MARKER) {
@@ -2179,21 +2379,19 @@ impl<'a> ByteParser<'a> {
                         limit: "max_objects",
                     });
                 }
-                self.pos = next_line.unwrap_or_else(|| self.source.len());
+                self.pos = next_line.unwrap_or(self.end);
             }
         }
-        Ok((compliant, in_use))
+        Ok((compliant, in_use, parsed_entries))
     }
 
     fn parse_post_eof_fact(&mut self) -> std::result::Result<(), ParseError> {
         self.consume_bytes(EOF_MARKER)?;
-        let remaining =
-            self.source
-                .len()
-                .saturating_sub(self.pos)
-                .saturating_sub(count_trailing_ws(
-                    self.slice(self.pos, self.source.len())?.as_ref(),
-                ));
+        let remaining = self
+            .source
+            .len()
+            .saturating_sub(self.pos)
+            .saturating_sub(count_trailing_ws(self.slice(self.pos, self.end)?.as_ref()));
         if remaining > 0 {
             self.push_fact(ParseFact::PostEofData {
                 bytes: u64::try_from(remaining).map_err(|_| ParseError::ArithmeticOverflow {
@@ -2338,7 +2536,7 @@ impl<'a> ByteParser<'a> {
     }
 
     fn skip_line(&mut self) {
-        self.pos = next_line_start(&self.source, self.pos).unwrap_or_else(|| self.source.len());
+        self.pos = next_line_start(&self.source, self.pos).unwrap_or(self.end);
     }
 
     fn consume_bytes(&mut self, expected: &[u8]) -> std::result::Result<(), ParseError> {
@@ -2355,10 +2553,14 @@ impl<'a> ByteParser<'a> {
     }
 
     fn starts_with(&self, expected: &[u8]) -> bool {
-        self.source.starts_with(self.pos, expected)
+        expected.len() <= self.end.saturating_sub(self.pos)
+            && self.source.starts_with(self.pos, expected)
     }
 
     fn peek_byte(&self) -> Option<u8> {
+        if self.pos >= self.end {
+            return None;
+        }
         self.source.byte(self.pos)
     }
 
@@ -2369,6 +2571,11 @@ impl<'a> ByteParser<'a> {
     }
 
     fn slice(&self, start: usize, end: usize) -> std::result::Result<Cow<'_, [u8]>, ParseError> {
+        if end > self.end {
+            return Err(ParseError::Malformed {
+                message: bounded("token exceeds parser input"),
+            });
+        }
         self.source.slice(start, end)
     }
 
@@ -2405,6 +2612,10 @@ fn decode_hex_digit(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte.saturating_sub(b'A').saturating_add(10)),
         _ => None,
     }
+}
+
+fn line_starts_at(source: &SourceStorage, offset: usize) -> bool {
+    offset == 0 || matches!(source.byte(offset.saturating_sub(1)), Some(b'\r' | b'\n'))
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
@@ -3866,6 +4077,57 @@ trailer
                 }
             )
         }));
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(true, true)]
+    #[case(false, true)]
+    #[case(true, false)]
+    fn test_should_read_only_linked_incremental_revisions(
+        #[case] linked: bool,
+        #[case] has_entries: bool,
+    ) -> crate::Result<()> {
+        let mut bytes = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Lang (en) >>\nendobj\n".to_vec();
+        let first_xref = bytes.len();
+        bytes.extend_from_slice(
+            format!(
+                "xref\n0 2\n0000000000 65535 f\r\n0000000009 00000 n\r\ntrailer\n<< /Root 1 0 R \
+                 /Size 2 >>\nstartxref\n{first_xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        let next_object = bytes.len();
+        bytes.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Lang (fr) >>\nendobj\n");
+        let second_xref = bytes.len();
+        bytes.extend_from_slice(b"xref\n");
+        if has_entries {
+            bytes.extend_from_slice(format!("1 1\n{next_object:010} 00000 n\r\n").as_bytes());
+        }
+        let previous = if linked { first_xref } else { 9 };
+        bytes.extend_from_slice(
+            format!(
+                "trailer\n<< /Root 1 0 R /Size 2 /Prev {previous} \
+                 >>\nstartxref\n{second_xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+
+        let parsed = Parser::default().parse(Cursor::new(bytes))?;
+        let language = parsed
+            .catalog
+            .and_then(|root| parsed.objects.get(&root))
+            .and_then(|object| object.object.as_dictionary())
+            .and_then(|dictionary| dictionary.get("Lang"));
+        let expected: &[u8] = if linked && has_entries { b"fr" } else { b"en" };
+        assert!(matches!(language, Some(CosObject::String(value)) if value.as_bytes() == expected));
+        assert_eq!(
+            parsed
+                .parse_facts
+                .iter()
+                .any(|fact| matches!(fact, ParseFact::PostEofData { .. })),
+            !(linked && has_entries)
+        );
         Ok(())
     }
 

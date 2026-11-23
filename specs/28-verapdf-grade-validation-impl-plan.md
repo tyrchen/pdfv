@@ -104,6 +104,10 @@ Exit criteria: `metadata` unsupported clusters are below the readiness threshold
 
 Exit criteria: PDF/UA-1 and PDF/UA-2 reach readiness thresholds; missing-semantic-family count is zero for in-scope PDF/UA; accessibility oracle rows have no unexpected drift.
 
+The [rule check completion plan](./29-rule-check-completion-impl-plan.md) orders
+the remaining runtime gaps identified by the public oracle and defines the
+evidence required for each follow-up.
+
 ## 11. Phase G7 - Release Oracle and Drift Triage
 
 | # | Task | Spec | Effort |

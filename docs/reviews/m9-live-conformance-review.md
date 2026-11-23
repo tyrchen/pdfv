@@ -216,11 +216,36 @@ entry under `8.14.1-1`. [PDF/UA-1 fixtures](https://github.com/veraPDF/veraPDF-c
 The original four supplemental PDF/UA fixtures now have 73 unsupported
 evaluations, down from 90. All four document decisions remain `Incomplete`.
 
+## Language and Incremental Revisions
+
+Language rules read the catalog, reachable structure elements, ParentTree
+targets of annotations and AcroForm fields, and `BDC` property lists. Language
+strings use PDFDocEncoding, UTF-16BE, or UTF-8 with a byte-order mark. The
+profile determines whether empty tags or digits in subtags are permitted.
+Reused content is checked again when it resolves to different language
+evidence. Greenfield 1.30.4 keeps the first resource context for a reused
+stream within each stream model type.
+
+The parser follows linked incremental sections across intermediate `%%EOF`
+markers and handles the leading EOF in the tested linearized PDFs. It keeps
+post-EOF evidence for unlinked trailing data. Complete active-object precedence
+for free and compressed entries remains in the parser audit.
+
+| Profile | Language controls with matching assertion counts |
+| --- | ---: |
+| PDF/A-1a | 11 / 11 |
+| PDF/A-2a | 9 / 9 |
+| PDF/UA-1 | 26 / 26 |
+| PDF/UA-2 | 26 / 26 |
+
+Each of the four supplemental PDF/UA files now reports one passing language
+assertion. The total unsupported count fell from 73 to 14. The document
+decisions remain `Incomplete` in these four files.
+
 ## Release Blockers
 
 - The four supplemental PDF/UA documents remain incomplete. Open work includes
-  inherited and predefined non-Identity font encodings, symbolic TrueType
-  font evidence, and the scope of language, alternative, and replacement text.
+  alternative and replacement text, readable text strings, and glyph widths.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

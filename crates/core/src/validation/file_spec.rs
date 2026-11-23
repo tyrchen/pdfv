@@ -1,9 +1,6 @@
 //! File specification checks with physical COS and embedded-file name-tree scope.
 
-use std::{
-    char::REPLACEMENT_CHARACTER,
-    collections::{HashMap, HashSet},
-};
+use std::collections::{HashMap, HashSet};
 
 use super::{
     GenericModel, ModelObjectRef, catalog_dictionary_value,
@@ -12,7 +9,7 @@ use super::{
 };
 use crate::{
     BoundedText, CosObject, Dictionary, ModelValue, ObjectLocation, ParsedDocument, PropertyName,
-    Result, ValidationError,
+    Result, ValidationError, pdf_text,
 };
 
 pub(crate) const FAMILY: &str = "cosFileSpecification";
@@ -46,9 +43,9 @@ impl Evidence<'_> {
             ),
             "F" | "UF" => {
                 match semantic_names::resolve(document, self.dictionary.get(name.as_str())) {
-                    Some(CosObject::String(text)) => {
-                        ModelValue::String(BoundedText::unchecked(pdf_text(text.as_bytes())))
-                    }
+                    Some(CosObject::String(text)) => ModelValue::String(BoundedText::unchecked(
+                        pdf_text::decode(text.as_bytes()),
+                    )),
                     _ => ModelValue::Null,
                 }
             }
@@ -225,7 +222,7 @@ fn name_tree_entries<'a>(
         let decoded_key = match semantic_names::resolve(document, Some(key)) {
             Some(CosObject::String(text)) => {
                 charge_key_bytes(remaining_key_bytes, text.as_bytes().len())?;
-                pdf_text(text.as_bytes())
+                pdf_text::decode(text.as_bytes())
             }
             Some(CosObject::Name(name)) => {
                 charge_key_bytes(remaining_key_bytes, name.as_bytes().len())?;
@@ -252,46 +249,6 @@ fn charge_key_bytes(remaining_key_bytes: &mut u64, bytes: usize) -> Result<()> {
         .checked_sub(u64::try_from(bytes).map_err(|_| limit())?)
         .ok_or_else(limit)?;
     Ok(())
-}
-
-fn pdf_text(bytes: &[u8]) -> String {
-    if let Some(utf8) = bytes.strip_prefix(b"\xef\xbb\xbf") {
-        return String::from_utf8_lossy(utf8).into_owned();
-    }
-    if let Some(utf16) = bytes.strip_prefix(b"\xfe\xff") {
-        let (units, remainder) = utf16.as_chunks::<2>();
-        let decoded = char::decode_utf16(units.iter().copied().map(u16::from_be_bytes));
-        let mut text: String = decoded
-            .map(|value| value.unwrap_or(REPLACEMENT_CHARACTER))
-            .collect();
-        if !remainder.is_empty() {
-            text.push(REPLACEMENT_CHARACTER);
-        }
-        return text;
-    }
-    bytes.iter().copied().map(pdf_doc_encoding).collect()
-}
-
-fn pdf_doc_encoding(byte: u8) -> char {
-    // PDFDocEncoding is ISO-8859-1 with these reassigned positions.
-    const DIACRITICS: [char; 8] = ['˘', 'ˇ', 'ˆ', '˙', '˝', '˛', '˚', '˜'];
-    const SYMBOLS: [char; 31] = [
-        '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚',
-        '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š', 'ž',
-    ];
-    match byte {
-        0x18..=0x1f => DIACRITICS
-            .get(usize::from(byte.saturating_sub(0x18)))
-            .copied()
-            .unwrap_or(REPLACEMENT_CHARACTER),
-        0x80..=0x9e => SYMBOLS
-            .get(usize::from(byte.saturating_sub(0x80)))
-            .copied()
-            .unwrap_or(REPLACEMENT_CHARACTER),
-        0x7f | 0x9f => REPLACEMENT_CHARACTER,
-        0xa0 => '€',
-        _ => char::from(byte),
-    }
 }
 
 #[cfg(test)]

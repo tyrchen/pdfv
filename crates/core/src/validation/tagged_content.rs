@@ -154,27 +154,7 @@ impl Scan<'_> {
 
     fn mark(&self, before: &Context, span: &MarkedContentSpan) -> Result<Evidence> {
         let document = self.graph.document;
-        let properties = span
-            .properties
-            .and_then(|key| document.objects.get(&key))
-            .and_then(|object| object.object.as_dictionary())
-            .or_else(|| {
-                let name = span.properties_name.as_ref()?;
-                self.resources
-                    .dictionaries
-                    .iter()
-                    .rev()
-                    .find_map(|resources| {
-                        let dictionary =
-                            resolve_dictionary_value(document, resources.get("Properties"))?;
-                        resolve_dictionary_value(
-                            document,
-                            dictionary
-                                .entries()
-                                .find_map(|(key, value)| (key == name).then_some(value)),
-                        )
-                    })
-            });
+        let properties = property_list(document, &self.resources, span);
         let mcid = span.mcid.or_else(|| {
             semantic_names::resolve(
                 document,
@@ -240,6 +220,28 @@ impl Scan<'_> {
             _ => false,
         }
     }
+}
+
+pub(super) fn property_list<'a>(
+    document: &'a ParsedDocument,
+    resources: &EffectiveResources<'a>,
+    span: &MarkedContentSpan,
+) -> Option<&'a Dictionary> {
+    span.properties
+        .and_then(|key| document.objects.get(&key))
+        .and_then(|object| object.object.as_dictionary())
+        .or_else(|| {
+            let name = span.properties_name.as_ref()?;
+            resources.dictionaries.iter().rev().find_map(|resources| {
+                let dictionary = resolve_dictionary_value(document, resources.get("Properties"))?;
+                resolve_dictionary_value(
+                    document,
+                    dictionary
+                        .entries()
+                        .find_map(|(key, value)| (key == name).then_some(value)),
+                )
+            })
+        })
 }
 
 fn has_language(document: &ParsedDocument, value: Option<&CosObject>) -> bool {
