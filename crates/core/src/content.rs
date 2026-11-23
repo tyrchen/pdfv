@@ -3,7 +3,8 @@
 use std::{collections::BTreeMap, fmt, ops::Range};
 
 use crate::{
-    BoundedText, ObjectKey, ObjectLocation, ParseError, PdfName, ResourceLimits, ValidationWarning,
+    BoundedText, CosObject, Dictionary, ObjectKey, ObjectLocation, ParseError, PdfName,
+    ResourceLimits, ValidationWarning, parser::parse_content_dictionary,
 };
 
 const DEFAULT_MAX_OPERATOR_NAME_BYTES: usize = 32;
@@ -71,6 +72,8 @@ pub(crate) struct ContentStreamSummary {
     /// Rendering-intent names retained with their use sites.
     pub rendering_intents: Vec<(PdfName, ObjectLocation)>,
     pub(crate) text_operands: BTreeMap<u64, TextOperand>,
+    /// A marked-content or invocation operand group exceeded a configured cap.
+    pub(crate) scoped_operands_truncated: bool,
     /// Recoverable parsing warnings.
     pub warnings: Vec<ValidationWarning>,
     /// Whether parsing stopped at an operator cap.
@@ -164,6 +167,8 @@ pub(crate) enum OperatorFact {
     },
     /// Marked-content operator.
     MarkedContent {
+        /// Actual operator, independent of the marked tag name.
+        op: OperatorName,
         /// Marked-content tag.
         tag: PdfName,
         /// Properties object when recoverable from operands.
@@ -361,12 +366,40 @@ pub(crate) struct MarkedContentSpan {
     pub properties: Option<ObjectKey>,
     /// Optional named property-list resource.
     pub properties_name: Option<PdfName>,
+    /// Presence of the text and language entries in a direct property list.
+    pub inline_text: MarkedTextProperties,
+    /// Whether the begin operator has a valid form and a matching end operator.
+    pub valid_sequence: bool,
     /// Whether text-show operators appeared inside this span.
     pub has_text: bool,
     /// Whether image or `XObject` invocation operators appeared inside this span.
     pub has_image: bool,
     /// Deterministic location.
     pub location: ObjectLocation,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "marked-content text attributes are independently optional PDF entries"
+)]
+pub(crate) struct MarkedTextProperties {
+    pub(crate) actual_text: bool,
+    pub(crate) alt: bool,
+    pub(crate) expansion: bool,
+    pub(crate) language: bool,
+}
+
+impl MarkedTextProperties {
+    pub(crate) fn from_dictionary(dictionary: &Dictionary) -> Self {
+        let present = |key| matches!(dictionary.get(key), Some(CosObject::String(_)));
+        Self {
+            actual_text: present("ActualText"),
+            alt: present("Alt"),
+            expansion: present("E"),
+            language: present("Lang"),
+        }
+    }
 }
 
 /// Resource-use summary emitted for Phase 16 resolution.
@@ -511,6 +544,7 @@ pub(crate) fn summarize_content_stream_with_text(
         resource_uses: Vec::new(),
         rendering_intents: Vec::new(),
         text_operands: BTreeMap::new(),
+        scoped_operands_truncated: false,
         warnings: Vec::new(),
         truncated: false,
     };
@@ -543,8 +577,12 @@ pub(crate) fn summarize_content_stream_with_text(
                 )?;
                 let location =
                     operator_location(source, location_path, summary.operators_seen, offset);
+                let operands_complete = summary.warnings.len() == warned_at_operator;
+                if !operands_complete && matches!(op.as_str(), "BMC" | "BDC" | "EMC" | "Do") {
+                    summary.scoped_operands_truncated = true;
+                }
                 if retain_text
-                    && summary.warnings.len() == warned_at_operator
+                    && operands_complete
                     && matches!(op.as_str(), "Tj" | "TJ" | "'" | "\"")
                     && let Some(Operand::TextRange(range)) = operands.last()
                     && let Some(bytes) = decoded.get(range.clone())
@@ -561,6 +599,7 @@ pub(crate) fn summarize_content_stream_with_text(
                     op,
                     &operands,
                     operand_bytes,
+                    operands_complete,
                     location,
                     &mut parser,
                     &mut graphics_depth,
@@ -573,6 +612,11 @@ pub(crate) fn summarize_content_stream_with_text(
                 operand_bytes = 0;
                 warned_at_operator = summary.warnings.len();
             }
+        }
+    }
+    for unclosed in marked_stack {
+        if let Some(span) = summary.marked_content.get_mut(unclosed) {
+            span.valid_sequence = false;
         }
     }
     if !operands.is_empty() {
@@ -621,6 +665,7 @@ fn classify_operator(
     op: OperatorName,
     operands: &[Operand],
     operand_bytes: u64,
+    operands_complete: bool,
     location: ObjectLocation,
     parser: &mut ContentTokenizer<'_>,
     graphics_depth: &mut u32,
@@ -691,18 +736,57 @@ fn classify_operator(
                 Some(tag) => tag,
                 None => unknown_pdf_name(limits)?,
             };
-            let properties = properties_reference(operands);
-            let properties_name = properties_name(operands);
-            let mcid = inline_mcid(operands);
+            let properties = if op_name == "BDC"
+                && let [
+                    Operand::Name(_),
+                    Operand::Integer(_),
+                    Operand::Integer(_),
+                    Operand::Keyword(_),
+                ] = operands
+            {
+                properties_reference(operands)
+            } else {
+                None
+            };
+            let properties_name =
+                if let ("BDC", [Operand::Name(_), Operand::Name(name)]) = (op_name, operands) {
+                    Some(name.clone())
+                } else {
+                    None
+                };
             if matches!(op_name, "BMC" | "BDC") {
+                let inline = match operands {
+                    [Operand::Name(_), Operand::Composite(bytes)] if op_name == "BDC" => {
+                        match parse_content_dictionary(bytes, limits) {
+                            Ok(dictionary) => Some(dictionary),
+                            Err(error @ ParseError::LimitExceeded { .. }) => return Err(error),
+                            Err(_) => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let mcid = inline
+                    .as_ref()
+                    .and_then(|dictionary| match dictionary.get("MCID") {
+                        Some(CosObject::Integer(value)) => Some(*value),
+                        _ => None,
+                    });
                 *marked_depth = marked_depth.saturating_add(1);
                 let span_index = summary.marked_content.len();
+                let valid_begin = matches!((op_name, operands), ("BMC", [Operand::Name(_)]))
+                    || (op_name == "BDC"
+                        && (inline.is_some() || properties.is_some() || properties_name.is_some()));
                 summary.marked_content.push(MarkedContentSpan {
                     tag: tag.clone(),
                     nesting_depth: *marked_depth,
                     mcid,
                     properties,
                     properties_name,
+                    inline_text: inline.as_ref().map_or_else(
+                        MarkedTextProperties::default,
+                        MarkedTextProperties::from_dictionary,
+                    ),
+                    valid_sequence: operands_complete && valid_begin,
                     has_text: false,
                     has_image: false,
                     location: location.clone(),
@@ -710,6 +794,7 @@ fn classify_operator(
                 marked_stack.push(span_index);
             }
             summary.facts.push(OperatorFact::MarkedContent {
+                op,
                 tag,
                 properties,
                 location,
@@ -717,8 +802,14 @@ fn classify_operator(
         }
         "EMC" => {
             *marked_depth = marked_depth.saturating_sub(1);
-            let _ = marked_stack.pop();
+            if let Some(index) = marked_stack.pop()
+                && let Some(span) = summary.marked_content.get_mut(index)
+                && (!operands_complete || !operands.is_empty())
+            {
+                span.valid_sequence = false;
+            }
             summary.facts.push(OperatorFact::MarkedContent {
+                op,
                 tag: PdfName::new(b"EMC".to_vec(), limits)?,
                 properties: None,
                 location,
@@ -806,7 +897,7 @@ fn classify_operator(
             push_color_fact(summary, op, operands, operand_bytes, location)?;
         }
         "Do" => {
-            if let Some(name) = first_name_operand(operands) {
+            if operands_complete && let [Operand::Name(name)] = operands {
                 mark_active_spans(summary, marked_stack, MarkedSpanFact::Image);
                 summary.resource_uses.push(ResourceUse {
                     family: ResourceFamily::XObject,
@@ -814,9 +905,10 @@ fn classify_operator(
                     operator: op.clone(),
                     location: location.clone(),
                 });
-                summary
-                    .facts
-                    .push(OperatorFact::XObjectInvoke { name, location });
+                summary.facts.push(OperatorFact::XObjectInvoke {
+                    name: name.clone(),
+                    location,
+                });
             } else {
                 push_unknown(summary, op, operands, location)?;
             }
@@ -897,48 +989,6 @@ fn first_name_operand(operands: &[Operand]) -> Option<PdfName> {
         Operand::Name(name) => Some(name.clone()),
         _ => None,
     })
-}
-
-fn properties_name(operands: &[Operand]) -> Option<PdfName> {
-    operands
-        .iter()
-        .filter_map(|operand| match operand {
-            Operand::Name(name) => Some(name.clone()),
-            _ => None,
-        })
-        .nth(1)
-}
-
-fn inline_mcid(operands: &[Operand]) -> Option<i64> {
-    operands.iter().find_map(|operand| match operand {
-        Operand::Composite(bytes) => parse_mcid_from_dictionary(bytes),
-        _ => None,
-    })
-}
-
-fn parse_mcid_from_dictionary(bytes: &[u8]) -> Option<i64> {
-    let needle = b"/MCID";
-    let start = bytes
-        .windows(needle.len())
-        .position(|window| window == needle)?;
-    let mut pos = start.saturating_add(needle.len());
-    while bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
-        pos = pos.saturating_add(1);
-    }
-    let number_start = pos;
-    if bytes.get(pos) == Some(&b'-') {
-        pos = pos.saturating_add(1);
-    }
-    while bytes.get(pos).is_some_and(u8::is_ascii_digit) {
-        pos = pos.saturating_add(1);
-    }
-    if pos == number_start || bytes.get(number_start..pos) == Some(&b"-"[..]) {
-        return None;
-    }
-    std::str::from_utf8(bytes.get(number_start..pos)?)
-        .ok()?
-        .parse::<i64>()
-        .ok()
 }
 
 fn properties_reference(operands: &[Operand]) -> Option<ObjectKey> {

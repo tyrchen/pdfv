@@ -14,6 +14,9 @@ const DEFAULT_MAX_STRUCTURE_NODES: u64 = 100_000;
 const DEFAULT_MAX_STRUCTURE_DEPTH: u32 = 128;
 const DEFAULT_MAX_PARENT_TREE_ENTRIES: u64 = 100_000;
 const MAX_ROLE_MAP_STEPS: u32 = 32;
+const PDF_17_NAMESPACE: &str = "http://iso.org/pdf/ssn";
+const PDF_20_NAMESPACE: &str = "http://iso.org/pdf2/ssn";
+pub(crate) const MATH_NAMESPACE: &str = "http://www.w3.org/1998/Math/MathML";
 const STANDARD_ROLES: &[&str] = &[
     "Document",
     "Part",
@@ -55,7 +58,12 @@ const STANDARD_ROLES: &[&str] = &[
     "Link",
     "Annot",
     "Ruby",
+    "RB",
+    "RP",
+    "RT",
     "Warichu",
+    "WP",
+    "WT",
     "Figure",
     "Formula",
     "Form",
@@ -66,7 +74,7 @@ const STANDARD_ROLES: &[&str] = &[
     "FENote",
     "Aside",
     "Sub",
-    "MathML",
+    "DocumentFragment",
 ];
 
 /// Default maximum structure nodes retained while building an accessibility graph.
@@ -101,6 +109,8 @@ pub(crate) struct AccessibilityGraph {
     pub language: Option<String>,
     /// Whether `/StructTreeRoot` exists and has a dictionary shape.
     pub has_structure_tree_root: bool,
+    /// Whether the root itself directly lists a content item under `/K`.
+    pub root_has_content_items: bool,
     /// Whether `/RoleMap` exists.
     pub role_map_present: bool,
     /// Whether `/ClassMap` exists.
@@ -127,6 +137,37 @@ pub(crate) struct AccessibilityGraph {
     pub warnings: Vec<ValidationWarning>,
     /// Whether construction stopped at a configured cap.
     pub truncated: bool,
+    content_parents: NumberTree,
+    nodes_by_key: BTreeMap<ObjectKey, AccessibilityNodeId>,
+}
+
+impl AccessibilityGraph {
+    pub(crate) fn node_from_key(&self, key: ObjectKey) -> Option<&AccessibilityNode> {
+        self.node(*self.nodes_by_key.get(&key)?)
+    }
+
+    pub(crate) fn content_parent(
+        &self,
+        document: &ParsedDocument,
+        owner: &Dictionary,
+        mcid: Option<i64>,
+    ) -> Result<Option<ObjectKey>> {
+        let tree = &self.content_parents;
+        if tree.capped {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_parent_tree_entries",
+            }
+            .into());
+        }
+        if let Some(key) = integer_value(resolved_value(document, owner.get("StructParent"))) {
+            return Ok(tree.structure_refs.get(&key).copied());
+        }
+        Ok(
+            integer_value(resolved_value(document, owner.get("StructParents")))
+                .zip(mcid)
+                .and_then(|(parent, mcid)| tree.mcid_parent(document, parent, mcid)),
+        )
+    }
 }
 
 /// One traversed structure element.
@@ -148,6 +189,12 @@ pub(crate) struct AccessibilityNode {
     pub parent: Option<AccessibilityNodeId>,
     /// Structure namespace URL from `/NS` when declared.
     pub namespace_url: Option<String>,
+    /// Namespace of the resolved standard role.
+    pub standard_namespace_url: Option<String>,
+    /// Original standard role when a role map overrides it.
+    pub remapped_standard_role: Option<String>,
+    /// First role changed within the same declared namespace.
+    pub same_namespace_remapping: Option<String>,
     /// Associated page object.
     pub page: Option<ObjectKey>,
     /// Associated page ordinal.
@@ -284,11 +331,34 @@ struct TraversalItem<'a> {
     depth: u32,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct NumberTree {
     entries: u64,
-    mcid_refs: BTreeMap<(ObjectKey, i64), ObjectKey>,
+    mcid_arrays: BTreeMap<i64, McidArray>,
+    structure_refs: BTreeMap<i64, ObjectKey>,
     object_refs: BTreeMap<ObjectKey, ObjectKey>,
+    capped: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum McidArray {
+    Indirect(ObjectKey),
+    Direct(Vec<Option<ObjectKey>>),
+}
+
+impl NumberTree {
+    fn mcid_parent(&self, document: &ParsedDocument, parent: i64, mcid: i64) -> Option<ObjectKey> {
+        let index = usize::try_from(mcid).ok()?;
+        match self.mcid_arrays.get(&parent)? {
+            McidArray::Direct(items) => items.get(index).copied().flatten(),
+            McidArray::Indirect(key) => {
+                let CosObject::Array(items) = &document.objects.get(key)?.object else {
+                    return None;
+                };
+                items.get(index).and_then(object_ref)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -351,6 +421,7 @@ pub(crate) fn build_accessibility_graph(
             tagged,
             language,
             has_structure_tree_root: false,
+            root_has_content_items: false,
             role_map_present: false,
             class_map_present: false,
             id_tree_entries: 0,
@@ -364,10 +435,11 @@ pub(crate) fn build_accessibility_graph(
             artifacts: Vec::new(),
             warnings: Vec::new(),
             truncated: false,
+            content_parents: NumberTree::default(),
+            nodes_by_key: BTreeMap::new(),
         });
     };
 
-    let role_map = role_map(struct_tree);
     let mut warnings = Vec::new();
     let id_tree = struct_tree
         .get("IDTree")
@@ -382,20 +454,14 @@ pub(crate) fn build_accessibility_graph(
     let parent_tree = struct_tree
         .get("ParentTree")
         .map_or_else(NumberTree::default, |value| {
-            collect_parent_tree(
-                document,
-                value,
-                limits,
-                &page_ordinals,
-                &parent_tree_owners,
-                &mut warnings,
-            )
+            collect_parent_tree(document, value, limits, &parent_tree_owners, &mut warnings)
         });
     let parent_tree_next_key = integer_value(struct_tree.get("ParentTreeNextKey"));
     let mut graph = AccessibilityGraph {
         tagged,
         language,
         has_structure_tree_root: true,
+        root_has_content_items: root_has_content_items(document, struct_tree),
         role_map_present: struct_tree.get("RoleMap").is_some(),
         class_map_present: struct_tree.get("ClassMap").is_some(),
         id_tree_entries,
@@ -409,6 +475,8 @@ pub(crate) fn build_accessibility_graph(
         artifacts: Vec::new(),
         warnings,
         truncated: false,
+        content_parents: NumberTree::default(),
+        nodes_by_key: BTreeMap::new(),
     };
 
     if let Some(kids) = struct_tree.get("K") {
@@ -417,11 +485,15 @@ pub(crate) fn build_accessibility_graph(
             kids,
             limits,
             struct_tree,
-            &role_map,
             &page_ordinals,
             &mut graph,
         )?;
     }
+    graph.nodes_by_key = graph
+        .nodes
+        .iter()
+        .filter_map(|node| node.key.map(|key| (key, node.id)))
+        .collect();
     collect_content_associations(document, limits, &pages, &parent_tree, &mut graph);
     collect_parent_tree_object_associations(
         document,
@@ -430,6 +502,7 @@ pub(crate) fn build_accessibility_graph(
         &mut graph,
     );
     collect_artifacts(&mut graph);
+    graph.content_parents = parent_tree;
     Ok(graph)
 }
 
@@ -443,7 +516,6 @@ fn traverse_structure_tree(
     root: &CosObject,
     limits: &ResourceLimits,
     struct_tree: &Dictionary,
-    role_map: &BTreeMap<String, String>,
     page_ordinals: &BTreeMap<ObjectKey, usize>,
     graph: &mut AccessibilityGraph,
 ) -> Result<()> {
@@ -465,116 +537,137 @@ fn traverse_structure_tree(
                 .push(warning("structure tree depth cap reached"));
             continue;
         }
-        match item.value {
-            CosObject::Array(values) => {
-                for child in values.iter().rev() {
-                    stack.push(TraversalItem {
-                        value: child,
-                        parent: item.parent,
-                        inherited_page: item.inherited_page,
-                        depth: item.depth,
-                    });
-                }
+        if let Some(CosObject::Array(values)) = resolved_value(document, Some(item.value)) {
+            if let Some(key) = object_ref(item.value)
+                && !visited.insert(key)
+            {
+                graph
+                    .warnings
+                    .push(warning("structure tree array cycle detected"));
+                continue;
             }
-            value => {
-                let Some((key, offset, dictionary)) = structure_dictionary(document, value) else {
-                    continue;
-                };
-                if let Some(key) = key
-                    && !visited.insert(key)
-                {
-                    graph
-                        .warnings
-                        .push(warning("structure tree cycle detected"));
-                    continue;
-                }
-                let Some(role) = role_name(dictionary) else {
-                    continue;
-                };
-                if u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX)
-                    >= limits.max_structure_nodes
-                {
-                    graph.truncated = true;
-                    graph.warnings.push(warning("structure node cap reached"));
-                    continue;
-                }
-                let (normalized_role, circular_role_mapping) = normalize_role(&role, role_map);
-                let page = dictionary
-                    .get("Pg")
-                    .and_then(object_ref)
-                    .or(item.inherited_page);
-                let id = AccessibilityNodeId(graph.nodes.len());
-                if let Some(parent) = item.parent
-                    && let Some(parent_node) = graph.nodes.get_mut(parent.0)
-                {
-                    parent_node.children.push(id);
-                }
-                let mut node = AccessibilityNode {
-                    id,
-                    key,
-                    role,
-                    normalized_role,
+            for child in values.iter().rev() {
+                stack.push(TraversalItem {
+                    value: child,
                     parent: item.parent,
-                    namespace_url: namespace_url(document, dictionary),
-                    page,
-                    page_ordinal: page.and_then(|page| page_ordinals.get(&page).copied()),
-                    location: ObjectLocation {
-                        object: key,
-                        offset,
-                        path: Some(BoundedText::unchecked(format!(
-                            "root/structureElement[{}]",
-                            id.0
-                        ))),
-                    },
-                    children: Vec::new(),
-                    content_items: Vec::new(),
-                    has_alt_text: dictionary.get("Alt").is_some(),
-                    alt_text_bytes: text_bytes(dictionary.get("Alt")),
-                    has_actual_text: dictionary.get("ActualText").is_some(),
-                    actual_text_bytes: text_bytes(dictionary.get("ActualText")),
-                    has_expansion_text: dictionary.get("E").is_some(),
-                    expansion_text_bytes: text_bytes(dictionary.get("E")),
-                    has_language: dictionary.get("Lang").is_some(),
-                    language: text_string(dictionary.get("Lang")),
-                    has_attributes: dictionary.get("A").is_some(),
-                    role_attribute: attribute_text(document, dictionary, "Role"),
-                    list_numbering: attribute_text(document, dictionary, "ListNumbering"),
-                    note_type: attribute_text(document, dictionary, "NoteType"),
-                    row_span: attribute_positive_u32(document, dictionary, "RowSpan").unwrap_or(1),
-                    col_span: attribute_positive_u32(document, dictionary, "ColSpan").unwrap_or(1),
-                    headers: attribute_texts(document, dictionary, "Headers"),
-                    scope: attribute_text(document, dictionary, "Scope"),
-                    has_class: dictionary.get("C").is_some(),
-                    has_id: dictionary.get("ID").is_some(),
-                    id_text: element_id(dictionary),
-                    id_tree_resolved: element_id(dictionary).is_some_and(|id| {
-                        graph
-                            .id_tree
-                            .get(&id)
-                            .is_some_and(|mapped| Some(*mapped) == key)
-                    }),
-                    contains_parent: dictionary.get("P").is_some(),
-                    contains_ref: false,
-                    non_standard_role: false,
-                    circular_role_mapping,
-                    class_map_resolved: class_references_resolve(struct_tree, dictionary),
-                };
-                node.non_standard_role = !is_standard_role(&node.normalized_role);
-                let mut collector = KidCollector {
-                    document,
-                    node_id: id,
-                    page,
-                    page_ordinals,
-                    graph,
-                    stack: &mut stack,
+                    inherited_page: item.inherited_page,
                     depth: item.depth,
-                };
-                collect_kids(dictionary.get("K"), &mut node, &mut collector)?;
-                graph.nodes.push(node);
+                });
             }
+            continue;
         }
+        let Some((key, offset, dictionary)) = structure_dictionary(document, item.value) else {
+            continue;
+        };
+        if let Some(key) = key
+            && !visited.insert(key)
+        {
+            graph
+                .warnings
+                .push(warning("structure tree cycle detected"));
+            continue;
+        }
+        let Some(role) = role_name(document, dictionary) else {
+            continue;
+        };
+        if u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX) >= limits.max_structure_nodes {
+            graph.truncated = true;
+            graph.warnings.push(warning("structure node cap reached"));
+            continue;
+        }
+        let mapped = resolve_role(document, struct_tree, dictionary, &role);
+        let page = dictionary
+            .get("Pg")
+            .and_then(object_ref)
+            .or(item.inherited_page);
+        let id = AccessibilityNodeId(graph.nodes.len());
+        if let Some(parent) = item.parent
+            && let Some(parent_node) = graph.nodes.get_mut(parent.0)
+        {
+            parent_node.children.push(id);
+        }
+        let mut node = AccessibilityNode {
+            id,
+            key,
+            role,
+            normalized_role: mapped.name,
+            parent: item.parent,
+            namespace_url: namespace_url(document, dictionary),
+            standard_namespace_url: mapped.standard_namespace_url,
+            remapped_standard_role: mapped.remapped_standard_role,
+            same_namespace_remapping: mapped.same_namespace_remapping,
+            page,
+            page_ordinal: page.and_then(|page| page_ordinals.get(&page).copied()),
+            location: ObjectLocation {
+                object: key,
+                offset,
+                path: Some(BoundedText::unchecked(format!(
+                    "root/structureElement[{}]",
+                    id.0
+                ))),
+            },
+            children: Vec::new(),
+            content_items: Vec::new(),
+            has_alt_text: dictionary.get("Alt").is_some(),
+            alt_text_bytes: text_bytes(dictionary.get("Alt")),
+            has_actual_text: dictionary.get("ActualText").is_some(),
+            actual_text_bytes: text_bytes(dictionary.get("ActualText")),
+            has_expansion_text: dictionary.get("E").is_some(),
+            expansion_text_bytes: text_bytes(dictionary.get("E")),
+            has_language: dictionary.get("Lang").is_some(),
+            language: text_string(dictionary.get("Lang")),
+            has_attributes: dictionary.get("A").is_some(),
+            role_attribute: attribute_text(document, dictionary, "Role"),
+            list_numbering: attribute_text(document, dictionary, "ListNumbering"),
+            note_type: attribute_text(document, dictionary, "NoteType"),
+            row_span: attribute_positive_u32(document, dictionary, "RowSpan").unwrap_or(1),
+            col_span: attribute_positive_u32(document, dictionary, "ColSpan").unwrap_or(1),
+            headers: attribute_texts(document, dictionary, "Headers"),
+            scope: attribute_text(document, dictionary, "Scope"),
+            has_class: dictionary.get("C").is_some(),
+            has_id: dictionary.get("ID").is_some(),
+            id_text: element_id(dictionary),
+            id_tree_resolved: element_id(dictionary).is_some_and(|id| {
+                graph
+                    .id_tree
+                    .get(&id)
+                    .is_some_and(|mapped| Some(*mapped) == key)
+            }),
+            contains_parent: dictionary.get("P").is_some(),
+            contains_ref: false,
+            non_standard_role: !mapped.is_standard,
+            circular_role_mapping: mapped.circular,
+            class_map_resolved: class_references_resolve(struct_tree, dictionary),
+        };
+        let mut collector = KidCollector {
+            document,
+            node_id: id,
+            page,
+            page_ordinals,
+            graph,
+            stack: &mut stack,
+            depth: item.depth,
+        };
+        collect_kids(dictionary.get("K"), &mut node, &mut collector)?;
+        graph.nodes.push(node);
     }
     Ok(())
+}
+
+fn root_has_content_items(document: &ParsedDocument, root: &Dictionary) -> bool {
+    let is_item = |value| match resolved_value(document, Some(value)) {
+        Some(CosObject::Integer(_)) => true,
+        Some(CosObject::Dictionary(dictionary)) => is_mcr(dictionary) || is_objr(dictionary),
+        _ => false,
+    };
+    let Some(kids) = resolved_value(document, root.get("K")) else {
+        return false;
+    };
+    if let CosObject::Array(values) = kids {
+        values.iter().any(is_item)
+    } else {
+        is_item(kids)
+    }
 }
 
 fn collect_kids<'a>(
@@ -585,17 +678,12 @@ fn collect_kids<'a>(
     let Some(kids) = kids else {
         return Ok(());
     };
-    match kids {
-        CosObject::Integer(mcid) => node.content_items.push(AccessibilityContentItem::Mcid {
-            mcid: *mcid,
-            page: collector.page,
-        }),
-        CosObject::Array(values) => {
-            for child in values.iter().rev() {
-                collect_kid_value(child, node, collector)?;
-            }
+    if let Some(CosObject::Array(values)) = resolved_value(collector.document, Some(kids)) {
+        for child in values.iter().rev() {
+            collect_kid_value(child, node, collector)?;
         }
-        value => collect_kid_value(value, node, collector)?,
+    } else {
+        collect_kid_value(kids, node, collector)?;
     }
     Ok(())
 }
@@ -605,7 +693,7 @@ fn collect_kid_value<'a>(
     node: &mut AccessibilityNode,
     collector: &mut KidCollector<'a, '_>,
 ) -> Result<()> {
-    if let CosObject::Integer(mcid) = value {
+    if let Some(CosObject::Integer(mcid)) = resolved_value(collector.document, Some(value)) {
         node.content_items.push(AccessibilityContentItem::Mcid {
             mcid: *mcid,
             page: collector.page,
@@ -617,7 +705,7 @@ fn collect_kid_value<'a>(
         return Ok(());
     };
     if is_mcr(dictionary) {
-        let mcid = integer_value(dictionary.get("MCID"));
+        let mcid = integer_value(resolved_value(collector.document, dictionary.get("MCID")));
         let item_page = dictionary.get("Pg").and_then(object_ref).or(collector.page);
         if let Some(mcid) = mcid {
             node.content_items.push(AccessibilityContentItem::Mcid {
@@ -669,11 +757,6 @@ fn collect_content_associations(
     parent_tree: &NumberTree,
     graph: &mut AccessibilityGraph,
 ) {
-    let node_by_key = graph
-        .nodes
-        .iter()
-        .filter_map(|node| node.key.map(|key| (key, node.id)))
-        .collect::<BTreeMap<_, _>>();
     for page in pages {
         let struct_parent = integer_value(page.dictionary.get("StructParents"));
         let properties = page_properties(document, page.dictionary);
@@ -722,14 +805,8 @@ fn collect_content_associations(
                     explicit_node_for_mcid(graph, page.key, mcid).or_else(|| {
                         struct_parent.and_then(|parent| {
                             parent_tree
-                                .mcid_refs
-                                .get(&(page.key, mcid))
-                                .or_else(|| {
-                                    parent_tree
-                                        .mcid_refs
-                                        .get(&(synthetic_parent_key(parent)?, mcid))
-                                })
-                                .and_then(|key| node_by_key.get(key).copied())
+                                .mcid_parent(document, parent, mcid)
+                                .and_then(|key| graph.nodes_by_key.get(&key).copied())
                         })
                     })
                 });
@@ -781,14 +858,6 @@ fn explicit_node_for_mcid(
     })
 }
 
-fn synthetic_parent_key(parent: i64) -> Option<ObjectKey> {
-    let number = u32::try_from(parent).ok().and_then(NonZeroU32::new)?;
-    Some(ObjectKey {
-        number,
-        generation: u16::MAX,
-    })
-}
-
 fn collect_artifacts(graph: &mut AccessibilityGraph) {
     let mut seen = BTreeSet::new();
     for node in &graph.nodes {
@@ -825,7 +894,6 @@ fn collect_parent_tree(
     document: &ParsedDocument,
     value: &CosObject,
     limits: &ResourceLimits,
-    page_ordinals: &BTreeMap<ObjectKey, usize>,
     owners: &BTreeMap<i64, ParentTreeOwner>,
     warnings: &mut Vec<ValidationWarning>,
 ) -> NumberTree {
@@ -842,32 +910,27 @@ fn collect_parent_tree(
             warnings.push(warning("parent tree cycle detected"));
             continue;
         }
-        if let Some(CosObject::Array(kids)) = dictionary.get("Kids") {
+        if let Some(CosObject::Array(kids)) = resolved_value(document, dictionary.get("Kids")) {
             for kid in kids.iter().rev() {
                 stack.push(kid);
             }
         }
-        if let Some(CosObject::Array(nums)) = dictionary.get("Nums") {
+        if let Some(CosObject::Array(nums)) = resolved_value(document, dictionary.get("Nums")) {
             for pair in nums.chunks(2) {
                 if tree.entries >= limits.max_parent_tree_entries {
                     warnings.push(warning("parent tree entry cap reached"));
+                    tree.capped = true;
                     return tree;
                 }
-                let Some(CosObject::Integer(parent_key)) = pair.first() else {
+                let Some(CosObject::Integer(parent_key)) = resolved_value(document, pair.first())
+                else {
                     continue;
                 };
                 let Some(value) = pair.get(1) else {
                     continue;
                 };
                 tree.entries = tree.entries.saturating_add(1);
-                collect_parent_tree_value(
-                    document,
-                    *parent_key,
-                    value,
-                    page_ordinals,
-                    owners,
-                    &mut tree,
-                );
+                collect_parent_tree_value(document, *parent_key, value, owners, &mut tree);
             }
         }
     }
@@ -878,48 +941,23 @@ fn collect_parent_tree_value(
     document: &ParsedDocument,
     parent_key: i64,
     value: &CosObject,
-    page_ordinals: &BTreeMap<ObjectKey, usize>,
     owners: &BTreeMap<i64, ParentTreeOwner>,
     tree: &mut NumberTree,
 ) {
-    if let Some(owner) = owners.get(&parent_key)
-        && owner.kind != ParentTreeOwnerKind::Page
-    {
-        if let Some(element_key) = object_ref(value) {
-            tree.object_refs.insert(owner.object, element_key);
+    let resolved = resolved_value(document, Some(value));
+    if let Some(CosObject::Array(values)) = resolved {
+        let entries = object_ref(value).map_or_else(
+            || McidArray::Direct(values.iter().map(object_ref).collect()),
+            McidArray::Indirect,
+        );
+        tree.mcid_arrays.insert(parent_key, entries);
+    } else if let (Some(element), Some(CosObject::Dictionary(_))) = (object_ref(value), resolved) {
+        tree.structure_refs.insert(parent_key, element);
+        if let Some(owner) = owners.get(&parent_key)
+            && owner.kind != ParentTreeOwnerKind::Page
+        {
+            tree.object_refs.insert(owner.object, element);
         }
-        return;
-    }
-    let page_key = page_ordinals
-        .keys()
-        .find(|page| {
-            document
-                .objects
-                .get(page)
-                .and_then(|object| object.object.as_dictionary())
-                .and_then(|dictionary| integer_value(dictionary.get("StructParents")))
-                == Some(parent_key)
-        })
-        .copied()
-        .or_else(|| synthetic_parent_key(parent_key));
-    let Some(page_key) = page_key else {
-        return;
-    };
-    match value {
-        CosObject::Array(values) => {
-            for (index, item) in values.iter().enumerate() {
-                let Some(element_key) = object_ref(item) else {
-                    continue;
-                };
-                if let Ok(mcid) = i64::try_from(index) {
-                    tree.mcid_refs.insert((page_key, mcid), element_key);
-                }
-            }
-        }
-        CosObject::Reference(element_key) => {
-            tree.mcid_refs.insert((page_key, 0), *element_key);
-        }
-        _ => {}
     }
 }
 
@@ -999,17 +1037,12 @@ fn collect_parent_tree_object_associations(
     owners: &BTreeMap<i64, ParentTreeOwner>,
     graph: &mut AccessibilityGraph,
 ) {
-    let node_by_key = graph
-        .nodes
-        .iter()
-        .filter_map(|node| node.key.map(|key| (key, node.id)))
-        .collect::<BTreeMap<_, _>>();
     let owners_by_object = owners
         .values()
         .map(|owner| (owner.object, *owner))
         .collect::<BTreeMap<_, _>>();
     for (object, element) in &parent_tree.object_refs {
-        let Some(node) = node_by_key.get(element).copied() else {
+        let Some(node) = graph.nodes_by_key.get(element).copied() else {
             graph.warnings.push(warning(
                 "parent tree object reference targets unknown structure element",
             ));
@@ -1407,29 +1440,97 @@ fn mcid_from_value(document: &ParsedDocument, value: &CosObject) -> Option<i64> 
         .and_then(|dictionary| integer_value(dictionary.get("MCID")))
 }
 
-fn role_map(struct_tree: &Dictionary) -> BTreeMap<String, String> {
-    let Some(CosObject::Dictionary(dictionary)) = struct_tree.get("RoleMap") else {
-        return BTreeMap::new();
-    };
-    dictionary
-        .iter()
-        .filter_map(|(key, value)| name_value(value).map(|value| (name_to_string(key), value)))
-        .collect()
+#[derive(Debug)]
+struct ResolvedRole {
+    name: String,
+    standard_namespace_url: Option<String>,
+    remapped_standard_role: Option<String>,
+    same_namespace_remapping: Option<String>,
+    is_standard: bool,
+    circular: bool,
 }
 
-fn normalize_role(role: &str, role_map: &BTreeMap<String, String>) -> (String, bool) {
-    let mut current = role.to_owned();
+fn resolve_role(
+    document: &ParsedDocument,
+    tree: &Dictionary,
+    element: &Dictionary,
+    source: &str,
+) -> ResolvedRole {
+    let original_namespace =
+        namespace_url(document, element).unwrap_or_else(|| PDF_17_NAMESPACE.to_owned());
+    let mut namespace = dictionary_from_value(document, element.get("NS"));
+    let mut uri = original_namespace.clone();
+    let mut name = source.to_owned();
     let mut seen = BTreeSet::new();
+    let mut same_namespace_remapping = None;
+    let mut first_standard_target = None;
+    let mut circular = false;
     for _ in 0..MAX_ROLE_MAP_STEPS {
-        if !seen.insert(current.clone()) {
-            return (current, true);
+        if !seen.insert((uri.clone(), name.clone())) {
+            circular = true;
+            break;
         }
-        let Some(next) = role_map.get(&current) else {
-            return (current, false);
+        let role_map_ns = namespace
+            .and_then(|dictionary| dictionary_from_value(document, dictionary.get("RoleMapNS")));
+        let map = role_map_ns.or_else(|| {
+            (uri == PDF_17_NAMESPACE)
+                .then(|| dictionary_from_value(document, tree.get("RoleMap")))
+                .flatten()
+        });
+        let Some(value) = map.and_then(|map| resolved_value(document, map.get(&name))) else {
+            break;
         };
-        current.clone_from(next);
+        let (target, target_namespace) = match value {
+            CosObject::Name(target) => (target, None),
+            CosObject::Array(items) => {
+                let (Some(CosObject::Name(target)), Some(namespace)) = (
+                    resolved_value(document, items.first()),
+                    dictionary_from_value(document, items.get(1)),
+                ) else {
+                    break;
+                };
+                (target, Some(namespace))
+            }
+            _ => break,
+        };
+        let target_uri = target_namespace
+            .and_then(|namespace| text_string(resolved_value(document, namespace.get("NS"))))
+            .unwrap_or_else(|| PDF_17_NAMESPACE.to_owned());
+        let target_name = name_to_string(target);
+        if is_standard_role(&target_name, &target_uri) {
+            first_standard_target.get_or_insert_with(|| (target_name.clone(), target_uri.clone()));
+        }
+        if role_map_ns.is_some() && target_name != name {
+            if target_uri == uri {
+                same_namespace_remapping.get_or_insert_with(|| format!("{uri}:{name}"));
+            } else if let Some((_, earlier)) = seen
+                .iter()
+                .find(|(earlier_uri, _)| *earlier_uri == target_uri)
+            {
+                same_namespace_remapping.get_or_insert_with(|| format!("{target_uri}:{earlier}"));
+            }
+        }
+        namespace = target_namespace;
+        uri = target_uri;
+        name = target_name;
     }
-    (current, true)
+    let is_standard = if let Some((standard_name, standard_namespace)) = first_standard_target {
+        name = standard_name;
+        uri = standard_namespace;
+        true
+    } else {
+        !circular && is_standard_role(&name, &uri)
+    };
+    let remapped = is_standard_role(source, &original_namespace)
+        && (!is_standard || name != source || uri != original_namespace);
+    ResolvedRole {
+        name,
+        standard_namespace_url: is_standard.then_some(uri),
+        remapped_standard_role: remapped.then(|| source.to_owned()),
+        same_namespace_remapping,
+        is_standard,
+        circular,
+    }
 }
 
 fn structure_dictionary<'a>(
@@ -1437,7 +1538,7 @@ fn structure_dictionary<'a>(
     value: &'a CosObject,
 ) -> Option<(Option<ObjectKey>, Option<u64>, &'a Dictionary)> {
     let (key, offset, dictionary) = dictionary_ref_or_inline(document, value)?;
-    if role_name(dictionary).is_some() || is_mcr(dictionary) || is_objr(dictionary) {
+    if role_name(document, dictionary).is_some() || is_mcr(dictionary) || is_objr(dictionary) {
         return Some((key, offset, dictionary));
     }
     None
@@ -1474,6 +1575,16 @@ fn dictionary_from_value<'a>(
     }
 }
 
+fn resolved_value<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&'a CosObject>,
+) -> Option<&'a CosObject> {
+    match value? {
+        CosObject::Reference(key) => document.objects.get(key).map(|object| &object.object),
+        value => Some(value),
+    }
+}
+
 fn catalog_dictionary(document: &ParsedDocument) -> Option<&Dictionary> {
     document
         .catalog
@@ -1487,8 +1598,8 @@ fn catalog_marked(document: &ParsedDocument, catalog: &Dictionary) -> bool {
         .is_some_and(|value| matches!(value, CosObject::Boolean(true)))
 }
 
-fn role_name(dictionary: &Dictionary) -> Option<String> {
-    dictionary.get("S").and_then(name_value)
+fn role_name(document: &ParsedDocument, dictionary: &Dictionary) -> Option<String> {
+    name_value(resolved_value(document, dictionary.get("S"))?)
 }
 
 fn is_mcr(dictionary: &Dictionary) -> bool {
@@ -1549,8 +1660,49 @@ fn text_bytes(value: Option<&CosObject>) -> u64 {
     }
 }
 
-fn is_standard_role(role: &str) -> bool {
-    STANDARD_ROLES.contains(&role)
+fn is_standard_role(role: &str, namespace: &str) -> bool {
+    match namespace {
+        MATH_NAMESPACE => true,
+        PDF_17_NAMESPACE => {
+            STANDARD_ROLES.contains(&role)
+                && !matches!(
+                    role,
+                    "DocumentFragment"
+                        | "Aside"
+                        | "Title"
+                        | "FENote"
+                        | "Sub"
+                        | "Em"
+                        | "Strong"
+                        | "Artifact"
+                )
+        }
+        PDF_20_NAMESPACE => {
+            (STANDARD_ROLES.contains(&role)
+                && !matches!(
+                    role,
+                    "Art"
+                        | "BlockQuote"
+                        | "TOC"
+                        | "TOCI"
+                        | "Index"
+                        | "Private"
+                        | "Quote"
+                        | "Note"
+                        | "Reference"
+                        | "BibEntry"
+                        | "Code"
+                ))
+                || role.strip_prefix('H').is_some_and(|suffix| {
+                    suffix
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|byte| matches!(byte, b'1'..=b'9'))
+                        && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        }
+        _ => false,
+    }
 }
 
 fn name_to_string(name: &PdfName) -> String {

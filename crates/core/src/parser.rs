@@ -1046,6 +1046,19 @@ pub(crate) fn parse_text_operand(
     }
 }
 
+pub(crate) fn parse_content_dictionary(
+    bytes: &[u8],
+    limits: &ResourceLimits,
+) -> std::result::Result<Dictionary, ParseError> {
+    let mut parser = ByteParser::new(
+        SourceStorage::Memory(Arc::from(bytes)),
+        limits.clone(),
+        None,
+        ParseOptions::default(),
+    );
+    parser.parse_dictionary(0)
+}
+
 impl<'a> ByteParser<'a> {
     fn new(
         source: SourceStorage,

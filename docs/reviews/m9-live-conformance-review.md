@@ -148,15 +148,34 @@ The supplemental manifest includes all five original negative controls.
 All 18 font comparisons and all 25 PDF/A-4 colour comparisons agree with
 veraPDF on the document outcome, with zero false-compliant rows.
 
+## PDF/UA Painted Content and Structure Follow-up
+
+PDF/UA content checks operate on actual painting, including text, path
+painting, shading, inline images, image XObjects, and the operators inside
+invoked Forms. Tagging evidence comes from the owning page or Form's
+ParentTree entry and a parent chain that reaches the structure tree root.
+An Artifact exemption requires a balanced, valid marked-content sequence.
+Invocations of a reused Form are checked independently when their tagging
+contexts differ.
+
+Imported structure rules use their applicable roles. The model resolves
+namespace role maps and follows `Div`, `Part`, and `NonStruct` wrappers
+when finding significant parents, children, and content items.
+
+The live PDF/UA-1 negative now reports both page-content failures for
+`7.1-3`. The PDF/UA-2 negative reports the Form-content failure for
+`8.2.2-1`. Both match veraPDF at the targeted rule and check count.
+Across the four PDF/UA fixtures, the unsupported rule observations dropped
+from 347 to 90. The nine supplemental PDF/A fixtures still match veraPDF.
+
 ## Release Blockers
 
 - The automatic fallback still selects the ten-rule `pdfv-m4` profile. veraPDF
   selects the full fallback profile. The live comparison marks the two
   executions as incompatible.
-- The four supplemental PDF/UA documents remain incomplete. The negative
-  controls exercise whether individual page and Form content items are tagged
-  or marked as artifacts. The positive controls also need more complete
-  structure and text semantics.
+- The four supplemental PDF/UA documents remain incomplete. Open work includes
+  Unicode mappings at text-show operators, symbolic TrueType font evidence,
+  and rules scoped to language strings and file specifications.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

@@ -6,6 +6,8 @@ mod device_color;
 pub(crate) mod glyphs;
 mod icc;
 mod semantic_names;
+pub(crate) mod structure_roles;
+mod tagged_content;
 mod xmp_extension;
 
 use std::{
@@ -2397,6 +2399,16 @@ impl ModelRegistry {
             ),
             family("operator", OPERATOR_PROPERTIES, OPERATOR_LINKS),
             family("markedContent", MARKED_CONTENT_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                tagged_content::MARKED,
+                tagged_content::MARKED_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                tagged_content::PAINTED,
+                tagged_content::PAINTED_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("inlineImage", INLINE_IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
             family("resourceUse", RESOURCE_USE_PROPERTIES, EMPTY_LINK_NAMES),
             family(
@@ -2539,7 +2551,9 @@ impl ModelRegistry {
         let mut by_name: BTreeMap<ObjectTypeName, Arc<dyn ModelFamily + Send + Sync>> =
             BTreeMap::new();
         let mut all_properties = BTreeSet::new();
-        for family in families {
+        let role_families = structure_roles::families()
+            .map(|role| family(role, STRUCTURE_ELEMENT_PROPERTIES, STRUCTURE_ELEMENT_LINKS));
+        for family in families.into_iter().chain(role_families) {
             for property in family.property_schema() {
                 all_properties.insert(property.name.clone());
             }
@@ -2570,6 +2584,7 @@ impl ModelRegistry {
 
     fn has_feature_family(&self, family: &ObjectTypeName) -> bool {
         !cos::is_primitive_family(family.as_str())
+            && structure_roles::rule_family(family.as_str()).is_none()
             && !matches!(
                 family.as_str(),
                 glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY
@@ -3469,6 +3484,10 @@ impl<'a> ModelGraph<'a> {
                     glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY
                 )
                 || cmap::FAMILIES.contains(&family.as_str())
+                || matches!(
+                    family.as_str(),
+                    tagged_content::MARKED | tagged_content::PAINTED
+                )
                 || device_color::FAMILIES.contains(&family.as_str())
         }) {
             materialized_families.insert(ObjectTypeName::unchecked("contentStream"));
@@ -3531,6 +3550,7 @@ impl<'a> ModelGraph<'a> {
     fn materializes_generic_roots(&self) -> bool {
         self.materialized_families.iter().any(|family| {
             !cos::is_primitive_family(family.as_str())
+                && structure_roles::rule_family(family.as_str()).is_none()
                 && !xmp_extension::FAMILIES.contains(&family.as_str())
                 && !semantic_names::FAMILIES.contains(&family.as_str())
                 && !device_color::FAMILIES.contains(&family.as_str())
@@ -3569,20 +3589,21 @@ impl<'a> ModelGraph<'a> {
 
     fn materializes_accessibility(&self) -> bool {
         self.materialized_families.iter().any(|family| {
-            matches!(
-                family.as_str(),
-                "accessibilityDocument"
-                    | "structureTreeRoot"
-                    | "structureElement"
-                    | "textChunk"
-                    | "imageChunk"
-                    | "accessibilityAnnotation"
-                    | "artifact"
-                    | "table"
-                    | "list"
-                    | "heading"
-                    | "link"
-            )
+            structure_roles::rule_family(family.as_str()).is_some()
+                || matches!(
+                    family.as_str(),
+                    "accessibilityDocument"
+                        | "structureTreeRoot"
+                        | "structureElement"
+                        | "textChunk"
+                        | "imageChunk"
+                        | "accessibilityAnnotation"
+                        | "artifact"
+                        | "table"
+                        | "list"
+                        | "heading"
+                        | "link"
+                )
         })
     }
 
@@ -3725,6 +3746,9 @@ impl<'a> ModelGraph<'a> {
             ("outline", "Outlines", "root/catalog[0]/outline[0]"),
             ("permissions", "Perms", "root/catalog[0]/permissions[0]"),
         ] {
+            if family == "structureTreeRoot" && self.active_flavour.is_some() {
+                continue;
+            }
             if let Some((key, offset, dictionary)) =
                 resolve_named_dictionary_from_option(self.document, dictionary.get(key_name))
             {
@@ -3895,7 +3919,9 @@ impl<'a> ModelGraph<'a> {
             ) {
                 continue;
             }
-            if family == "cMap" && self.active_flavour.is_some() {
+            if matches!(family, "cMap" | "structureElement" | "structureTreeRoot")
+                && self.active_flavour.is_some()
+            {
                 continue;
             }
             push_generic_model(
@@ -5826,6 +5852,7 @@ pub struct ContentStreamModel<'a> {
     is_form: bool,
     initial_color_state: Option<device_color::GraphicsState>,
     initial_text_state: Option<glyphs::TextState>,
+    initial_tag_context: Option<tagged_content::Context>,
     retain_glyph_text: bool,
     resource_context: Option<&'a crate::Dictionary>,
     context_prefix: String,
@@ -5845,7 +5872,7 @@ impl<'a> ContentStreamModel<'a> {
     fn identity_key(&self) -> String {
         match self.page_key {
             Some(page) => format!(
-                "contentStream:{}:{}:{}:{}:{:?}:{:?}",
+                "contentStream:{}:{}:{}:{}:{:?}:{:?}:{:?}",
                 page.number,
                 page.generation,
                 self.key.number,
@@ -5854,6 +5881,7 @@ impl<'a> ContentStreamModel<'a> {
                 self.initial_text_state
                     .as_ref()
                     .map(glyphs::TextState::identity),
+                self.initial_tag_context,
             ),
             None => format!(
                 "contentStream:detached:{}:{}:{}",
@@ -5917,7 +5945,7 @@ impl<'a> ContentStreamModel<'a> {
             .map_err(PdfvError::Parse)
     }
 
-    fn effective_resources(&self, document: &'a ParsedDocument) -> Result<EffectiveResources<'_>> {
+    fn effective_resources(&self, document: &'a ParsedDocument) -> Result<EffectiveResources<'a>> {
         let page = self
             .page_key
             .map(|key| effective_resources_for_page_key(document, key, self.limits))
@@ -6554,12 +6582,17 @@ enum AccessibilityModelKind {
 
 impl<'a> AccessibilityModel<'a> {
     fn document(document: &'a ParsedDocument, graph: Arc<AccessibilityGraph>) -> Self {
+        let supertypes = graph
+            .has_structure_tree_root
+            .then(|| ObjectTypeName::unchecked("structureTreeRoot"))
+            .into_iter()
+            .collect();
         Self {
             document,
             graph,
             kind: AccessibilityModelKind::Document,
             object_type: ObjectTypeName::unchecked("accessibilityDocument"),
-            supertypes: vec![ObjectTypeName::unchecked("structureTreeRoot")],
+            supertypes,
             links: ACCESSIBILITY_DOCUMENT_LINKS
                 .iter()
                 .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
@@ -6572,12 +6605,16 @@ impl<'a> AccessibilityModel<'a> {
         graph: Arc<AccessibilityGraph>,
         node: AccessibilityNodeId,
     ) -> Self {
+        let mut supertypes = vec![ObjectTypeName::unchecked("object")];
+        if let Some(element) = graph.node(node) {
+            supertypes.extend(structure_roles::applicable(element).map(ObjectTypeName::unchecked));
+        }
         Self {
             document,
             graph,
             kind: AccessibilityModelKind::StructureElement(node),
             object_type: ObjectTypeName::unchecked("structureElement"),
-            supertypes: vec![ObjectTypeName::unchecked("object")],
+            supertypes,
             links: STRUCTURE_ELEMENT_LINKS
                 .iter()
                 .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
@@ -6938,10 +6975,7 @@ fn accessibility_document_property(
             root_first_child_namespace_url(graph),
         )),
         "hasContentItems" => Ok(ModelValue::Bool(
-            graph
-                .nodes
-                .iter()
-                .any(|node| !node.content_items.is_empty()),
+            graph.root_has_content_items || passed_through_content(graph, root_children(graph)),
         )),
         "markedContentAssociationCount" => Ok(ModelValue::Number(usize_to_f64(
             graph.marked_content.len(),
@@ -6963,16 +6997,16 @@ fn structure_element_property(
     if let Some(value) = structure_element_pdfua_property(document, graph, node, name) {
         return value;
     }
-    if let Some(value) = structure_element_relationship_property(graph, node, name) {
+    if let Some(value) = structure_element_relationship_property(document, graph, node, name) {
         return value;
     }
     match name.as_str() {
-        "role" | "S" | "parentType" | "structParentType" => Ok(ModelValue::String(
-            BoundedText::unchecked(node.role.clone()),
-        )),
-        "tag" | "normalizedRole" | "parentStandardType" | "structParentStandardType" => Ok(
-            ModelValue::String(BoundedText::unchecked(node.normalized_role.clone())),
-        ),
+        "role" | "S" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.role.clone(),
+        ))),
+        "tag" | "normalizedRole" => Ok(ModelValue::String(BoundedText::unchecked(
+            node.normalized_role.clone(),
+        ))),
         "page" | "Pg" => Ok(node.page.map_or(ModelValue::Null, ModelValue::ObjectKey)),
         "pageIndex" => optional_usize_model_value(node.page_ordinal),
         "childCount" => Ok(ModelValue::Number(usize_to_f64(node.children.len())?)),
@@ -7012,9 +7046,11 @@ fn structure_element_property(
         }),
         "P" | "containsParent" => Ok(ModelValue::Bool(node.contains_parent)),
         "containsRef" => Ok(ModelValue::Bool(node.contains_ref)),
-        "hasContentItems" | "isTaggedContent" => {
-            Ok(ModelValue::Bool(!node.content_items.is_empty()))
-        }
+        "hasContentItems" => Ok(ModelValue::Bool(
+            !node.content_items.is_empty()
+                || passed_through_content(graph, node.children.iter().copied()),
+        )),
+        "isTaggedContent" => Ok(ModelValue::Bool(!node.content_items.is_empty())),
         "containsLabels" => Ok(ModelValue::Bool(node.children.iter().any(|child| {
             graph
                 .node(*child)
@@ -7024,33 +7060,56 @@ fn structure_element_property(
         "parentsTags" => Ok(parent_tags(graph, node)),
         "isNotMappedToStandardType" => Ok(ModelValue::Bool(node.non_standard_role)),
         "circularMappingExist" => Ok(ModelValue::Bool(node.circular_role_mapping)),
-        "roleMapToSameNamespaceTag" => Ok(ModelValue::Bool(node.role == node.normalized_role)),
-        "remappedStandardType" => Ok(ModelValue::Bool(node.role != node.normalized_role)),
+        "roleMapToSameNamespaceTag" => Ok(optional_string_model_value(
+            node.same_namespace_remapping.clone(),
+        )),
+        "remappedStandardType" => Ok(optional_string_model_value(
+            node.remapped_standard_role.clone(),
+        )),
         "Type" => Ok(ModelValue::String(BoundedText::unchecked("StructElem"))),
         _ => unknown_property(name),
     }
 }
 
 fn structure_element_relationship_property(
+    document: &ParsedDocument,
     graph: &AccessibilityGraph,
     node: &AccessibilityNode,
     name: &PropertyName,
 ) -> Option<Result<ModelValue>> {
     let value = match name.as_str() {
-        "parentStandardTypeNamespaceURL" | "parentNamespaceURL" => {
-            Ok(optional_string_model_value(node.namespace_url.clone()))
-        }
-        "firstChildStandardTypeNamespaceURL" => Ok(node
-            .children
-            .iter()
-            .find_map(|child| {
-                graph
-                    .node(*child)
-                    .and_then(|child| child.namespace_url.clone())
-            })
-            .map_or(ModelValue::Null, |value| {
-                ModelValue::String(BoundedText::unchecked(value))
-            })),
+        "parentType" | "structParentType" => Ok(optional_string_model_value(
+            structure_parent_node(document, graph, node).map(|parent| parent.role.clone()),
+        )),
+        "parentStandardType" | "structParentStandardType" => Ok(optional_string_model_value(
+            structural_parent(document, graph, node).and_then(|parent| match parent {
+                StructuralParent::Root => Some(String::from("StructTreeRoot")),
+                StructuralParent::Element(parent)
+                    if parent.standard_namespace_url.as_deref()
+                        == Some(crate::accessibility::MATH_NAMESPACE) =>
+                {
+                    Some(String::from("MathML"))
+                }
+                StructuralParent::Element(parent) => {
+                    (!parent.non_standard_role).then(|| parent.normalized_role.clone())
+                }
+            }),
+        )),
+        "parentStandardTypeNamespaceURL" => Ok(optional_string_model_value(
+            structural_parent(document, graph, node).and_then(|parent| match parent {
+                StructuralParent::Root => None,
+                StructuralParent::Element(parent) => parent.standard_namespace_url.clone(),
+            }),
+        )),
+        "parentNamespaceURL" => Ok(optional_string_model_value(
+            structure_parent_node(document, graph, node)
+                .and_then(|parent| parent.namespace_url.clone()),
+        )),
+        "firstChildStandardTypeNamespaceURL" => Ok(optional_string_model_value(
+            significant_children(graph, node.children.iter().copied())
+                .next()
+                .and_then(|child| child.standard_namespace_url.clone()),
+        )),
         "numberOfColumnWithWrongRowSpan" => table_analysis(graph, node)
             .and_then(|analysis| optional_usize_model_value(analysis.wrong_row_span_columns)),
         "numberOfRowWithWrongColumnSpan" => table_analysis(graph, node)
@@ -7078,6 +7137,49 @@ fn structure_element_relationship_property(
         _ => return None,
     };
     Some(value)
+}
+
+fn structure_parent_node<'a>(
+    document: &ParsedDocument,
+    graph: &'a AccessibilityGraph,
+    node: &AccessibilityNode,
+) -> Option<&'a AccessibilityNode> {
+    graph.node_from_key(structure_parent_key(document, node.key?)?)
+}
+
+fn structure_parent_key(document: &ParsedDocument, node: ObjectKey) -> Option<ObjectKey> {
+    let dictionary = document.objects.get(&node)?.object.as_dictionary()?;
+    let crate::CosObject::Reference(parent) = dictionary.get("P")? else {
+        return None;
+    };
+    Some(*parent)
+}
+
+#[derive(Debug)]
+enum StructuralParent<'a> {
+    Root,
+    Element(&'a AccessibilityNode),
+}
+
+fn structural_parent<'a>(
+    document: &ParsedDocument,
+    graph: &'a AccessibilityGraph,
+    node: &AccessibilityNode,
+) -> Option<StructuralParent<'a>> {
+    let mut key = structure_parent_key(document, node.key?)?;
+    let mut visited = BTreeSet::new();
+    while visited.insert(key) {
+        if matches!(catalog_value(document, "StructTreeRoot"), Some(crate::CosObject::Reference(root)) if *root == key)
+        {
+            return Some(StructuralParent::Root);
+        }
+        let parent = graph.node_from_key(key)?;
+        if !structure_roles::is_pass_through(parent) {
+            return Some(StructuralParent::Element(parent));
+        }
+        key = structure_parent_key(document, key)?;
+    }
+    None
 }
 
 fn structure_element_pdfua_property(
@@ -7302,30 +7404,64 @@ fn presence_model_value(present: bool) -> ModelValue {
 }
 
 fn root_child_standard_types(graph: &AccessibilityGraph) -> String {
-    graph
-        .nodes
-        .iter()
-        .filter(|node| node.parent.is_none())
+    significant_children(graph, root_children(graph))
+        .filter(|node| !node.non_standard_role)
         .map(|node| node.normalized_role.as_str())
         .collect::<Vec<_>>()
         .join("&")
 }
 
 fn root_first_child_namespace_url(graph: &AccessibilityGraph) -> Option<String> {
-    graph
-        .nodes
-        .iter()
-        .find(|node| node.parent.is_none())
-        .and_then(|node| node.namespace_url.clone())
+    significant_children(graph, root_children(graph))
+        .next()
+        .and_then(|node| node.standard_namespace_url.clone())
 }
 
 fn child_standard_types(graph: &AccessibilityGraph, node: &AccessibilityNode) -> String {
-    node.children
-        .iter()
-        .filter_map(|child| graph.node(*child))
+    significant_children(graph, node.children.iter().copied())
+        .filter(|child| !child.non_standard_role)
         .map(|child| child.normalized_role.as_str())
         .collect::<Vec<_>>()
         .join("&")
+}
+
+fn root_children(
+    graph: &AccessibilityGraph,
+) -> impl DoubleEndedIterator<Item = AccessibilityNodeId> + '_ {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| node.parent.is_none())
+        .map(|node| node.id)
+}
+
+fn structural_children(
+    graph: &AccessibilityGraph,
+    roots: impl DoubleEndedIterator<Item = AccessibilityNodeId>,
+) -> impl Iterator<Item = &AccessibilityNode> {
+    let mut stack: Vec<_> = roots.rev().collect();
+    std::iter::from_fn(move || {
+        let node = graph.node(stack.pop()?)?;
+        if structure_roles::is_pass_through(node) {
+            stack.extend(node.children.iter().rev().copied());
+        }
+        Some(node)
+    })
+}
+
+fn significant_children(
+    graph: &AccessibilityGraph,
+    roots: impl DoubleEndedIterator<Item = AccessibilityNodeId>,
+) -> impl Iterator<Item = &AccessibilityNode> {
+    structural_children(graph, roots).filter(|node| !structure_roles::is_pass_through(node))
+}
+
+fn passed_through_content(
+    graph: &AccessibilityGraph,
+    roots: impl DoubleEndedIterator<Item = AccessibilityNodeId>,
+) -> bool {
+    structural_children(graph, roots)
+        .any(|node| structure_roles::is_pass_through(node) && !node.content_items.is_empty())
 }
 
 fn parent_language(
@@ -9287,6 +9423,7 @@ fn push_content_stream<'a>(
         is_form: false,
         initial_color_state: None,
         initial_text_state: None,
+        initial_tag_context: None,
         retain_glyph_text: false,
         resource_context: None,
         context_prefix: format!("root/page[{}]", page.ordinal),
@@ -9857,6 +9994,7 @@ pub struct GenericModel<'a> {
     glyph_evidence: Option<glyphs::Evidence>,
     icc_header: Option<Arc<IccHeader>>,
     parsed_cmap: Option<Arc<cmap::CMap>>,
+    tagged_content: Option<tagged_content::Evidence>,
     primitive: Option<CosPrimitive<'a>>,
     context: String,
     ordinal: usize,
@@ -9896,6 +10034,7 @@ impl<'a> GenericModel<'a> {
             glyph_evidence: None,
             icc_header: None,
             parsed_cmap: None,
+            tagged_content: None,
             primitive: None,
             context: context.into(),
             ordinal,
@@ -9926,6 +10065,7 @@ impl<'a> GenericModel<'a> {
             glyph_evidence: None,
             icc_header: None,
             parsed_cmap: None,
+            tagged_content: None,
             primitive: None,
             context: context.into(),
             ordinal,
@@ -9952,6 +10092,7 @@ impl<'a> GenericModel<'a> {
             glyph_evidence: None,
             icc_header: None,
             parsed_cmap: None,
+            tagged_content: None,
             primitive: Some(primitive),
             context: format!("root/{family}[{}]", origin.ordinal),
             ordinal: origin.ordinal,
@@ -9959,7 +10100,7 @@ impl<'a> GenericModel<'a> {
     }
 
     fn identity_key(&self) -> String {
-        if self.primitive.is_some() {
+        if self.primitive.is_some() || self.tagged_content.is_some() {
             return self.context.clone();
         }
         if self.object_type.as_str() == "halftone"
@@ -10410,6 +10551,9 @@ impl ModelObject for GenericModel<'_> {
         if let Some(evidence) = &self.glyph_evidence {
             return evidence.property(name);
         }
+        if let Some(evidence) = &self.tagged_content {
+            return evidence.property(name);
+        }
         if matches!(
             self.object_type.as_str(),
             icc::INPUT_FAMILY | icc::OUTPUT_FAMILY
@@ -10578,12 +10722,22 @@ fn append_scoped_content_models<'a>(
     } else {
         BTreeMap::new()
     };
+    let tag_contexts = if graph.materializes(tagged_content::MARKED)
+        || graph.materializes(tagged_content::PAINTED)
+    {
+        tagged_content::append(model, graph, summary, objects, max_objects)?
+    } else {
+        BTreeMap::new()
+    };
     append_content_resources(
         model,
         graph,
         &summary.resource_uses,
-        &invocation_states,
-        &text_states,
+        ContentInvocationStates {
+            color: &invocation_states,
+            text: &text_states,
+            tags: &tag_contexts,
+        },
         objects,
         max_objects,
     )?;
@@ -10647,12 +10801,18 @@ fn append_content_semantic_names<'a>(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ContentInvocationStates<'a> {
+    color: &'a BTreeMap<u64, device_color::GraphicsState>,
+    text: &'a BTreeMap<u64, glyphs::TextState>,
+    tags: &'a BTreeMap<u64, tagged_content::Context>,
+}
+
 fn append_content_resources<'a>(
     model: &ContentStreamModel<'_>,
     graph: &ModelGraph<'a>,
     uses: &[ResourceUse],
-    invocation_states: &BTreeMap<u64, device_color::GraphicsState>,
-    text_states: &BTreeMap<u64, glyphs::TextState>,
+    states: ContentInvocationStates<'_>,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max_objects: usize,
 ) -> Result<()> {
@@ -10699,11 +10859,18 @@ fn append_content_resources<'a>(
             form.initial_color_state = used
                 .location
                 .offset
-                .and_then(|offset| invocation_states.get(&offset).copied());
+                .and_then(|offset| states.color.get(&offset).copied());
             form.initial_text_state = used
                 .location
                 .offset
-                .and_then(|offset| text_states.get(&offset).cloned());
+                .and_then(|offset| states.text.get(&offset).cloned());
+            form.initial_tag_context = used
+                .location
+                .offset
+                .and_then(|offset| states.tags.get(&offset).cloned());
+            if form.initial_tag_context.is_some() {
+                form.context_prefix = format!("{path}/form[{}]", object_key_text(*key));
+            }
             push_linked(objects, ModelObjectRef::ContentStream(form), max_objects)?;
         }
     }
@@ -10852,7 +11019,8 @@ fn resource_content_stream<'a>(
     let crate::CosObject::Stream(stream) = &object.object else {
         return None;
     };
-    let is_form = matches!(stream.dictionary.get("Subtype"), Some(crate::CosObject::Name(name)) if name.matches("Form"));
+    let is_form = semantic_names::name(graph.document, stream.dictionary.get("Subtype"))
+        .is_some_and(|name| name.matches("Form"));
     let is_tiling_pattern = stream.dictionary.get("PatternType").and_then(cos_integer) == Some(1);
     if !is_form && !is_tiling_pattern {
         return None;
@@ -10866,6 +11034,7 @@ fn resource_content_stream<'a>(
         is_form: true,
         initial_color_state: None,
         initial_text_state: None,
+        initial_tag_context: None,
         retain_glyph_text: graph.needs_glyph_evidence() && page_key.is_some(),
         resource_context,
         context_prefix,
@@ -12987,6 +13156,98 @@ endobj
             parent_passes,
             parent_failures,
         );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("/Artifact BMC /Fm Do EMC /Fm Do", "0 0 1 1 re f", "/P 6 0 R", 1, 1)]
+    #[case("/Artifact BMC /Fm Do", "0 0 1 1 re f", "/P 6 0 R", 0, 1)]
+    #[case("/Artifact /P BMC /Fm Do EMC", "0 0 1 1 re f", "/P 6 0 R", 0, 1)]
+    #[case("/ArtifactLike BMC /Fm Do EMC", "0 0 1 1 re f", "/P 6 0 R", 0, 1)]
+    #[case(
+        "/Artifact BMC /EMC BMC /Fm Do EMC EMC",
+        "0 0 1 1 re f",
+        "/P 6 0 R",
+        1,
+        0
+    )]
+    #[case("/P << /MCID 0 >> BDC /Fm Do EMC", "0 0 1 1 re f", "/P 6 0 R", 1, 0)]
+    #[case(
+        "/P << /ActualText (x /MCID 0) >> BDC /Fm Do EMC",
+        "0 0 1 1 re f",
+        "/P 6 0 R",
+        0,
+        1
+    )]
+    #[case("/P /Props BMC /Fm Do EMC", "0 0 1 1 re f", "/P 6 0 R", 0, 1)]
+    #[case("/P /Props BDC /Fm Do EMC", "0 0 1 1 re f", "/P 6 0 R", 1, 0)]
+    #[case("/Fm Do", "/P << /MCID 0 >> BDC 0 0 1 1 re f EMC", "/P 6 0 R", 1, 0)]
+    #[case("/Fm Do", "/P << /MCID 0 >> BDC 0 0 1 1 re f EMC", "/P 8 0 R", 0, 1)]
+    #[case("/Fm Do", "0 0 1 1 re W n", "/P 6 0 R", 0, 0)]
+    fn test_should_classify_paint_in_form_invocation_context(
+        #[case] page: &str,
+        #[case] form: &str,
+        #[case] form_parent: &str,
+        #[case] passed: usize,
+        #[case] failed: usize,
+    ) -> crate::Result<()> {
+        let mut pdf = format!(
+            "%PDF-2.0\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R \
+             >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< \
+             /Type /Page /Parent 2 0 R /Contents 4 0 R /StructParents 11 0 R /Resources << \
+             /XObject << /Fm 5 0 R >> /Properties << /Props << /MCID 0 >> >> >> >>\nendobj\n6 0 \
+             obj\n<< /Type /StructTreeRoot /ParentTree 9 0 R /K [7 0 R 8 0 R] >>\nendobj\n7 0 \
+             obj\n<< /Type /StructElem /S /P /P 6 0 R /K 0 /Pg 3 0 R >>\nendobj\n8 0 obj\n<< \
+             /Type /StructElem /S /P {form_parent} /K 0 /Pg 3 0 R >>\nendobj\n9 0 obj\n<< /Nums \
+             10 0 R >>\nendobj\n10 0 obj\n[0 [7 0 R] 1 [8 0 R]]\nendobj\n11 0 obj\n0\nendobj\n12 \
+             0 obj\n/Form\nendobj\n"
+        )
+        .into_bytes();
+        append_test_stream(&mut pdf, "4 0 obj", "", page.as_bytes());
+        append_test_stream(
+            &mut pdf,
+            "5 0 obj",
+            "/Type /XObject /Subtype 12 0 R /BBox [0 0 1 1] /StructParents 1",
+            form.as_bytes(),
+        );
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let part = NonZeroU32::new(2).ok_or(crate::ValidationError::SubsystemUnavailable {
+            subsystem: "testFlavour",
+        })?;
+        let profile =
+            validate_test_profile(&pdf, ValidationFlavour::new("pdfua", part, "iso32005")?)?;
+        assert_distinct_test_rule(&profile, "iso-14289-2-8-2-2-1", passed, failed);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("/RoleMapNS << /CustomDocument [/Document 7 0 R] >>", 1, 0)]
+    #[case("", 0, 1)]
+    fn test_should_scope_root_rules_to_namespace_mapped_roles(
+        #[case] role_map: &str,
+        #[case] passed: usize,
+        #[case] failed: usize,
+    ) -> crate::Result<()> {
+        let pdf = format!(
+            "%PDF-2.0\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 3 0 R >>\nendobj\n\
+             2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n\
+             3 0 obj\n<< /Type /StructTreeRoot /K 6 0 R /Namespaces [5 0 R 7 0 R] >>\nendobj\n\
+             4 0 obj\n<< /Type /StructElem /S 9 0 R /NS 5 0 R /P 6 0 R >>\nendobj\n\
+             5 0 obj\n<< /Type /Namespace /NS (https://example.org/roles) {role_map} >>\nendobj\n\
+             6 0 obj\n<< /Type /StructElem /S /Div /NS 7 0 R /P 3 0 R /K 8 0 R >>\nendobj\n\
+             7 0 obj\n<< /Type /Namespace /NS (http://iso.org/pdf2/ssn) >>\nendobj\n\
+             8 0 obj\n[4 0 R]\nendobj\n9 0 obj\n/CustomDocument\nendobj\n\
+             trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+        );
+        let part = NonZeroU32::new(2).ok_or(crate::ValidationError::SubsystemUnavailable {
+            subsystem: "testFlavour",
+        })?;
+        let profile = validate_test_profile(
+            pdf.as_bytes(),
+            ValidationFlavour::new("pdfua", part, "iso32005")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-14289-2-8-2-5-2-1", passed, failed);
+        assert_distinct_test_rule(&profile, "iso-14289-2-8-2-5-2-2", 1, 0);
         Ok(())
     }
 
