@@ -17,7 +17,7 @@ cargo install --path apps/cli
 Validate one file:
 
 ```bash
-pdfv validate tests/fixtures/minimal-valid.pdf --format text
+pdfv validate crates/core/tests/fixtures/minimal-valid.pdf --format text
 ```
 
 Write a machine-readable report:
@@ -112,7 +112,7 @@ pdfv validate --config pdfv.yaml ./documents --recursive
 use pdfv_core::{ReportFormat, Validator};
 
 let validator = Validator::default();
-let report = validator.validate_path("tests/fixtures/minimal-valid.pdf")?;
+let report = validator.validate_path("crates/core/tests/fixtures/minimal-valid.pdf")?;
 ReportFormat::JsonPretty.write_report(&report, std::io::stdout())?;
 # Ok::<(), pdfv_core::PdfvError>(())
 ```

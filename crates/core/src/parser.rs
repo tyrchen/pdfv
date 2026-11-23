@@ -499,7 +499,6 @@ impl ParsedDocument {
                 ParseFact::Encryption {
                     encrypted: true,
                     decrypted: false,
-                    handler: _,
                     ..
                 }
             )
@@ -3257,7 +3256,11 @@ trailer
 
         let document = Parser::default().parse(Cursor::new(bytes))?;
 
-        assert!(!document.warnings.is_empty());
+        assert!(document.warnings.iter().any(|warning| matches!(
+            warning,
+            crate::ValidationWarning::General { message }
+                if message.as_str() == "malformed PDF header version recovered as 1.4"
+        )));
         assert_eq!(document.version, crate::PdfVersion { major: 1, minor: 4 });
         Ok(())
     }

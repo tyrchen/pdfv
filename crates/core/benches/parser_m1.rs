@@ -8,7 +8,7 @@ use std::io::Cursor;
 use criterion::{Criterion, criterion_group, criterion_main};
 use pdfv_core::{InputName, Parser, ValidationOptions, Validator};
 
-const MINIMAL_VALID: &[u8] = include_bytes!("../../../tests/fixtures/minimal-valid.pdf");
+const MINIMAL_VALID: &[u8] = include_bytes!("../tests/fixtures/minimal-valid.pdf");
 const TEN_MIB: usize = 10 * 1024 * 1024;
 const ONE_MIB: usize = 1024 * 1024;
 

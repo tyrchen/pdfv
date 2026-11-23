@@ -17,7 +17,7 @@ cargo install --path apps/cli
 验证一个文件：
 
 ```bash
-pdfv validate tests/fixtures/minimal-valid.pdf --format text
+pdfv validate crates/core/tests/fixtures/minimal-valid.pdf --format text
 ```
 
 递归验证目录，并把 JSON 报告写到文件：
@@ -112,7 +112,7 @@ pdfv validate --config pdfv.yaml ./documents --recursive
 use pdfv_core::{ReportFormat, Validator};
 
 let validator = Validator::default();
-let report = validator.validate_path("tests/fixtures/minimal-valid.pdf")?;
+let report = validator.validate_path("crates/core/tests/fixtures/minimal-valid.pdf")?;
 ReportFormat::JsonPretty.write_report(&report, std::io::stdout())?;
 # Ok::<(), pdfv_core::PdfvError>(())
 ```

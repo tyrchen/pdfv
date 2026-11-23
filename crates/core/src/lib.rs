@@ -3708,8 +3708,7 @@ fn write_error(source: std::io::Error) -> PdfvError {
 }
 
 fn format_optional_path(path: Option<&PathBuf>) -> String {
-    path.map(|path| format!(" at {}", path.display()))
-        .unwrap_or_default()
+    path.map_or_else(String::new, |path| format!(" at {}", path.display()))
 }
 
 #[derive(Clone, Copy, Debug)]

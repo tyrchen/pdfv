@@ -4,12 +4,11 @@ use pdfv_core::{
     FlavourSelection, InputName, ParseFact, ValidationOptions, ValidationStatus, Validator, XmpFact,
 };
 
-const MINIMAL_VALID: &[u8] = include_bytes!("../../../tests/fixtures/minimal-valid.pdf");
-const LEADING_BYTES_INVALID: &[u8] =
-    include_bytes!("../../../tests/fixtures/leading-bytes-invalid.pdf");
-const NOT_A_PDF: &[u8] = include_bytes!("../../../tests/fixtures/not-a-pdf.pdf");
+const MINIMAL_VALID: &[u8] = include_bytes!("fixtures/minimal-valid.pdf");
+const LEADING_BYTES_INVALID: &[u8] = include_bytes!("fixtures/leading-bytes-invalid.pdf");
+const NOT_A_PDF: &[u8] = include_bytes!("fixtures/not-a-pdf.pdf");
 const XREF_STREAM_OBJECT_STREAM_VALID: &[u8] =
-    include_bytes!("../../../tests/fixtures/xref-stream-object-stream-valid.pdf");
+    include_bytes!("fixtures/xref-stream-object-stream-valid.pdf");
 
 #[test]
 fn test_should_validate_shared_valid_fixture() -> Result<(), Box<dyn Error>> {

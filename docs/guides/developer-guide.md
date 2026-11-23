@@ -14,7 +14,7 @@ crates/core/     parser, model, validation, repair, report, and public library A
 docs/            user-facing docs and research notes
 docs/guides/     user and developer guides
 specs/           product, design, security, testing, and implementation specs
-tests/fixtures/  shared PDF fixtures
+crates/core/tests/fixtures/  shared PDF fixtures
 vendors/         vendored veraPDF references
 fuzz/            fuzzing workspace
 ```

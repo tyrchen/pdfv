@@ -6,10 +6,10 @@ The current matrix is intentionally generated in-repo so normal tests have clear
 
 | Fixture | Coverage | Expected status |
 | --- | --- | --- |
-| `tests/fixtures/minimal-valid.pdf` | Header, catalog, trailer, default built-in profile rules. | `valid` |
-| `tests/fixtures/leading-bytes-invalid.pdf` | Recoverable header-offset violation. | `invalid` |
-| `tests/fixtures/not-a-pdf.pdf` | Hostile non-PDF bytes and parse-failure reporting. | `parseFailed` |
-| `tests/fixtures/xref-stream-object-stream-valid.pdf` | Xref stream parsing and object stream expansion. | `valid` |
+| `crates/core/tests/fixtures/minimal-valid.pdf` | Header, catalog, trailer, default built-in profile rules. | `valid` |
+| `crates/core/tests/fixtures/leading-bytes-invalid.pdf` | Recoverable header-offset violation. | `invalid` |
+| `crates/core/tests/fixtures/not-a-pdf.pdf` | Hostile non-PDF bytes and parse-failure reporting. | `parseFailed` |
+| `crates/core/tests/fixtures/xref-stream-object-stream-valid.pdf` | Xref stream parsing and object stream expansion. | `valid` |
 
 ## Profile Fixtures
 
@@ -69,6 +69,6 @@ Because the imported PDF/A-1b profile still contains unsupported rules, the
 validation rows currently expect `incomplete` rather than veraPDF's final
 valid/invalid decisions. They still guard parser/report behavior and known-pass
 fixtures with zero failed rules until full model parity is implemented.
-External corpus PDFs remain outside `tests/fixtures/`; any checked-in copy must
-first be added to `tests/fixtures/manifest.md` with source, license, and
+External corpus PDFs remain outside `crates/core/tests/fixtures/`; any checked-in copy must
+first be added to `crates/core/tests/fixtures/manifest.md` with source, license, and
 expected status metadata.

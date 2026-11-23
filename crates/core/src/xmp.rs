@@ -289,29 +289,17 @@ enum Utf16ByteOrder {
 }
 
 fn decode_utf16_text(bytes: &[u8], byte_order: Utf16ByteOrder) -> Result<String> {
-    let mut chunks = bytes.chunks_exact(2);
-    let units = chunks
-        .by_ref()
-        .map(|chunk| {
-            let [first, second] = chunk else {
-                return Err(crate::ProfileError::InvalidXml {
-                    reason: BoundedText::unchecked("UTF-16 XMP has incomplete code unit"),
-                }
-                .into());
-            };
-            let unit = match byte_order {
-                Utf16ByteOrder::BigEndian => u16::from_be_bytes([*first, *second]),
-                Utf16ByteOrder::LittleEndian => u16::from_le_bytes([*first, *second]),
-            };
-            Ok(unit)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    if !chunks.remainder().is_empty() {
+    let (chunks, remainder) = bytes.as_chunks::<2>();
+    if !remainder.is_empty() {
         return Err(crate::ProfileError::InvalidXml {
             reason: BoundedText::unchecked("UTF-16 XMP has incomplete code unit"),
         }
         .into());
     }
+    let units = chunks.iter().copied().map(|chunk| match byte_order {
+        Utf16ByteOrder::BigEndian => u16::from_be_bytes(chunk),
+        Utf16ByteOrder::LittleEndian => u16::from_le_bytes(chunk),
+    });
     char::decode_utf16(units)
         .map(|decoded| {
             decoded.map_err(|error| crate::ProfileError::InvalidXml {
@@ -329,18 +317,12 @@ enum Utf32ByteOrder {
 }
 
 fn decode_utf32_text(bytes: &[u8], byte_order: Utf32ByteOrder) -> Result<String> {
-    let mut chunks = bytes.chunks_exact(4);
+    let (chunks, remainder) = bytes.as_chunks::<4>();
     let mut text = String::new();
-    for chunk in chunks.by_ref() {
-        let [first, second, third, fourth] = chunk else {
-            return Err(crate::ProfileError::InvalidXml {
-                reason: BoundedText::unchecked("UTF-32 XMP has incomplete code point"),
-            }
-            .into());
-        };
+    for &chunk in chunks {
         let value = match byte_order {
-            Utf32ByteOrder::BigEndian => u32::from_be_bytes([*first, *second, *third, *fourth]),
-            Utf32ByteOrder::LittleEndian => u32::from_le_bytes([*first, *second, *third, *fourth]),
+            Utf32ByteOrder::BigEndian => u32::from_be_bytes(chunk),
+            Utf32ByteOrder::LittleEndian => u32::from_le_bytes(chunk),
         };
         let Some(character) = char::from_u32(value) else {
             return Err(crate::ProfileError::InvalidXml {
@@ -350,7 +332,7 @@ fn decode_utf32_text(bytes: &[u8], byte_order: Utf32ByteOrder) -> Result<String>
         };
         text.push(character);
     }
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         return Err(crate::ProfileError::InvalidXml {
             reason: BoundedText::unchecked("UTF-32 XMP has incomplete code point"),
         }

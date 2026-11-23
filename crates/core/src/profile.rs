@@ -540,15 +540,13 @@ pub fn rule_burn_down_report_from_clusters(
     current: &UnsupportedRuleClusterReport,
     previous: Option<&UnsupportedRuleClusterReport>,
 ) -> Result<RuleBurnDownReport> {
-    let previous_by_key = previous
-        .map(|report| {
-            report
-                .clusters
-                .iter()
-                .map(|cluster| (ClusterKey::from_cluster(cluster), cluster.rule_count))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
+    let previous_by_key = previous.map_or_else(BTreeMap::new, |report| {
+        report
+            .clusters
+            .iter()
+            .map(|cluster| (ClusterKey::from_cluster(cluster), cluster.rule_count))
+            .collect()
+    });
     let rows = current
         .clusters
         .iter()
@@ -4227,7 +4225,7 @@ trailer
         let unsupported = super::unsupported_rules_parity_report()?;
         let clusters = super::unsupported_rule_cluster_report_from_rules(&unsupported)?;
 
-        assert!(clusters.clusters.is_empty());
+        assert_eq!(clusters.clusters, []);
         assert_eq!(
             clusters.summary.total_rules,
             u64::try_from(unsupported.rules.len()).unwrap_or(u64::MAX)

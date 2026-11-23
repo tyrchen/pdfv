@@ -14,7 +14,7 @@ crates/core/     解析、模型、验证、修复、报告，以及公开库 AP
 docs/            用户文档和研究记录
 docs/guides/     用户指南和开发者指南
 specs/           产品、设计、安全、测试和实现计划
-tests/fixtures/  共享 PDF 测试样本
+crates/core/tests/fixtures/  共享 PDF 测试样本
 vendors/         vendored veraPDF 参考实现
 fuzz/            fuzzing 工作区
 ```

@@ -1,6 +1,6 @@
 //! Deterministic parity metrics and semantic corpus agreement reports.
 
-use std::io::Cursor;
+use std::{collections::BTreeSet, io::Cursor};
 
 use serde::{Deserialize, Serialize};
 
@@ -9,12 +9,12 @@ use crate::{
     ValidationFlavour, ValidationOptions, ValidationStatus, Validator,
 };
 
-const CHECKED_IN_MINIMAL_VALID: &[u8] = include_bytes!("../../../tests/fixtures/minimal-valid.pdf");
+const CHECKED_IN_MINIMAL_VALID: &[u8] = include_bytes!("../tests/fixtures/minimal-valid.pdf");
 const CHECKED_IN_LEADING_BYTES_INVALID: &[u8] =
-    include_bytes!("../../../tests/fixtures/leading-bytes-invalid.pdf");
-const CHECKED_IN_NOT_A_PDF: &[u8] = include_bytes!("../../../tests/fixtures/not-a-pdf.pdf");
+    include_bytes!("../tests/fixtures/leading-bytes-invalid.pdf");
+const CHECKED_IN_NOT_A_PDF: &[u8] = include_bytes!("../tests/fixtures/not-a-pdf.pdf");
 const CHECKED_IN_XREF_STREAM_OBJECT_STREAM_VALID: &[u8] =
-    include_bytes!("../../../tests/fixtures/xref-stream-object-stream-valid.pdf");
+    include_bytes!("../tests/fixtures/xref-stream-object-stream-valid.pdf");
 
 /// Semantic corpus agreement report for normal, Java-free parity checks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -51,7 +51,7 @@ pub struct CorpusAgreementSummary {
 #[non_exhaustive]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CorpusAgreementRow {
-    /// Local fixture path or generated fixture id.
+    /// Stable fixture identifier.
     pub fixture: BoundedText,
     /// Fixture provenance.
     pub source: CorpusFixtureSource,
@@ -372,14 +372,13 @@ fn corpus_row(spec: CorpusRowSpec<'_>) -> Result<CorpusAgreementRow> {
     let observed = CorpusOutcome::from(report.status);
     let observed_feature_families = report
         .feature_report
-        .map(|features| {
+        .map_or_else(BTreeSet::new, |features| {
             features
                 .objects
                 .into_iter()
                 .map(|object| object.family)
-                .collect::<std::collections::BTreeSet<_>>()
-        })
-        .unwrap_or_default();
+                .collect()
+        });
     let missing_families = spec
         .required_feature_families
         .iter()

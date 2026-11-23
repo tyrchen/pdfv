@@ -10017,19 +10017,17 @@ fn action_linked_objects<'a>(
             max_objects,
         )?;
     }
-    for value_name in ["D"] {
-        if let Some(destination) = destination_model_from_value(
-            graph.document,
-            model.dictionary.get(value_name),
-            model.ordinal,
-            format!("{}/destination[0]", model.context),
-        ) {
-            push_linked(
-                &mut objects,
-                ModelObjectRef::Generic(destination),
-                max_objects,
-            )?;
-        }
+    if let Some(destination) = destination_model_from_value(
+        graph.document,
+        model.dictionary.get("D"),
+        model.ordinal,
+        format!("{}/destination[0]", model.context),
+    ) {
+        push_linked(
+            &mut objects,
+            ModelObjectRef::Generic(destination),
+            max_objects,
+        )?;
     }
     Ok(objects)
 }
@@ -13184,7 +13182,6 @@ trailer
                     .get("xmpRdf")
                     .is_some_and(|count| *count > 0)
         }));
-        assert!(!report.profiles.is_empty());
         assert!(
             report
                 .profiles
@@ -13213,14 +13210,13 @@ trailer
         let coverage = crate::profile_coverage_parity_report()?;
         let unsupported = crate::unsupported_rules_parity_report()?;
 
-        assert!(!coverage.profiles.is_empty());
         assert!(coverage.profiles.iter().any(|profile| {
             profile.flavour.as_str() == "pdfa-1b"
                 && profile.total_rules > 0
                 && profile.lowered_rules > 0
                 && profile.bound_rules > 0
         }));
-        assert!(unsupported.rules.is_empty());
+        assert_eq!(unsupported.rules, []);
         assert!(unsupported.rules.iter().all(|rule| {
             matches!(
                 rule.primary_reason.as_str(),

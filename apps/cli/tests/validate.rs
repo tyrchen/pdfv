@@ -21,10 +21,8 @@ use rc4::{Rc4, StreamCipher};
 use sha2::{Sha256, Sha384, Sha512};
 use tempfile::tempdir;
 
-const MINIMAL_VALID: &[u8] = include_bytes!("../../../tests/fixtures/minimal-valid.pdf");
-const LEADING_BYTES_INVALID: &[u8] =
-    include_bytes!("../../../tests/fixtures/leading-bytes-invalid.pdf");
-const NOT_A_PDF: &[u8] = include_bytes!("../../../tests/fixtures/not-a-pdf.pdf");
+const MINIMAL_VALID: &[u8] = include_bytes!("fixtures/minimal-valid.pdf");
+const NOT_A_PDF: &[u8] = b"not a pdf\n";
 const PASSWORD_PADDING: [u8; 32] = [
     0x28, 0xbf, 0x4e, 0x5e, 0x4e, 0x75, 0x8a, 0x41, 0x64, 0x00, 0x4e, 0x56, 0xff, 0xfa, 0x01, 0x08,
     0x2e, 0x2e, 0x00, 0xb6, 0xd0, 0x68, 0x3e, 0x80, 0x2f, 0x0c, 0xa9, 0xfe, 0x64, 0x53, 0x69, 0x7a,
@@ -38,6 +36,10 @@ fn write_fixture(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut file = File::create(path)?;
     file.write_all(bytes)?;
     Ok(())
+}
+
+fn leading_bytes_invalid() -> Vec<u8> {
+    [b"junk\n".as_slice(), MINIMAL_VALID].concat()
 }
 
 #[test]
@@ -62,7 +64,7 @@ fn test_should_validate_pdf_and_emit_text_report() -> Result<(), Box<dyn Error>>
 fn test_should_exit_invalid_for_failed_validation() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("invalid.pdf");
-    write_fixture(&path, LEADING_BYTES_INVALID)?;
+    write_fixture(&path, &leading_bytes_invalid())?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "json-pretty", "--max-failures", "1"])
@@ -99,7 +101,7 @@ fn test_should_emit_batch_report_for_multiple_inputs() -> Result<(), Box<dyn Err
     let valid = temp.path().join("valid.pdf");
     let invalid = temp.path().join("invalid.pdf");
     write_fixture(&valid, MINIMAL_VALID)?;
-    write_fixture(&invalid, LEADING_BYTES_INVALID)?;
+    write_fixture(&invalid, &leading_bytes_invalid())?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "json"])
@@ -551,7 +553,7 @@ fn test_should_write_output_file_and_redact_paths_from_config() -> Result<(), Bo
         .output()?;
 
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.as_slice(), b"");
     let contents = std::fs::read_to_string(report)?;
     assert!(contains(r#""status":"valid""#).eval(&contents));
     assert!(!contains("valid.pdf").eval(&contents));
@@ -562,7 +564,7 @@ fn test_should_write_output_file_and_redact_paths_from_config() -> Result<(), Bo
 fn test_should_accept_unbounded_max_failures_flag() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("invalid.pdf");
-    write_fixture(&path, LEADING_BYTES_INVALID)?;
+    write_fixture(&path, &leading_bytes_invalid())?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "json", "--max-failures", "-1"])
