@@ -3,9 +3,11 @@
 mod cmap;
 mod cos;
 mod device_color;
+pub(crate) mod device_n;
 pub(crate) mod file_spec;
 pub(crate) mod glyphs;
 mod icc;
+pub(crate) mod image_mask;
 pub(crate) mod language;
 pub(crate) mod scoped_pua;
 mod semantic_names;
@@ -2404,6 +2406,12 @@ impl ModelRegistry {
             family("referencedCMap", &["CMapName"], EMPTY_LINK_NAMES),
             family("embeddedFontFile", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("image", IMAGE_PROPERTIES, EMPTY_LINK_NAMES),
+            family(image_mask::FAMILY, image_mask::PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                image_mask::INVOKED_IMAGE,
+                image_mask::PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("xObject", XOBJECT_PROPERTIES, XOBJECT_LINKS),
             family("formXObject", FORM_XOBJECT_PROPERTIES, XOBJECT_LINKS),
             family(
@@ -2446,6 +2454,7 @@ impl ModelRegistry {
                 EMPTY_LINK_NAMES,
             ),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
+            family(device_n::FAMILY, device_n::PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 glyphs::WIDTH_FAMILY,
                 &[
@@ -2621,6 +2630,11 @@ impl ModelRegistry {
         !cos::is_primitive_family(family.as_str())
             && family.as_str() != file_spec::FAMILY
             && family.as_str() != file_spec::EMBEDDED_FILE
+            && family.as_str() != device_n::FAMILY
+            && !matches!(
+                family.as_str(),
+                image_mask::FAMILY | image_mask::INVOKED_IMAGE
+            )
             && family.as_str() != language::FAMILY
             && !scoped_pua::FAMILIES.contains(&family.as_str())
             && structure_roles::rule_family(family.as_str()).is_none()
@@ -3454,6 +3468,10 @@ pub struct ModelGraph<'a> {
     character_resources: RefCell<BTreeMap<String, Option<Arc<crate::Dictionary>>>>,
     cid_audit: RefCell<glyphs::CidAudit>,
     associated_files: Option<RefCell<file_spec::association::Associations>>,
+    device_n_spaces: RefCell<HashSet<usize>>,
+    inline_colour_spaces: RefCell<BTreeMap<(ObjectKey, u64), Arc<crate::CosObject>>>,
+    initial_gray_resources: RefCell<Vec<device_n::GrayResources>>,
+    device_n_visits: Cell<u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3544,6 +3562,14 @@ impl<'a> ModelGraph<'a> {
         {
             materialized_families.insert(ObjectTypeName::unchecked(file_spec::FAMILY));
         }
+        if materialized_families.iter().any(|family| {
+            matches!(
+                family.as_str(),
+                image_mask::FAMILY | image_mask::INVOKED_IMAGE | device_n::FAMILY
+            )
+        }) {
+            materialized_families.insert(ObjectTypeName::unchecked("contentStream"));
+        }
         if needs_associations
             || materialized_families.iter().any(|family| {
                 family.as_str() == semantic_names::INTENT
@@ -3586,6 +3612,10 @@ impl<'a> ModelGraph<'a> {
             accessibility_cache: OnceLock::new(),
             cid_audit: RefCell::new(glyphs::CidAudit::default()),
             associated_files: needs_associations.then(RefCell::default),
+            device_n_spaces: RefCell::default(),
+            inline_colour_spaces: RefCell::default(),
+            initial_gray_resources: RefCell::default(),
+            device_n_visits: Cell::default(),
             text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
         }
@@ -3604,6 +3634,10 @@ impl<'a> ModelGraph<'a> {
             accessibility_cache: OnceLock::new(),
             cid_audit: RefCell::new(glyphs::CidAudit::default()),
             associated_files: None,
+            device_n_spaces: RefCell::default(),
+            inline_colour_spaces: RefCell::default(),
+            initial_gray_resources: RefCell::default(),
+            device_n_visits: Cell::default(),
             text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
         }
@@ -3640,6 +3674,7 @@ impl<'a> ModelGraph<'a> {
             !cos::is_primitive_family(family.as_str())
                 && family.as_str() != file_spec::FAMILY
                 && family.as_str() != file_spec::EMBEDDED_FILE
+                && family.as_str() != device_n::FAMILY
                 && family.as_str() != language::FAMILY
                 && !scoped_pua::FAMILIES.contains(&family.as_str())
                 && structure_roles::rule_family(family.as_str()).is_none()
@@ -3647,6 +3682,10 @@ impl<'a> ModelGraph<'a> {
                 && !semantic_names::FAMILIES.contains(&family.as_str())
                 && !device_color::FAMILIES.contains(&family.as_str())
                 && family.as_str() != glyphs::TRUE_TYPE_PROGRAM
+                && !matches!(
+                    family.as_str(),
+                    image_mask::FAMILY | image_mask::INVOKED_IMAGE
+                )
                 && !matches!(
                     family.as_str(),
                     "document"
@@ -3778,6 +3817,12 @@ impl<'a> ModelGraph<'a> {
         language::enabled(self)
             || scoped_pua::ordinary_content_enabled(self)
             || self.associated_files.is_some()
+            || image_mask::enabled(self)
+            || device_n::enabled(self)
+    }
+
+    fn needs_pattern_invocations(&self) -> bool {
+        self.associated_files.is_some() || image_mask::enabled(self) || device_n::enabled(self)
     }
 
     fn charge_text_bytes(&self, bytes: usize) -> Result<()> {
@@ -5303,6 +5348,7 @@ fn page_linked_objects<'a>(
 ) -> Result<Vec<ModelObjectRef<'a>>> {
     let mut objects = Vec::new();
     file_spec::association::collect_page(graph, page)?;
+    device_n::append_page(graph, page, &mut objects, max_objects)?;
     if graph.materializes("pageBox") {
         append_page_boxes(page, graph.document, &mut objects, max_objects)?;
     }
@@ -6304,9 +6350,30 @@ impl ModelObject for ContentStreamModel<'_> {
             }
             .into());
         }
+        if image_mask::enabled(graph)
+            && self.page_key.is_some()
+            && summary.scoped_operands_truncated
+        {
+            return Err(ValidationError::LimitExceeded {
+                limit: "image_resource_operands",
+            }
+            .into());
+        }
         let mut objects = Vec::new();
         append_scoped_content_models(self, graph, &summary, &mut objects, max_objects)?;
+        let check_inline_bits = graph.active_flavour.is_some()
+            && self.page_key.is_some()
+            && graph.materializes(image_mask::INVOKED_IMAGE);
         if self.object_type.as_str() == language::CONTENT_FAMILY {
+            if check_inline_bits {
+                self.append_inline_images(
+                    graph.document,
+                    &summary,
+                    &mut objects,
+                    max_objects,
+                    true,
+                )?;
+            }
             return Ok(objects);
         }
         if graph.materializes("operator") {
@@ -6341,32 +6408,14 @@ impl ModelObject for ContentStreamModel<'_> {
                 )?;
             }
         }
-        if graph.materializes("inlineImage") {
-            let mut ordinal = 0_usize;
-            for fact in summary
-                .facts
-                .iter()
-                .filter(|fact| matches!(fact, OperatorFact::InlineImage { .. }))
-                .cloned()
-            {
-                push_linked(
-                    &mut objects,
-                    ModelObjectRef::InlineImage(InlineImageModel::new(
-                        graph.document,
-                        self.key,
-                        self.page_ordinal,
-                        self.ordinal,
-                        ordinal,
-                        fact,
-                    )),
-                    max_objects,
-                )?;
-                ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or(ValidationError::LimitExceeded {
-                        limit: "max_objects",
-                    })?;
-            }
+        if graph.materializes("inlineImage") || check_inline_bits {
+            self.append_inline_images(
+                graph.document,
+                &summary,
+                &mut objects,
+                max_objects,
+                check_inline_bits,
+            )?;
         }
         if graph.materializes("resourceUse") {
             let effective = self.effective_resources(graph.document)?;
@@ -6388,6 +6437,41 @@ impl ModelObject for ContentStreamModel<'_> {
             }
         }
         Ok(objects)
+    }
+}
+
+impl ContentStreamModel<'_> {
+    fn append_inline_images<'a>(
+        &self,
+        document: &'a ParsedDocument,
+        summary: &ContentStreamSummary,
+        objects: &mut Vec<ModelObjectRef<'a>>,
+        max_objects: usize,
+        check_bits: bool,
+    ) -> Result<()> {
+        for (ordinal, fact) in summary
+            .facts
+            .iter()
+            .filter(|fact| matches!(fact, OperatorFact::InlineImage { .. }))
+            .cloned()
+            .enumerate()
+        {
+            let mut model = InlineImageModel::new(
+                document,
+                self.key,
+                self.page_ordinal,
+                self.ordinal,
+                ordinal,
+                fact,
+            );
+            if check_bits {
+                model
+                    .supertypes
+                    .push(ObjectTypeName::unchecked(image_mask::INVOKED_IMAGE));
+            }
+            push_linked(objects, ModelObjectRef::InlineImage(model), max_objects)?;
+        }
+        Ok(())
     }
 }
 
@@ -6673,7 +6757,16 @@ impl ModelObject for InlineImageModel<'_> {
                     String::from_utf8_lossy(name.as_bytes()).into_owned(),
                 ))
             })),
-            "bitsPerComponent" => optional_u64_model_value(*bits_per_component),
+            "bitsPerComponent" => optional_u64_model_value(match bits_per_component {
+                crate::content::InlineComponentBits::Integer(bits) => u64::try_from(*bits).ok(),
+                _ => None,
+            }),
+            "BitsPerComponent" => Ok(match bits_per_component {
+                crate::content::InlineComponentBits::Unspecified => ModelValue::Null,
+                crate::content::InlineComponentBits::Integer(bits) => image_mask::bits_value(*bits),
+                crate::content::InlineComponentBits::Malformed => ModelValue::Bool(false),
+            }),
+            "isMask" => Ok(ModelValue::Bool(false)),
             "location" => Ok(location_model_value(location)),
             _ => Err(crate::ProfileError::UnknownProperty {
                 property: BoundedText::unchecked(name.as_str()),
@@ -8373,7 +8466,13 @@ fn effective_resources_for_page_key<'a>(
         let Some(dictionary) = page_dictionary(document, key) else {
             break;
         };
-        if let Some(resources) = resolve_dictionary_value(document, dictionary.get("Resources")) {
+        if let Some((_, crate::CosObject::Dictionary(resources))) =
+            semantic_names::resolve_reference(
+                document,
+                dictionary.get("Resources"),
+                limits.max_object_depth,
+            )?
+        {
             dictionaries.push(resources);
         }
         current = match dictionary.get("Parent") {
@@ -8494,18 +8593,43 @@ fn resource_value<'a>(
     family: ResourceFamily,
     name: &PdfName,
 ) -> Option<&'a crate::CosObject> {
-    let dictionary_name = match family {
+    let collection =
+        resolve_dictionary_value(document, resources.get(resource_dictionary_name(family)))?;
+    collection.get_name(name)
+}
+
+fn scoped_resource_value<'a>(
+    graph: &ModelGraph<'a>,
+    resources: &EffectiveResources<'a>,
+    family: ResourceFamily,
+    name: &PdfName,
+) -> Result<Option<&'a crate::CosObject>> {
+    for resources in resources.dictionaries.iter().rev() {
+        if let Some((_, crate::CosObject::Dictionary(collection))) =
+            semantic_names::resolve_reference(
+                graph.document,
+                resources.get(resource_dictionary_name(family)),
+                graph.limits.max_object_depth,
+            )?
+            && let Some(value) = collection
+                .get_name(name)
+                .filter(|value| !matches!(value, crate::CosObject::Null))
+        {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+fn resource_dictionary_name(family: ResourceFamily) -> &'static str {
+    match family {
         ResourceFamily::Font => "Font",
         ResourceFamily::ColorSpace => "ColorSpace",
         ResourceFamily::ExtGState => "ExtGState",
         ResourceFamily::Pattern => "Pattern",
         ResourceFamily::Shading => "Shading",
         ResourceFamily::XObject => "XObject",
-    };
-    let collection = resolve_dictionary_value(document, resources.get(dictionary_name))?;
-    collection
-        .iter()
-        .find_map(|(key, value)| (key == name).then_some(value))
+    }
 }
 
 fn resolved_resource_family(
@@ -10274,6 +10398,7 @@ pub struct GenericModel<'a> {
     direct_value: Option<ModelValue>,
     device_output: Option<device_color::OutputSpaces>,
     glyph_evidence: Option<glyphs::Evidence>,
+    device_n: Option<device_n::Evidence>,
     icc_header: Option<Arc<IccHeader>>,
     parsed_cmap: Option<Arc<cmap::CMap>>,
     tagged_content: Option<tagged_content::Evidence>,
@@ -10316,6 +10441,7 @@ impl<'a> GenericModel<'a> {
             direct_value: None,
             device_output: None,
             glyph_evidence: None,
+            device_n: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10349,6 +10475,7 @@ impl<'a> GenericModel<'a> {
             direct_value: Some(value),
             device_output: None,
             glyph_evidence: None,
+            device_n: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10378,6 +10505,7 @@ impl<'a> GenericModel<'a> {
             direct_value: None,
             device_output: None,
             glyph_evidence: None,
+            device_n: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10426,6 +10554,21 @@ impl<'a> GenericModel<'a> {
     }
 
     fn cos_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        if let Some(evidence) = self.device_n {
+            return Some(evidence.property(name));
+        }
+        if matches!(
+            self.object_type.as_str(),
+            image_mask::FAMILY | image_mask::INVOKED_IMAGE | image_mask::SOFT_MASK
+        ) {
+            return match name.as_str() {
+                "BitsPerComponent" => self.direct_value.clone().map(Ok),
+                "isMask" => Some(Ok(ModelValue::Bool(
+                    self.object_type.as_str() == image_mask::FAMILY,
+                ))),
+                _ => None,
+            };
+        }
         if self.object_type.as_str() == language::FAMILY
             && let Some(ModelValue::String(value)) = &self.direct_value
         {
@@ -11013,6 +11156,9 @@ fn generic_linked_objects<'a>(
         "names" => names_linked_objects(model, graph, max_objects),
         "destination" => destination_linked_objects(model, graph, max_objects),
         "xObject" | "formXObject" => xobject_linked_objects(model, graph, max_objects),
+        image_mask::FAMILY | image_mask::INVOKED_IMAGE => {
+            image_mask::linked_objects(model, graph, max_objects)
+        }
         "halftone" if model.dictionary.get("HalftoneType").and_then(cos_integer) == Some(5) => {
             let mut objects = Vec::new();
             for (ordinal, (name, value)) in model.dictionary.iter().enumerate() {
@@ -11061,7 +11207,7 @@ fn append_scoped_content_models<'a>(
     scoped_pua::append_content(graph, model, summary, objects, max_objects)?;
     file_spec::association::collect_content(graph, model, summary)?;
     let language_only = model.object_type.as_str() == language::CONTENT_FAMILY;
-    let invocation_states = if graph.associated_files.is_some()
+    let mut invocation_states = if graph.needs_pattern_invocations()
         || (!language_only
             && device_color::FAMILIES
                 .iter()
@@ -11071,6 +11217,14 @@ fn append_scoped_content_models<'a>(
     } else {
         BTreeMap::new()
     };
+    device_n::append_content(
+        graph,
+        model,
+        summary,
+        &mut invocation_states,
+        objects,
+        max_objects,
+    )?;
     if language_only {
         let text = glyphs::text_invocations(model, graph, summary)?;
         return append_content_resources(
@@ -11199,12 +11353,13 @@ fn append_content_resources<'a>(
         return Ok(());
     }
     let effective = model.effective_resources(graph.document)?;
+    let mut inspected_images = HashSet::new();
     for used in uses.iter().filter(|used| match used.family {
         ResourceFamily::ExtGState => check_graphics_states,
         ResourceFamily::XObject => follow_content,
         ResourceFamily::Pattern => {
             follow_content
-                && (graph.associated_files.is_none()
+                && (!graph.needs_pattern_invocations()
                     || used
                         .location
                         .offset
@@ -11212,9 +11367,8 @@ fn append_content_resources<'a>(
         }
         _ => false,
     }) {
-        let Some(resource) = effective.dictionaries.iter().rev().find_map(|resources| {
-            resource_value(graph.document, resources, used.family, &used.name)
-        }) else {
+        let Some(resource) = scoped_resource_value(graph, &effective, used.family, &used.name)?
+        else {
             continue;
         };
         let path = used
@@ -11222,15 +11376,26 @@ fn append_content_resources<'a>(
             .path
             .as_ref()
             .map_or(model.context_prefix.as_str(), BoundedText::as_str);
+        if used.family == ResourceFamily::XObject
+            && image_mask::enabled(graph)
+            && model.page_key.is_some()
+            && inspected_images.insert(&used.name)
+        {
+            image_mask::append_invoked(graph, resource, path, objects, max_objects)?;
+        }
         if used.family == ResourceFamily::ExtGState {
             if let Some(dictionary) = resolve_dictionary_value(graph.document, Some(resource)) {
                 append_graphics_state_names(graph, dictionary, path, objects, max_objects)?;
             }
-        } else if let (Some(page_key), crate::CosObject::Reference(key)) =
-            (model.page_key, resource)
+        } else if let Some(page_key) = model.page_key
+            && let Some((Some(key), _)) = semantic_names::resolve_reference(
+                graph.document,
+                Some(resource),
+                graph.limits.max_object_depth,
+            )?
             && let Some(mut form) = resource_content_stream(
                 graph,
-                *key,
+                key,
                 Some(page_key),
                 model.page_ordinal,
                 format!(
@@ -11238,7 +11403,7 @@ fn append_content_resources<'a>(
                     model.page_ordinal, key.number, key.generation
                 ),
                 ResourceContent::Resource,
-            )
+            )?
         {
             form.initial_color_state = used
                 .location
@@ -11264,7 +11429,7 @@ fn append_content_resources<'a>(
             if form.initial_tag_context.is_some()
                 || (form.initial_text_state.is_some() && graph.materializes(glyphs::UNICODE_FAMILY))
             {
-                form.context_prefix = format!("{path}/form[{}]", object_key_text(*key));
+                form.context_prefix = format!("{path}/form[{}]", object_key_text(key));
             }
             push_linked(objects, ModelObjectRef::ContentStream(form), max_objects)?;
         }
@@ -11349,7 +11514,7 @@ fn xobject_linked_objects<'a>(
         model.ordinal,
         model.context.clone(),
         ResourceContent::Resource,
-    ) {
+    )? {
         push_linked(
             &mut objects,
             ModelObjectRef::ContentStream(content),
@@ -11365,24 +11530,24 @@ fn append_appearance_content<'a>(
     objects: &mut Vec<ModelObjectRef<'a>>,
     max_objects: usize,
 ) -> Result<()> {
-    let Some(appearances) =
-        resolve_dictionary_value(graph.document, annotation.dictionary.get("AP"))
+    let resolve = |value| {
+        semantic_names::resolve_reference(graph.document, value, graph.limits.max_object_depth)
+    };
+    let Some((_, crate::CosObject::Dictionary(appearances))) =
+        resolve(annotation.dictionary.get("AP"))?
     else {
         return Ok(());
     };
     let mut keys = BTreeSet::new();
     for key in ["N", "R", "D"] {
-        let value = appearances.get(key);
-        match semantic_names::resolve(graph.document, value) {
-            Some(crate::CosObject::Stream(_)) => {
-                if let Some(crate::CosObject::Reference(key)) = value {
-                    keys.insert(*key);
-                }
+        match resolve(appearances.get(key))? {
+            Some((Some(key), crate::CosObject::Stream(_))) => {
+                keys.insert(key);
             }
-            Some(crate::CosObject::Dictionary(states)) => {
+            Some((_, crate::CosObject::Dictionary(states))) => {
                 for (_, value) in states.iter() {
-                    if let crate::CosObject::Reference(key) = value {
-                        keys.insert(*key);
+                    if let Some((Some(key), crate::CosObject::Stream(_))) = resolve(Some(value))? {
+                        keys.insert(key);
                     }
                 }
             }
@@ -11401,7 +11566,7 @@ fn append_appearance_content<'a>(
             annotation.page_ordinal,
             context,
             ResourceContent::Resource,
-        ) {
+        )? {
             content.initial_text_state = Some(glyphs::TextState::initial());
             push_linked(objects, ModelObjectRef::ContentStream(content), max_objects)?;
         }
@@ -11422,33 +11587,43 @@ fn resource_content_stream<'a>(
     page_ordinal: usize,
     context_prefix: String,
     use_site: ResourceContent,
-) -> Option<ContentStreamModel<'a>> {
-    let object = graph.document.objects.get(&key)?;
-    let crate::CosObject::Stream(stream) = &object.object else {
-        return None;
+) -> Result<Option<ContentStreamModel<'a>>> {
+    let Some(object) = graph.document.objects.get(&key) else {
+        return Ok(None);
     };
-    let is_form = semantic_names::name(graph.document, stream.dictionary.get("Subtype"))
-        .is_some_and(|name| name.matches("Form"));
-    let is_tiling_pattern = stream.dictionary.get("PatternType").and_then(cos_integer) == Some(1);
+    let crate::CosObject::Stream(stream) = &object.object else {
+        return Ok(None);
+    };
+    let resolve = |field| {
+        semantic_names::resolve_reference(
+            graph.document,
+            stream.dictionary.get(field),
+            graph.limits.max_object_depth,
+        )
+    };
+    let is_form = matches!(resolve("Subtype")?, Some((_, crate::CosObject::Name(name))) if name.matches("Form"));
+    let is_tiling_pattern = matches!(
+        resolve("PatternType")?,
+        Some((_, crate::CosObject::Integer(1)))
+    );
     let is_type3_charproc = matches!(use_site, ResourceContent::CharProc(_));
     if !is_form && !is_tiling_pattern && !is_type3_charproc {
-        return None;
+        return Ok(None);
     }
+    let stream_resources =
+        || resolve("Resources").map(|value| value.and_then(|(_, value)| value.as_dictionary()));
     let (resource_context, character_resources) = match use_site {
-        ResourceContent::Resource => (
-            resolve_dictionary_value(graph.document, stream.dictionary.get("Resources")),
-            None,
-        ),
+        ResourceContent::Resource => (stream_resources()?, None),
         ResourceContent::CharProc(resources) => (
-            if graph.associated_files.is_some() {
-                resolve_dictionary_value(graph.document, stream.dictionary.get("Resources"))
+            if graph.needs_pattern_invocations() {
+                stream_resources()?
             } else {
                 None
             },
             Some(resources),
         ),
     };
-    Some(ContentStreamModel {
+    Ok(Some(ContentStreamModel {
         document: graph.document,
         limits: graph.limits,
         page_key,
@@ -11491,7 +11666,7 @@ fn resource_content_stream<'a>(
             .iter()
             .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
             .collect(),
-    })
+    }))
 }
 
 fn generic_models_from_dictionary_value<'a>(

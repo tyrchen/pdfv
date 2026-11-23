@@ -1,7 +1,11 @@
 //! Context-sensitive COS name rule objects.
 
+use std::collections::HashSet;
+
 use super::{GenericModel, ModelObjectRef};
-use crate::{CosObject, Dictionary, ModelValue, ParsedDocument, PdfName, Result};
+use crate::{
+    CosObject, Dictionary, ModelValue, ObjectKey, ParsedDocument, PdfName, Result, ValidationError,
+};
 
 pub(super) const INTENT: &str = "cosRenderingIntent";
 pub(super) const FILTER: &str = "cosFilter";
@@ -42,6 +46,35 @@ pub(super) fn resolve<'a>(
         CosObject::Reference(key) => Some(&document.objects.get(key)?.object),
         value => Some(value),
     }
+}
+
+pub(super) fn resolve_reference<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&'a CosObject>,
+    max_depth: u32,
+) -> Result<Option<(Option<ObjectKey>, &'a CosObject)>> {
+    let Some(mut value) = value else {
+        return Ok(None);
+    };
+    let mut owner = None;
+    let mut aliases = HashSet::new();
+    for _ in 0..=max_depth {
+        let CosObject::Reference(key) = value else {
+            return Ok(Some((owner, value)));
+        };
+        let Some(object) = document.objects.get(key) else {
+            return Ok(None);
+        };
+        if matches!(object.object, CosObject::Reference(_)) && !aliases.insert(*key) {
+            return Ok(None);
+        }
+        value = &object.object;
+        owner = Some(*key);
+    }
+    Err(ValidationError::LimitExceeded {
+        limit: "model_reference_depth",
+    }
+    .into())
 }
 
 pub(super) fn name<'a>(

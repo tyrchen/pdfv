@@ -1,10 +1,12 @@
 //! Bounded content-stream tokenization and operator summaries.
 
-use std::{collections::BTreeMap, fmt, ops::Range};
+use std::{collections::BTreeMap, fmt, ops::Range, sync::Arc};
 
 use crate::{
     BoundedText, CosObject, Dictionary, ObjectKey, ObjectLocation, ParseError, PdfName,
-    ResourceLimits, ValidationWarning, parser::parse_content_dictionary, pdf_text::ReplacementText,
+    ResourceLimits, ValidationWarning,
+    parser::{parse_content_array, parse_content_dictionary},
+    pdf_text::ReplacementText,
 };
 
 const DEFAULT_MAX_OPERATOR_NAME_BYTES: usize = 32;
@@ -57,7 +59,7 @@ pub(crate) const fn default_max_type3_charproc_ops() -> u64 {
 }
 
 /// Bounded parsed summary for one decoded content stream.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ContentStreamSummary {
     /// Stream object key.
     pub source: ObjectKey,
@@ -133,7 +135,7 @@ impl ContentStreamSummary {
 }
 
 /// Redacted and bounded operator fact.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum OperatorFact {
     /// Text object boundary operator.
     TextObject {
@@ -209,10 +211,12 @@ pub(crate) enum OperatorFact {
         height: Option<u64>,
         /// Optional color-space name.
         color_space: Option<PdfName>,
+        /// Optional direct colour-space array from the inline image dictionary.
+        color_space_array: Option<Arc<CosObject>>,
         /// Whether this image is a stencil painted with the current fill colour.
         image_mask: bool,
         /// Optional bits per component.
-        bits_per_component: Option<u64>,
+        bits_per_component: InlineComponentBits,
         /// Declared filters.
         filters: Vec<PdfName>,
         /// Deterministic location.
@@ -603,7 +607,10 @@ pub(crate) fn summarize_content_stream_with_text(
                 let operands_complete = summary.warnings.len() == warned_at_operator;
                 if !operands_complete {
                     match op.as_str() {
-                        "BMC" | "BDC" | "EMC" | "Do" => summary.scoped_operands_truncated = true,
+                        "BMC" | "BDC" | "EMC" | "Do" | "Tf" | "gs" | "CS" | "cs" | "SCN"
+                        | "scn" | "sh" => {
+                            summary.scoped_operands_truncated = true;
+                        }
                         "DP" => summary.marked_points_truncated = true,
                         _ => {}
                     }
@@ -713,6 +720,7 @@ fn classify_operator(
                 width: inline.width,
                 height: inline.height,
                 color_space: inline.color_space,
+                color_space_array: inline.color_space_array,
                 image_mask: inline.image_mask,
                 bits_per_component: inline.bits_per_component,
                 filters: inline.filters,
@@ -1101,10 +1109,18 @@ struct InlineImageSummary {
     width: Option<u64>,
     height: Option<u64>,
     color_space: Option<PdfName>,
+    color_space_array: Option<Arc<CosObject>>,
     image_mask: bool,
-    bits_per_component: Option<u64>,
+    bits_per_component: InlineComponentBits,
     filters: Vec<PdfName>,
     rendering_intent: Option<PdfName>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InlineComponentBits {
+    Unspecified,
+    Integer(i64),
+    Malformed,
 }
 
 struct ContentTokenizer<'a> {
@@ -1216,16 +1232,46 @@ impl<'a> ContentTokenizer<'a> {
             }
         }
         self.consume_inline_image_data(limits)?;
+        let color_space = values.get("CS").or_else(|| values.get("ColorSpace"));
+        let array_bytes = match color_space {
+            Some(Operand::TextRange(range)) => self.bytes.get(range.clone()),
+            _ => None,
+        };
+        let color_space_array = match array_bytes {
+            Some(bytes) if bytes.first() == Some(&b'[') => {
+                if bytes.len() > limits.max_content_stream_operand_bytes {
+                    return Err(ParseError::LimitExceeded {
+                        limit: "max_content_stream_operand_bytes",
+                    });
+                }
+                match parse_content_array(bytes, limits) {
+                    Ok(array) => Some(Arc::new(CosObject::Array(array))),
+                    Err(error @ ParseError::LimitExceeded { .. }) => return Err(error),
+                    Err(_) => None,
+                }
+            }
+            _ => None,
+        };
         Ok(InlineImageSummary {
             width: inline_u64(&values, "W").or_else(|| inline_u64(&values, "Width")),
             height: inline_u64(&values, "H").or_else(|| inline_u64(&values, "Height")),
-            color_space: inline_name(&values, "CS").or_else(|| inline_name(&values, "ColorSpace")),
+            color_space: match color_space {
+                Some(Operand::Name(name)) => Some(name.clone()),
+                _ => None,
+            },
+            color_space_array,
             image_mask: matches!(
                 values.get("IM").or_else(|| values.get("ImageMask")),
                 Some(Operand::Keyword(value)) if value == b"true"
             ),
-            bits_per_component: inline_u64(&values, "BPC")
-                .or_else(|| inline_u64(&values, "BitsPerComponent")),
+            bits_per_component: match values.get("BPC").or_else(|| values.get("BitsPerComponent")) {
+                None => InlineComponentBits::Unspecified,
+                Some(Operand::Keyword(value)) if value == b"null" => {
+                    InlineComponentBits::Unspecified
+                }
+                Some(Operand::Integer(value)) => InlineComponentBits::Integer(*value),
+                _ => InlineComponentBits::Malformed,
+            },
             filters: inline_filters(&values, limits)?,
             rendering_intent: inline_name(&values, "Intent"),
         })
@@ -1632,6 +1678,21 @@ mod tests {
         assert!(summary.truncated);
         assert_eq!(summary.operators_seen, 2);
         Ok(())
+    }
+
+    #[test]
+    fn test_should_bound_inline_image_color_space_array_bytes() {
+        let limits = ResourceLimits {
+            max_content_stream_operand_bytes: 15,
+            ..ResourceLimits::default()
+        };
+        let content = b"BI /W 1 /H 1 /BPC 8 /CS [/DeviceN [/Spot] /DeviceCMYK 6 0 R] ID x EI";
+        assert!(matches!(
+            summarize_content_stream(key(), "test", content, &limits),
+            Err(crate::ParseError::LimitExceeded {
+                limit: "max_content_stream_operand_bytes"
+            })
+        ));
     }
 
     #[test]

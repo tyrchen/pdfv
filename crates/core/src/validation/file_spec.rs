@@ -7,7 +7,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use super::{
     GenericModel, ModelGraph, ModelObjectRef, catalog_dictionary_value,
     cos::{CosOrigin, CosPrimitive},
-    object_key_text, push_linked, semantic_names, unknown_property,
+    object_key_text, push_linked, semantic_names,
+    semantic_names::resolve_reference,
+    unknown_property,
 };
 use crate::{
     BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument,
@@ -105,35 +107,6 @@ impl Attachments {
         }
         Ok(models)
     }
-}
-
-pub(super) fn resolve_reference<'a>(
-    document: &'a ParsedDocument,
-    value: Option<&'a CosObject>,
-    max_depth: u32,
-) -> Result<Option<(Option<ObjectKey>, &'a CosObject)>> {
-    let Some(mut value) = value else {
-        return Ok(None);
-    };
-    let mut owner = None;
-    let mut aliases = HashSet::new();
-    for _ in 0..=max_depth {
-        let CosObject::Reference(key) = value else {
-            return Ok(Some((owner, value)));
-        };
-        let Some(object) = document.objects.get(key) else {
-            return Ok(None);
-        };
-        if matches!(object.object, CosObject::Reference(_)) && !aliases.insert(*key) {
-            return Ok(None);
-        }
-        value = &object.object;
-        owner = Some(*key);
-    }
-    Err(ValidationError::LimitExceeded {
-        limit: "attachment_reference_depth",
-    }
-    .into())
 }
 
 fn has_mime_type(value: &[u8]) -> bool {

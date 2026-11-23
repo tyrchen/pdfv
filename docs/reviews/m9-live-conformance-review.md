@@ -325,12 +325,39 @@ decisions. These are the representative gaps for the next rule-scope work.
 | PDF/A-2a | `6-2-11-7-3-t01-pass-a`, `6-2-11-7-3-t01-fail-a` | Object stream `6.1.8-1` |
 | PDF/A-2b | `6-1-12-t01-pass-a` | Transparency `6.4.3-1` through `6.4.3-3` |
 | PDF/A-2u | `6-2-11-7-2-t01-pass-a`, `6-2-11-7-2-t01-fail-a` | Width, Unicode, and CMap rules `6.2.11.5-1`, `6.2.11.7.2-1/-2`, `6.2.11.4.2-1` |
-| PDF/A-3b | Upstream `6-8-t02-*` attachment fixtures | Mask stream `6.2.8-5`, DeviceN limit `6.1.13-9`, XMP `6.6.2.3.1-1/-2` and `6.6.2.3.2-1`, annotation appearance `6.3.3-1` |
+| PDF/A-3b | Upstream `6-8-t02-*` attachment fixtures | XMP `6.6.2.3.1-1/-2` and `6.6.2.3.2-1`, annotation appearance `6.3.3-1` |
 | PDF/A-4e, PDF/A-4f | `6-2-4-1-t01-pass-a`, `6-3-1-t01-pass-a` | Annotation appearance `6.3.3-1` |
+
+## Image Component Depth and DeviceN Scope
+
+The base image bit-depth rule uses invoked images and inline images. The
+hard-mask rule checks the stream selected by an invoked image's `/Mask`
+entry. In 68 controls across PDF/A-1b, 2b, 3b, and 4, 524 of 544 rule
+comparisons agree with veraPDF. The remaining 20 comparisons cover five
+malformed bit-depth values. pdfv requires integer COS values in these
+checks. veraPDF coerces those malformed values. These rules produced
+zero unsupported evaluations in the controls.
+
+DeviceN rules use the colour-space arrays reached through content, images,
+shadings, and transparency groups. They count component slots and check the
+colourant names given by `/Colorants` and `/Process`. Graphics state carries
+the original default gray resource scope into forms that paint with it.
+All 294 DeviceN rule comparisons across 49 controls and the same four
+profiles agree with veraPDF, with zero unsupported evaluations.
+
+The 12 upstream PDF/A-3b attachment fixtures now agree on 8 document
+decisions, up from 4. All 12 have a definitive result with zero unsupported
+evaluations. The four remaining false-invalid decisions are
+`6-8-t02-pass-c`, `-d`, `-e`, and `-g`. They share the XMP extension
+schema rule failures listed above. `-g` also fails the annotation appearance
+rule. The attachment checks still agree on all 581 assertions.
+
+The 30-case audit now has 21 matching outcomes, six incomplete decisions,
+and three false-invalid decisions, with zero false-compliant decisions.
 
 ## Release Blockers
 
-- The audit of the 15 profiles still has ten whole-document differences
+- The audit of the 15 profiles still has nine whole-document differences
   in its 30 controls. See
   [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
 - The current workspace has zero private T3 release documents. Qualification

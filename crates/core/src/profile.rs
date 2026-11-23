@@ -2820,16 +2820,8 @@ impl XmlRuleBuilder {
         if unicode_test.is_some() {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::UNICODE_FAMILY);
         }
-        if object_type.as_str() == "embeddedFontFile"
-            && source_test
-                .as_str()
-                .split_once("&&")
-                .is_some_and(|(presence, syntax)| {
-                    presence.trim() == "Subtype != null"
-                        && syntax.trim() == r"/^[-\w+\.]+\/[-\w+\.]+$/.test(Subtype)"
-                })
-        {
-            object_type = ObjectTypeName::unchecked(crate::validation::file_spec::EMBEDDED_FILE);
+        if let Some(family) = imported_media_family(object_type.as_str(), source_test.as_str()) {
+            object_type = ObjectTypeName::unchecked(family);
         }
         let mut test = if let Some(reason) = self.unsupported_reason {
             RuleExpr::Unsupported {
@@ -2888,6 +2880,21 @@ impl XmlRuleBuilder {
             references: self.references,
         })
     }
+}
+
+fn imported_media_family(object: &str, test: &str) -> Option<&'static str> {
+    if object == "image" && test.starts_with("isMask == true || BitsPerComponent == null") {
+        return Some(crate::validation::image_mask::INVOKED_IMAGE);
+    }
+    if object == "embeddedFontFile"
+        && test.split_once("&&").is_some_and(|(presence, syntax)| {
+            presence.trim() == "Subtype != null"
+                && syntax.trim() == r"/^[-\w+\.]+\/[-\w+\.]+$/.test(Subtype)"
+        })
+    {
+        return Some(crate::validation::file_spec::EMBEDDED_FILE);
+    }
+    None
 }
 
 fn imported_language_property(test: &str) -> Option<&'static str> {
@@ -3267,7 +3274,8 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "OutputIntents" | "OutputIntent" | "PDOutputIntent" => Some("outputIntent"),
         "PDXObject" | "PD3DStream" | "PDMediaClip" | "PDRichMedia" => Some("xObject"),
         "PDXForm" => Some("formXObject"),
-        "PDXImage" | "JPEG2000" | "PDMaskImage" => Some("image"),
+        "PDMaskImage" => Some(crate::validation::image_mask::FAMILY),
+        "PDXImage" | "JPEG2000" => Some("image"),
         "PDContentStream" | "Op_q_gsave" => Some("contentStream"),
         "Op_Undefined" => Some("undefinedOperator"),
         "PDOCConfig" => Some("optionalContentProperties"),
@@ -3275,7 +3283,8 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDOutline" => Some("outline"),
         "PDDestination" => Some("destination"),
         "PDExtGState" => Some("extGState"),
-        "PDDeviceN" | "PDSeparation" | "PDGroup" => Some("colorSpace"),
+        "PDDeviceN" => Some(crate::validation::device_n::FAMILY),
+        "PDSeparation" | "PDGroup" => Some("colorSpace"),
         "PDICCBasedCMYK" => Some("iccBasedCmyk"),
         "PDDeviceRGB" => Some("deviceRgb"),
         "PDDeviceGray" => Some("deviceGray"),

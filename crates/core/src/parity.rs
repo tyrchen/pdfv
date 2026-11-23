@@ -219,7 +219,7 @@ fn generated_corpus_rows() -> Result<Vec<CorpusAgreementRow>> {
             source: CorpusFixtureSource::Generated,
             bytes: &resource_font_color_pdf(),
             options: feature_options(),
-            expected: CorpusOutcome::Incomplete,
+            expected: CorpusOutcome::Invalid,
             profile: "auto-default-pdfa-1b",
             semantic_families: &["resource", "font", "color", "image", "xObject"],
             required_feature_families: &[

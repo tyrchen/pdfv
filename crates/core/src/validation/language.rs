@@ -212,7 +212,7 @@ pub(super) fn append_type3_streams<'a>(
                 content.page_ordinal,
                 location_path,
                 ResourceContent::CharProc(resources.clone()),
-            ) {
+            )? {
                 push_linked(objects, ModelObjectRef::ContentStream(model), max_objects)?;
             }
         }

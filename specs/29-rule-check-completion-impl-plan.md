@@ -84,12 +84,18 @@ assertions across 136 PDF/A-3b controls agree with veraPDF, including the
 12 upstream attachment fixtures. The attachment rules produce zero
 unsupported evaluations.
 
-The broader audit sampled all 15 built-in profiles. Twenty of its 30
-whole-document decisions agree and ten differ, with zero false-compliant
-decisions. The 12 upstream attachment fixtures expose additional image-mask,
-DeviceN, XMP, and annotation gaps outside the attachment rules. The checked-in
-8-row and supplemental 13-row release checks continue to agree.
-[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit)
+Image bit-depth rules distinguish ordinary invocations, stencils, soft masks,
+and streams reached through `/Mask`. DeviceN limits and colourant checks use
+the colour spaces reached through actual content and group usage. The 12
+upstream attachment fixtures now agree on eight document decisions with
+zero incomplete results. Four valid fixtures still fail XMP extension
+schema rules, one of which also fails the annotation appearance rule.
+
+The broader audit sampled all 15 built-in profiles. Twenty-one of its 30
+whole-document decisions agree and nine differ, with zero false-compliant
+decisions. The checked-in 8-row and supplemental 13-row release checks
+continue to agree.
+[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#image-component-depth-and-devicen-scope)
 
 ## Implementation constraints
 

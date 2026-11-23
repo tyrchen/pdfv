@@ -16,10 +16,10 @@ of the current implementation phase.
   [the glyph measurement](../crates/core/src/validation/glyphs.rs) and
   [the live comparisons](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
 - **P1.** The expanded profile audit found six incomplete decisions and
-  four incorrectly invalid ones. Scope the mask, DeviceN, transparency,
-  annotation, and XMP rules to their actual model objects. Resolve the
+  three incorrectly invalid ones. Scope the transparency, annotation, and
+  XMP extension schema rules to their actual model objects. Resolve the
   remaining object-stream, CIDSet, glyph-width, and Unicode evidence. The
-  [live audit](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit)
+  [live audit](../docs/reviews/m9-live-conformance-review.md#image-component-depth-and-devicen-scope)
   records the rule IDs and representative fixtures.
 - **P1.** Embedded PDF conformance checks `isValidPDFA12` and
   `isValidPDFA124` still need evidence from `/EF` stream traversal and
@@ -56,3 +56,7 @@ of the current implementation phase.
   `/EF`-selected streams. Every clause 6.8 assertion agrees with veraPDF
   across 136 controls. See
   [the attachment review](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit).
+- **P1.** Image bit-depth and DeviceN rules use the objects reached through
+  actual image and colour-space use. The 12 upstream PDF/A-3b attachment
+  fixtures yield zero incomplete decisions. See
+  [the scope review](../docs/reviews/m9-live-conformance-review.md#image-component-depth-and-devicen-scope).

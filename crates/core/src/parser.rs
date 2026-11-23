@@ -1067,6 +1067,19 @@ pub(crate) fn parse_content_dictionary(
     parser.parse_dictionary(0)
 }
 
+pub(crate) fn parse_content_array(
+    bytes: &[u8],
+    limits: &ResourceLimits,
+) -> std::result::Result<Vec<CosObject>, ParseError> {
+    ByteParser::new(
+        SourceStorage::Memory(Arc::from(bytes)),
+        limits.clone(),
+        None,
+        ParseOptions::default(),
+    )
+    .parse_array(0)
+}
+
 impl<'a> ByteParser<'a> {
     fn new(
         source: SourceStorage,

@@ -6,7 +6,7 @@ use super::{
     ContentStreamModel, EffectiveResources, GenericModel, ModelGraph, ModelObjectRef, OperatorFact,
     ResourceFamily, array_values, color_space_component_count, color_space_family,
     output_intent_icc_header, page_dictionary, push_linked, resolve_dictionary_value,
-    resource_value, semantic_names,
+    resource_value, scoped_resource_value, semantic_names,
 };
 use crate::{CosObject, Dictionary, ModelValue, ObjectLocation, ParsedDocument, PdfName, Result};
 
@@ -124,6 +124,7 @@ pub(super) struct GraphicsState {
     stroke_pattern: bool,
     text_mode: Option<u8>,
     transparency: Option<BlendingSpace>,
+    pub(super) device_n_state: Option<super::device_n::ColourUseState>,
 }
 
 impl GraphicsState {
@@ -136,6 +137,7 @@ impl GraphicsState {
             stroke_pattern: false,
             text_mode: (!is_form).then_some(0),
             transparency: None,
+            device_n_state: None,
         }
     }
 
@@ -223,8 +225,8 @@ fn used_devices<'a>(
                 }
                 let active = selected.filter(|device| !defaults.contains(device));
                 let name = selectors.get(&location.offset).copied();
-                update_selection(graph, resources, operator, name, active, &mut state);
-                if state.follows_pattern_invocation(operator, graph.associated_files.is_some())
+                update_selection(graph, resources, operator, name, active, &mut state)?;
+                if state.follows_pattern_invocation(operator, graph.needs_pattern_invocations())
                     && let Some(offset) = location.offset
                 {
                     uses.invocations.insert(offset, state);
@@ -283,40 +285,49 @@ fn update_selection(
     name: Option<&PdfName>,
     active: Option<Device>,
     state: &mut GraphicsState,
-) {
-    let patterned = || {
-        graph.associated_files.is_some()
-            && name.is_some_and(|name| is_pattern_space(graph.document, resources, name))
-    };
+) -> Result<()> {
+    let patterned = graph.needs_pattern_invocations()
+        && matches!(operator, "cs" | "CS")
+        && if let Some(name) = name {
+            is_pattern_space(graph, resources, name)?
+        } else {
+            false
+        };
     match operator {
         "g" | "rg" | "k" | "cs" => {
             state.fill = active;
-            state.fill_pattern = operator == "cs" && patterned();
+            state.fill_pattern = patterned;
         }
         "G" | "RG" | "K" | "CS" => {
             state.stroke = active;
-            state.stroke_pattern = operator == "CS" && patterned();
+            state.stroke_pattern = patterned;
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn is_pattern_space(
-    document: &ParsedDocument,
+    graph: &ModelGraph<'_>,
     resources: &EffectiveResources<'_>,
     name: &PdfName,
-) -> bool {
+) -> Result<bool> {
     if name.matches("Pattern") {
-        return true;
+        return Ok(true);
     }
-    let value = resources.dictionaries.iter().rev().find_map(|dictionary| {
-        resource_value(document, dictionary, ResourceFamily::ColorSpace, name)
-    });
-    let first = match semantic_names::resolve(document, value) {
-        Some(CosObject::Array(parts)) => parts.first(),
-        value => value,
+    let value = scoped_resource_value(graph, resources, ResourceFamily::ColorSpace, name)?;
+    let first = match semantic_names::resolve_reference(
+        graph.document,
+        value,
+        graph.limits.max_object_depth,
+    )? {
+        Some((_, CosObject::Array(parts))) => parts.first(),
+        value => value.map(|(_, value)| value),
     };
-    semantic_names::name(document, first).is_some_and(|name| name.matches("Pattern"))
+    Ok(
+        matches!(semantic_names::resolve_reference(graph.document, first, graph.limits.max_object_depth)?,
+        Some((_, CosObject::Name(name))) if name.matches("Pattern")),
+    )
 }
 
 fn inline_color(
