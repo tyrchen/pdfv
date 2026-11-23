@@ -1012,6 +1012,40 @@ fn xref_in_use_key(number: u64, generation: u64) -> Option<ObjectKey> {
     ))
 }
 
+pub(crate) fn parse_text_operand(
+    bytes: &[u8],
+    limits: &ResourceLimits,
+    array: bool,
+) -> std::result::Result<Vec<PdfString>, ParseError> {
+    let mut parser = ByteParser::new(
+        SourceStorage::Memory(Arc::from(bytes)),
+        limits.clone(),
+        None,
+        ParseOptions::default(),
+    );
+    match (array, parser.parse_object(0)?) {
+        (false, CosObject::String(string)) => Ok(vec![string]),
+        (true, CosObject::Array(items)) => {
+            let mut strings = Vec::new();
+            for item in items {
+                match item {
+                    CosObject::String(string) => strings.push(string),
+                    CosObject::Integer(_) | CosObject::Real(_) => {}
+                    _ => {
+                        return Err(ParseError::Malformed {
+                            message: bounded("invalid TJ array member"),
+                        });
+                    }
+                }
+            }
+            Ok(strings)
+        }
+        _ => Err(ParseError::Malformed {
+            message: bounded("invalid text-show operand"),
+        }),
+    }
+}
+
 impl<'a> ByteParser<'a> {
     fn new(
         source: SourceStorage,

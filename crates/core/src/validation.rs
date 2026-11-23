@@ -2,10 +2,13 @@
 
 mod cos;
 mod device_color;
+pub(crate) mod glyphs;
+mod icc;
 mod semantic_names;
 mod xmp_extension;
 
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::{Read, Seek, SeekFrom},
     num::NonZeroU64,
@@ -1844,6 +1847,21 @@ impl ValidationSession {
         for (object, rule) in deferred {
             state.apply_rule(&object, rule, &mut evaluator)?;
         }
+        if graph.materializes(glyphs::CID_SET_FAMILY) {
+            let budget = remaining_object_budget(&self.limits, visited.len(), 0)?;
+            for object in graph
+                .cid_audit
+                .try_borrow()
+                .map_err(|_| ValidationError::SubsystemUnavailable {
+                    subsystem: "glyphAudit",
+                })?
+                .models(graph.document, budget)?
+            {
+                for rule in index.rules_for(&object) {
+                    state.apply_rule(&object, rule, &mut evaluator)?;
+                }
+            }
+        }
         Ok(state.finish())
     }
 
@@ -1912,7 +1930,7 @@ fn selected_feature_families(
     match selection {
         FeatureSelection::None | FeatureSelection::All => Ok(registry
             .family_names()
-            .filter(|family| !cos::is_primitive_family(family.as_str()))
+            .filter(|family| registry.has_feature_family(family))
             .cloned()
             .collect()),
         FeatureSelection::Families { families } => {
@@ -2344,6 +2362,11 @@ impl ModelRegistry {
             ),
             family("permissions", PERMISSIONS_PROPERTIES, EMPTY_LINK_NAMES),
             family("font", FONT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("simpleFont", FONT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("trueTypeFont", FONT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("type0Font", FONT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("type1Font", FONT_PROPERTIES, EMPTY_LINK_NAMES),
+            family("cidFont", FONT_PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 "fontDescriptor",
                 FONT_DESCRIPTOR_PROPERTIES,
@@ -2380,6 +2403,20 @@ impl ModelRegistry {
             family("fileSpec", FILE_SPEC_PROPERTIES, EMPTY_LINK_NAMES),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
             family(
+                glyphs::WIDTH_FAMILY,
+                &[
+                    "renderingMode",
+                    "widthFromFontProgram",
+                    "widthFromDictionary",
+                ],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                glyphs::CID_SET_FAMILY,
+                &["fontName", "containsCIDSet", "cidSetListsAllGlyphs"],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 "iccBasedCmyk",
                 &[
                     "overprintFlag",
@@ -2404,6 +2441,8 @@ impl ModelRegistry {
                 EMPTY_LINK_NAMES,
             ),
             family("iccProfile", ICC_PROFILE_PROPERTIES, EMPTY_LINK_NAMES),
+            family(icc::INPUT_FAMILY, ICC_PROFILE_PROPERTIES, EMPTY_LINK_NAMES),
+            family(icc::OUTPUT_FAMILY, ICC_PROFILE_PROPERTIES, EMPTY_LINK_NAMES),
             family("extGState", EXT_GSTATE_PROPERTIES, EMPTY_LINK_NAMES),
             family("pattern", PATTERN_PROPERTIES, EMPTY_LINK_NAMES),
             family("shading", SHADING_PROPERTIES, EMPTY_LINK_NAMES),
@@ -2470,6 +2509,8 @@ impl ModelRegistry {
                 &["intValue", "fitsSigned32"],
                 EMPTY_LINK_NAMES,
             ),
+            family(cos::ARRAY_FAMILY, &["size"], EMPTY_LINK_NAMES),
+            family(cos::DICTIONARY_FAMILY, &["size"], EMPTY_LINK_NAMES),
             family(REAL_FAMILY, &["realValue"], EMPTY_LINK_NAMES),
             family(
                 NAME_FAMILY,
@@ -2521,7 +2562,12 @@ impl ModelRegistry {
     }
 
     fn has_feature_family(&self, family: &ObjectTypeName) -> bool {
-        !cos::is_primitive_family(family.as_str()) && self.has_family(family)
+        !cos::is_primitive_family(family.as_str())
+            && !matches!(
+                family.as_str(),
+                glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY
+            )
+            && self.has_family(family)
     }
 
     /// Returns true when a property is present on a specific registered family schema.
@@ -3319,6 +3365,7 @@ pub struct ModelGraph<'a> {
     materialized_families: BTreeSet<ObjectTypeName>,
     active_flavour: Option<ValidationFlavour>,
     accessibility_cache: OnceLock<Arc<AccessibilityGraph>>,
+    cid_audit: RefCell<glyphs::CidAudit>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3368,6 +3415,7 @@ struct EffectiveResources<'a> {
 struct IccHeader {
     profile_size: u64,
     version: String,
+    version_number: (u8, u8, u8),
     device_class: String,
     color_space: String,
     pcs: String,
@@ -3402,6 +3450,10 @@ impl<'a> ModelGraph<'a> {
                 || family.as_str() == semantic_names::BLEND_MODE
                 || family.as_str() == "halftone"
                 || family.as_str() == "resourceUse"
+                || matches!(
+                    family.as_str(),
+                    glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY
+                )
                 || device_color::FAMILIES.contains(&family.as_str())
         }) {
             materialized_families.insert(ObjectTypeName::unchecked("contentStream"));
@@ -3419,6 +3471,7 @@ impl<'a> ModelGraph<'a> {
             materialized_families,
             active_flavour: Some(active_flavour.clone()),
             accessibility_cache: OnceLock::new(),
+            cid_audit: RefCell::new(glyphs::CidAudit::default()),
         }
     }
 
@@ -3432,6 +3485,7 @@ impl<'a> ModelGraph<'a> {
                 .collect(),
             active_flavour: None,
             accessibility_cache: OnceLock::new(),
+            cid_audit: RefCell::new(glyphs::CidAudit::default()),
         }
     }
 
@@ -3439,6 +3493,21 @@ impl<'a> ModelGraph<'a> {
         self.materialized_families
             .iter()
             .any(|materialized| materialized.as_str() == family)
+    }
+
+    fn needs_glyph_evidence(&self) -> bool {
+        self.active_flavour.is_some()
+            && (self.materializes(glyphs::WIDTH_FAMILY)
+                || self.materializes(glyphs::CID_SET_FAMILY))
+    }
+
+    fn cid_audit_mut(&self) -> Result<std::cell::RefMut<'_, glyphs::CidAudit>> {
+        self.cid_audit.try_borrow_mut().map_err(|_| {
+            ValidationError::SubsystemUnavailable {
+                subsystem: "glyphAudit",
+            }
+            .into()
+        })
     }
 
     fn materializes_generic_roots(&self) -> bool {
@@ -3559,6 +3628,11 @@ impl<'a> ModelGraph<'a> {
             let additional = streams.drain(1..).map(|model| model.stream).collect();
             if let Some(first) = streams.first_mut() {
                 first.continuation = additional;
+            }
+        }
+        if self.needs_glyph_evidence() {
+            for stream in &mut streams {
+                stream.retain_glyph_text = true;
             }
         }
         Ok(streams)
@@ -4187,6 +4261,9 @@ impl ModelObject for DocumentModel<'_> {
                 model.supertypes.clear();
                 push_linked(&mut objects, ModelObjectRef::Generic(model), max_objects)?;
             }
+        }
+        if graph.materializes(icc::INPUT_FAMILY) || graph.materializes(icc::OUTPUT_FAMILY) {
+            icc::append(graph, &mut objects, max_objects)?;
         }
         if let Some(catalog) = graph.catalog() {
             push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
@@ -5092,7 +5169,8 @@ impl<'a> FontModel<'a> {
         let effective = effective_page_resources(document, page)?;
         let mut seen_names = BTreeSet::new();
         for resources in effective.dictionaries.iter().rev() {
-            let Some(crate::CosObject::Dictionary(fonts_dictionary)) = resources.get("Font") else {
+            let Some(fonts_dictionary) = resolve_dictionary_value(document, resources.get("Font"))
+            else {
                 continue;
             };
             for (name, value) in fonts_dictionary.iter() {
@@ -5115,7 +5193,7 @@ impl<'a> FontModel<'a> {
                         name: name.clone(),
                         dictionary,
                         object_type: ObjectTypeName::unchecked("font"),
-                        supertypes: vec![ObjectTypeName::unchecked("object")],
+                        supertypes: font_rule_families(document, dictionary),
                         links: Vec::new(),
                     });
                 }
@@ -5123,6 +5201,29 @@ impl<'a> FontModel<'a> {
         }
         Ok(fonts)
     }
+}
+
+fn font_rule_families(
+    document: &ParsedDocument,
+    dictionary: &crate::Dictionary,
+) -> Vec<ObjectTypeName> {
+    let mut families = vec![ObjectTypeName::unchecked("object")];
+    let Some(subtype) = semantic_names::name(document, dictionary.get("Subtype")) else {
+        return families;
+    };
+    let names: &[&str] = match subtype.as_bytes() {
+        b"Type0" if descendant_font_dictionary(document, dictionary).is_some() => {
+            &["type0Font", "cidFont"]
+        }
+        b"Type0" => &["type0Font"],
+        b"TrueType" => &["simpleFont", "trueTypeFont"],
+        b"Type1" | b"MMType1" => &["simpleFont", "type1Font"],
+        b"Type3" => &["simpleFont"],
+        b"CIDFontType0" | b"CIDFontType2" => &["cidFont"],
+        _ => &[],
+    };
+    families.extend(names.iter().map(|name| ObjectTypeName::unchecked(name)));
+    families
 }
 
 fn font_decision_property(
@@ -5333,6 +5434,7 @@ impl ModelObject for FontModel<'_> {
 #[derive(Clone, Debug)]
 pub struct AnnotationModel<'a> {
     document: &'a ParsedDocument,
+    page_key: ObjectKey,
     page_ordinal: usize,
     ordinal: usize,
     key: Option<ObjectKey>,
@@ -5363,6 +5465,7 @@ impl<'a> AnnotationModel<'a> {
                 }
                 annotations.push(Self {
                     document,
+                    page_key: page.key,
                     page_ordinal: page.ordinal,
                     ordinal,
                     key,
@@ -5450,6 +5553,9 @@ impl ModelObject for AnnotationModel<'_> {
         max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut objects = Vec::new();
+        if graph.needs_glyph_evidence() {
+            append_appearance_content(self, graph, &mut objects, max_objects)?;
+        }
         let pdf_2 =
             graph
                 .active_flavour
@@ -5698,6 +5804,8 @@ pub struct ContentStreamModel<'a> {
     page_key: Option<ObjectKey>,
     is_form: bool,
     initial_color_state: Option<device_color::GraphicsState>,
+    initial_text_state: Option<glyphs::TextState>,
+    retain_glyph_text: bool,
     resource_context: Option<&'a crate::Dictionary>,
     context_prefix: String,
     page_ordinal: usize,
@@ -5706,7 +5814,7 @@ pub struct ContentStreamModel<'a> {
     offset: u64,
     stream: &'a crate::StreamObject,
     continuation: Vec<&'a crate::StreamObject>,
-    summary_cache: Arc<OnceLock<std::result::Result<ContentStreamSummary, ParseError>>>,
+    summary_cache: Arc<OnceLock<std::result::Result<Arc<ContentStreamSummary>, ParseError>>>,
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
@@ -5716,12 +5824,15 @@ impl<'a> ContentStreamModel<'a> {
     fn identity_key(&self) -> String {
         match self.page_key {
             Some(page) => format!(
-                "contentStream:{}:{}:{}:{}:{:?}",
+                "contentStream:{}:{}:{}:{}:{:?}:{:?}",
                 page.number,
                 page.generation,
                 self.key.number,
                 self.key.generation,
-                self.initial_color_state
+                self.initial_color_state,
+                self.initial_text_state
+                    .as_ref()
+                    .map(glyphs::TextState::identity),
             ),
             None => format!(
                 "contentStream:detached:{}:{}:{}",
@@ -5749,7 +5860,7 @@ impl<'a> ContentStreamModel<'a> {
         Ok(streams)
     }
 
-    fn summary(&self) -> Result<ContentStreamSummary> {
+    fn summary(&self) -> Result<Arc<ContentStreamSummary>> {
         let location_path = format!("{}/contentStream[{}]", self.context_prefix, self.ordinal);
         self.summary_cache
             .get_or_init(|| {
@@ -5772,12 +5883,14 @@ impl<'a> ContentStreamModel<'a> {
                     decoded.push(b'\r');
                     decoded.extend(contents);
                 }
-                crate::content::summarize_content_stream(
+                crate::content::summarize_content_stream_with_text(
                     self.key,
                     &location_path,
                     &decoded,
                     self.limits,
+                    self.retain_glyph_text,
                 )
+                .map(Arc::new)
             })
             .clone()
             .map_err(PdfvError::Parse)
@@ -5826,7 +5939,7 @@ impl ModelObject for ContentStreamModel<'_> {
                 self.summary()?.marked_content.len(),
             )?)),
             "nestingLevel" => Ok(ModelValue::Number(u64_to_f64(u64::from(
-                content_stream_nesting_level(&self.summary()?),
+                content_stream_nesting_level(self.summary()?.as_ref()),
             ))?)),
             "inheritedResourceNames" => {
                 let effective = self.effective_resources(self.document)?;
@@ -7843,6 +7956,19 @@ fn resolve_resource_use(
     resources: &EffectiveResources<'_>,
     use_fact: &ResourceUse,
 ) -> ResolvedResourceUse {
+    if use_fact.family == ResourceFamily::ColorSpace
+        && matches!(
+            use_fact.name.as_bytes(),
+            b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"Pattern"
+        )
+    {
+        return ResolvedResourceUse {
+            status: ResourceResolutionStatus::Resolved,
+            family: use_fact.family,
+            object: None,
+            object_family: Some("colorSpace"),
+        };
+    }
     if resources.cyclic {
         return ResolvedResourceUse {
             status: ResourceResolutionStatus::Cyclic,
@@ -8378,13 +8504,21 @@ fn descendant_font_dictionary<'a>(
     document: &'a ParsedDocument,
     dictionary: &'a crate::Dictionary,
 ) -> Option<&'a crate::Dictionary> {
-    let Some(crate::CosObject::Array(descendants)) = dictionary.get("DescendantFonts") else {
-        return None;
-    };
-    descendants
-        .first()
+    descendant_font_value(document, dictionary)
         .and_then(|value| resolve_named_dictionary(document, value))
         .map(|(_key, _offset, dictionary)| dictionary)
+}
+
+fn descendant_font_value<'a>(
+    document: &'a ParsedDocument,
+    dictionary: &'a crate::Dictionary,
+) -> Option<&'a crate::CosObject> {
+    let crate::CosObject::Array(descendants) =
+        semantic_names::resolve(document, dictionary.get("DescendantFonts"))?
+    else {
+        return None;
+    };
+    descendants.first()
 }
 
 fn stream_from_value<'a>(
@@ -8517,6 +8651,7 @@ fn parse_icc_header(bytes: &[u8]) -> Option<IccHeader> {
     Some(IccHeader {
         profile_size: u64::from(profile_size),
         version: format!("{major}.{minor}.{bugfix}"),
+        version_number: (major, minor, bugfix),
         device_class: ascii_tag(bytes.get(12..16)?),
         color_space: ascii_tag(bytes.get(16..20)?),
         pcs: ascii_tag(bytes.get(20..24)?),
@@ -9130,6 +9265,8 @@ fn push_content_stream<'a>(
         page_key: Some(page.key),
         is_form: false,
         initial_color_state: None,
+        initial_text_state: None,
+        retain_glyph_text: false,
         resource_context: None,
         context_prefix: format!("root/page[{}]", page.ordinal),
         page_ordinal: page.ordinal,
@@ -9696,6 +9833,8 @@ pub struct GenericModel<'a> {
     allowed_properties: &'static [&'static str],
     direct_value: Option<ModelValue>,
     device_output: Option<device_color::OutputSpaces>,
+    glyph_evidence: Option<glyphs::Evidence>,
+    icc_header: Option<Arc<IccHeader>>,
     primitive: Option<CosPrimitive<'a>>,
     context: String,
     ordinal: usize,
@@ -9732,6 +9871,8 @@ impl<'a> GenericModel<'a> {
             allowed_properties: family_direct_properties(family),
             direct_value: None,
             device_output: None,
+            glyph_evidence: None,
+            icc_header: None,
             primitive: None,
             context: context.into(),
             ordinal,
@@ -9759,6 +9900,8 @@ impl<'a> GenericModel<'a> {
             allowed_properties: family_direct_properties(family),
             direct_value: Some(value),
             device_output: None,
+            glyph_evidence: None,
+            icc_header: None,
             primitive: None,
             context: context.into(),
             ordinal,
@@ -9782,6 +9925,8 @@ impl<'a> GenericModel<'a> {
             allowed_properties: &[],
             direct_value: None,
             device_output: None,
+            glyph_evidence: None,
+            icc_header: None,
             primitive: Some(primitive),
             context: format!("root/{family}[{}]", origin.ordinal),
             ordinal: origin.ordinal,
@@ -10198,6 +10343,20 @@ impl ModelObject for GenericModel<'_> {
         if let Some(primitive) = self.primitive {
             return primitive.property(name);
         }
+        if let Some(evidence) = &self.glyph_evidence {
+            return evidence.property(name);
+        }
+        if matches!(
+            self.object_type.as_str(),
+            icc::INPUT_FAMILY | icc::OUTPUT_FAMILY
+        ) {
+            return icc::property(
+                self.document,
+                &self.dictionary,
+                self.icc_header.as_deref(),
+                name,
+            );
+        }
         if self.object_type.as_str() == "cosIndirect" && name.as_str() == "spacingCompliesPDFA" {
             return Ok(self.direct_value.clone().unwrap_or(ModelValue::Null));
         }
@@ -10350,11 +10509,17 @@ fn append_scoped_content_models<'a>(
     } else {
         BTreeMap::new()
     };
+    let text_states = if graph.needs_glyph_evidence() {
+        glyphs::inspect(model, graph, summary, objects, max_objects)?
+    } else {
+        BTreeMap::new()
+    };
     append_content_resources(
         model,
         graph,
         &summary.resource_uses,
         &invocation_states,
+        &text_states,
         objects,
         max_objects,
     )?;
@@ -10423,6 +10588,7 @@ fn append_content_resources<'a>(
     graph: &ModelGraph<'a>,
     uses: &[ResourceUse],
     invocation_states: &BTreeMap<u64, device_color::GraphicsState>,
+    text_states: &BTreeMap<u64, glyphs::TextState>,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max_objects: usize,
 ) -> Result<()> {
@@ -10470,6 +10636,10 @@ fn append_content_resources<'a>(
                 .location
                 .offset
                 .and_then(|offset| invocation_states.get(&offset).copied());
+            form.initial_text_state = used
+                .location
+                .offset
+                .and_then(|offset| text_states.get(&offset).cloned());
             push_linked(objects, ModelObjectRef::ContentStream(form), max_objects)?;
         }
     }
@@ -10558,6 +10728,55 @@ fn xobject_linked_objects<'a>(
     Ok(objects)
 }
 
+fn append_appearance_content<'a>(
+    annotation: &AnnotationModel<'_>,
+    graph: &ModelGraph<'a>,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max_objects: usize,
+) -> Result<()> {
+    let Some(appearances) =
+        resolve_dictionary_value(graph.document, annotation.dictionary.get("AP"))
+    else {
+        return Ok(());
+    };
+    let mut keys = BTreeSet::new();
+    for key in ["N", "R", "D"] {
+        let value = appearances.get(key);
+        match semantic_names::resolve(graph.document, value) {
+            Some(crate::CosObject::Stream(_)) => {
+                if let Some(crate::CosObject::Reference(key)) = value {
+                    keys.insert(*key);
+                }
+            }
+            Some(crate::CosObject::Dictionary(states)) => {
+                for (_, value) in states.iter() {
+                    if let crate::CosObject::Reference(key) = value {
+                        keys.insert(*key);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for key in keys {
+        let context = format!(
+            "root/page[{}]/annotation[{}]/appearance[{}.{}]",
+            annotation.page_ordinal, annotation.ordinal, key.number, key.generation
+        );
+        if let Some(mut content) = resource_content_stream(
+            graph,
+            key,
+            Some(annotation.page_key),
+            annotation.page_ordinal,
+            context,
+        ) {
+            content.initial_text_state = Some(glyphs::TextState::initial());
+            push_linked(objects, ModelObjectRef::ContentStream(content), max_objects)?;
+        }
+    }
+    Ok(())
+}
+
 fn resource_content_stream<'a>(
     graph: &ModelGraph<'a>,
     key: ObjectKey,
@@ -10582,6 +10801,8 @@ fn resource_content_stream<'a>(
         page_key,
         is_form: true,
         initial_color_state: None,
+        initial_text_state: None,
+        retain_glyph_text: graph.needs_glyph_evidence() && page_key.is_some(),
         resource_context,
         context_prefix,
         page_ordinal,
@@ -12568,6 +12789,87 @@ endobj
             ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?,
         )?;
         assert_distinct_test_rule(&profile, "iso-19005-1-6-7-8-2", 0, 1);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(0, 0, 1)]
+    #[case(3, 1, 0)]
+    fn test_should_compare_used_type3_glyph_width_in_an_invoked_form(
+        #[case] mode: u8,
+        #[case] passes: usize,
+        #[case] failures: usize,
+    ) -> crate::Result<()> {
+        let mut pdf = b"%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources
+<< /XObject << /Fm 5 0 R >> /Font << /F 6 0 R >> >> >>
+endobj
+"
+        .to_vec();
+        append_test_stream(
+            &mut pdf,
+            "4 0 obj",
+            "",
+            format!("BT /F 12 Tf {mode} Tr ET /Fm Do").as_bytes(),
+        );
+        append_test_stream(
+            &mut pdf,
+            "5 0 obj",
+            "/Type /XObject /Subtype /Form",
+            b"BT [(A)] TJ ET",
+        );
+        pdf.extend(
+            b"6 0 obj
+<< /Type /Font /Subtype /Type3 /FirstChar 65 /LastChar 66 /Widths [500 1]
+/Encoding << /Differences [65 /A /B] >> /CharProcs << /A 7 0 R /B 8 0 R >> >>
+endobj
+",
+        );
+        append_test_stream(&mut pdf, "7 0 obj", "", b"620.5 0 d0");
+        append_test_stream(&mut pdf, "8 0 obj", "", b"700 0 d0");
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile =
+            validate_test_profile(&pdf, ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-3-6-1", passes, failures);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_check_icc_profile_header_in_non_pdfa_output_intent() -> crate::Result<()> {
+        let mut pdf = b"%PDF-2.0
+1 0 obj
+<< /Type /Catalog /OutputIntents [2 0 R] >>
+endobj
+2 0 obj
+<< /Type /OutputIntent /S /GTS_PDFX /DestOutputProfile 3 0 R >>
+endobj
+"
+        .to_vec();
+        let mut icc = 132_u32.to_be_bytes().to_vec();
+        icc.extend([0; 4]);
+        icc.extend([2, 0, 0, 0]);
+        icc.extend(b"scnrRGB XYZ ");
+        icc.resize(132, 0);
+        append_test_stream(&mut pdf, "3 0 obj", "/N 3", &icc);
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(4).ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "testFlavour",
+                })?,
+                "none",
+            )?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-4-6-2-3-1", 0, 1);
         Ok(())
     }
 

@@ -16,11 +16,18 @@ pub(super) const INTEGER_FAMILY: &str = "cosInteger";
 pub(super) const REAL_FAMILY: &str = "cosReal";
 pub(super) const NAME_FAMILY: &str = "cosName";
 pub(super) const STRING_FAMILY: &str = "cosString";
+pub(super) const ARRAY_FAMILY: &str = "cosArray";
+pub(super) const DICTIONARY_FAMILY: &str = "cosDictionary";
 
 pub(super) fn is_primitive_family(family: &str) -> bool {
     matches!(
         family,
-        INTEGER_FAMILY | REAL_FAMILY | NAME_FAMILY | STRING_FAMILY
+        INTEGER_FAMILY
+            | REAL_FAMILY
+            | NAME_FAMILY
+            | STRING_FAMILY
+            | ARRAY_FAMILY
+            | DICTIONARY_FAMILY
     )
 }
 
@@ -30,6 +37,8 @@ pub(super) enum CosPrimitive<'a> {
     Real(f64),
     Name(&'a PdfName),
     String(&'a PdfString),
+    Array(usize),
+    Dictionary(usize),
 }
 
 impl CosPrimitive<'_> {
@@ -39,6 +48,8 @@ impl CosPrimitive<'_> {
             Self::Real(_) => REAL_FAMILY,
             Self::Name(_) => NAME_FAMILY,
             Self::String(_) => STRING_FAMILY,
+            Self::Array(_) => ARRAY_FAMILY,
+            Self::Dictionary(_) => DICTIONARY_FAMILY,
         }
     }
 
@@ -49,6 +60,9 @@ impl CosPrimitive<'_> {
                 Ok(ModelValue::Bool(i32::try_from(value).is_ok()))
             }
             (Self::Real(value), "realValue") => Ok(ModelValue::Number(value)),
+            (Self::Array(size) | Self::Dictionary(size), "size") => {
+                usize_to_f64(size).map(ModelValue::Number)
+            }
             (Self::Name(value), "byteLength") => byte_length(value.as_bytes()),
             (Self::String(value), "byteLength") => byte_length(value.as_bytes()),
             (Self::Name(value), "internalRepresentation") => Ok(text_value(value.as_bytes())),
@@ -207,7 +221,14 @@ impl<'a> CosNode<'a> {
                 Some(CosPrimitive::Name(value))
             }
             Self::Value(CosObject::String(value)) => Some(CosPrimitive::String(value)),
-            _ => None,
+            Self::Value(CosObject::Array(values)) => Some(CosPrimitive::Array(values.len())),
+            Self::Value(CosObject::Dictionary(values)) | Self::Dictionary(values) => {
+                Some(CosPrimitive::Dictionary(values.len()))
+            }
+            Self::Value(CosObject::Stream(stream)) => {
+                Some(CosPrimitive::Dictionary(stream.dictionary.len()))
+            }
+            Self::Value(_) => None,
         }
     }
 

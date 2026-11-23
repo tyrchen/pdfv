@@ -2782,6 +2782,8 @@ struct XmlRuleBuilder {
     test: Option<BoundedText>,
     message: Option<BoundedText>,
     references: Vec<SpecReference>,
+    source_is_glyph: bool,
+    source_is_cid_font: bool,
 }
 
 impl XmlRuleBuilder {
@@ -2791,6 +2793,8 @@ impl XmlRuleBuilder {
         Ok(Self {
             object_type: Some(object_type),
             unsupported_reason,
+            source_is_glyph: source_object_type == "Glyph",
+            source_is_cid_font: source_object_type == "PDCIDFont",
             deferred: optional_bool_attr(element, b"deferred")?,
             ..Self::default()
         })
@@ -2800,7 +2804,7 @@ impl XmlRuleBuilder {
         let id = self.id.ok_or(ProfileError::InvalidXml {
             reason: BoundedText::unchecked("rule id is missing"),
         })?;
-        let object_type = self.object_type.ok_or(ProfileError::InvalidXml {
+        let mut object_type = self.object_type.ok_or(ProfileError::InvalidXml {
             reason: BoundedText::unchecked("rule object type is missing"),
         })?;
         let description = self
@@ -2809,6 +2813,15 @@ impl XmlRuleBuilder {
         let source_test = self.test.ok_or(ProfileError::InvalidXml {
             reason: BoundedText::unchecked("rule test is missing"),
         })?;
+        if self.source_is_glyph && source_test.as_str().contains("widthFromFontProgram") {
+            object_type = ObjectTypeName::unchecked(crate::validation::glyphs::WIDTH_FAMILY);
+        }
+        if self.source_is_cid_font
+            && id.0.as_str().starts_with("iso-19005-1-")
+            && source_test.as_str().contains("cidSetListsAllGlyphs")
+        {
+            object_type = ObjectTypeName::unchecked(crate::validation::glyphs::CID_SET_FAMILY);
+        }
         let mut test = if let Some(reason) = self.unsupported_reason {
             RuleExpr::Unsupported {
                 fragment: source_test.clone(),
@@ -3127,9 +3140,9 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "CosFilter" => Some("cosFilter"),
         "CosIIFilter" => Some("cosInlineImageFilter"),
         "CosBM" => Some("cosBlendMode"),
-        "CosArray"
-        | "CosDict"
-        | "CosTextString"
+        "CosArray" => Some("cosArray"),
+        "CosDict" => Some("cosDictionary"),
+        "CosTextString"
         | "CosUnicodeName"
         | "CosLang"
         | "CosBBox"
@@ -3153,15 +3166,12 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "ExtensionSchemasContainer" => Some("extensionSchemasContainer"),
         "PDCatalog" | "Catalog" => Some("catalog"),
         "PDPage" | "Page" => Some("page"),
-        "PDFont"
-        | "Font"
-        | "PDSimpleFont"
-        | "PDTrueTypeFont"
-        | "PDType0Font"
-        | "PDType1Font"
-        | "PDCIDFont"
-        | "TrueTypeFontProgram"
-        | "Glyph" => Some("font"),
+        "PDFont" | "Font" | "TrueTypeFontProgram" | "Glyph" => Some("font"),
+        "PDSimpleFont" => Some("simpleFont"),
+        "PDTrueTypeFont" => Some("trueTypeFont"),
+        "PDType0Font" => Some("type0Font"),
+        "PDType1Font" => Some("type1Font"),
+        "PDCIDFont" => Some("cidFont"),
         "PDCMap" | "PDReferencedCMap" | "CMapFile" => Some("cMap"),
         "EmbeddedFile" => Some("embeddedFontFile"),
         "PDAnnotation"
@@ -3202,7 +3212,8 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDDeviceGray" => Some("deviceGray"),
         "PDDeviceCMYK" => Some("deviceCmyk"),
         "PDHalftone" => Some("halftone"),
-        "ICCProfile" | "ICCOutputProfile" | "ICCInputProfile" => Some("iccProfile"),
+        "ICCProfile" | "ICCInputProfile" => Some("iccInputProfile"),
+        "ICCOutputProfile" => Some("iccOutputProfile"),
         "PDPattern" | "PDTilingPattern" | "PDShadingPattern" => Some("pattern"),
         "PDShading" => Some("shading"),
         "PDFunction" => Some("function"),

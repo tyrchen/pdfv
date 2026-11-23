@@ -13,7 +13,7 @@ On `veraPDFtest-pass-a.pdf`, the PDF/A-1b rule failures for the binary comment
 
 ## Live Evidence
 
-The checked-in three-row T2 manifest still produces three classified
+The initial checked-in three-row T2 manifest produced three classified
 `Incomplete` differences with veraPDF Greenfield 1.30.4. An additional run used
 eight fixtures at revision `bb75f4f0073d9350dfd058c0162a367e6fadf25e` of the
 [veraPDF conformance corpus](https://github.com/veraPDF/veraPDF-corpus/tree/bb75f4f0073d9350dfd058c0162a367e6fadf25e).
@@ -102,17 +102,38 @@ apply only to CMYK ICCBased spaces, allowing the RGB/calibrated positives
 unsupported rule each, all for glyph widths in rule `6.2.10.5-1`. There are
 zero false-compliant rows in these comparisons.
 
+## Rendered Glyph Follow-up
+
+The validator decodes the strings shown by `Tj`, `TJ`, and the quote
+operators in the active font and text rendering mode. It carries text state
+into invoked Forms, follows annotation appearance streams, and handles
+indirect font selections in graphics states. Text bytes stay internal to
+validation and are excluded from feature reports. The width check uses the
+font dictionary and the embedded program for the same code. Supported paths
+include WinAnsi TrueType, Identity-H CID fonts, raw CFF Type 1 fonts, and
+Type 3 glyph procedures selected by a Differences encoding.
+
+PDF/A-1 CIDSet validation tests the CIDs used by text-show operators against
+the actual font mapping and the decoded bit set. Both checked-in PDF/A-1b
+positives now match veraPDF at `Valid`. Clearing the CIDSet bits in a
+size-preserving copy of `validDocument.pdf` makes both engines fail the same
+rule, `6.3.5-3`. The third checked-in row remains `Invalid` in both engines.
+
+The 25-file PDF/A-4 colour group now matches veraPDF on every decision. In
+addition to the width evidence, this required correcting the applicability
+of font-subtype, ICC-profile, and COS container checks. The dedicated font
+set contains 15 upstream documents and the modified CIDSet control.
+Eleven decisions agree with veraPDF, including every positive. The five
+incomplete rows exercise legacy multiple-master CFF fonts or embedded CMaps.
+None of the comparisons classified an oracle-negative file as valid.
+
 ## Release Blockers
 
 - The automatic fallback still selects the ten-rule `pdfv-m4` profile. veraPDF
   selects the full fallback profile. The live comparison marks the two
   executions as incompatible.
-- The two vendored PDF/A-1b positives remain incomplete. Rule `6.3.6-1` needs
-  actual glyph widths for rendered character codes, and rule `6.3.5-3` also
-  needs to check used CIDs against the embedded subset's CIDSet.
-  The fixtures use WinAnsi TrueType and Identity-H CID TrueType. The Identity-H
-  subset has 1,674 glyph slots and 19 CIDSet bits, so a glyph-slot count cannot
-  establish which rendered characters the CIDSet covers.
+- Several additional font controls remain incomplete. The remaining cases
+  need legacy multiple-master CFF widths and embedded CMap evidence.
 - The four supplemental PDF/UA documents remain incomplete. The negative
   controls exercise whether individual page and Form content items are tagged
   or marked as artifacts. The positive controls also need more complete

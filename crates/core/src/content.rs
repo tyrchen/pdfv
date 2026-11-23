@@ -1,6 +1,6 @@
 //! Bounded content-stream tokenization and operator summaries.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt, ops::Range};
 
 use crate::{
     BoundedText, ObjectKey, ObjectLocation, ParseError, PdfName, ResourceLimits, ValidationWarning,
@@ -70,10 +70,23 @@ pub(crate) struct ContentStreamSummary {
     pub resource_uses: Vec<ResourceUse>,
     /// Rendering-intent names retained with their use sites.
     pub rendering_intents: Vec<(PdfName, ObjectLocation)>,
+    pub(crate) text_operands: BTreeMap<u64, TextOperand>,
     /// Recoverable parsing warnings.
     pub warnings: Vec<ValidationWarning>,
     /// Whether parsing stopped at an operator cap.
     pub truncated: bool,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct TextOperand(pub(crate) Vec<crate::PdfString>);
+
+impl fmt::Debug for TextOperand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TextOperand")
+            .field("strings", &self.0.len())
+            .finish()
+    }
 }
 
 impl ContentStreamSummary {
@@ -405,7 +418,8 @@ impl ResourceFamily {
 enum Operand {
     Name(PdfName),
     Integer(i64),
-    Bytes(u64),
+    NumberRange(Range<usize>),
+    TextRange(Range<usize>),
     Composite(Vec<u8>),
     Keyword(Vec<u8>),
 }
@@ -415,7 +429,9 @@ impl Operand {
         match self {
             Self::Name(name) => u64::try_from(name.as_bytes().len()).unwrap_or(u64::MAX),
             Self::Integer(value) => u64::try_from(value.to_string().len()).unwrap_or(u64::MAX),
-            Self::Bytes(bytes) => *bytes,
+            Self::TextRange(range) | Self::NumberRange(range) => {
+                u64::try_from(range.len()).unwrap_or(u64::MAX)
+            }
             Self::Composite(bytes) | Self::Keyword(bytes) => {
                 u64::try_from(bytes.len()).unwrap_or(u64::MAX)
             }
@@ -436,6 +452,54 @@ pub(crate) fn summarize_content_stream(
     decoded: &[u8],
     limits: &ResourceLimits,
 ) -> Result<ContentStreamSummary, ParseError> {
+    summarize_content_stream_with_text(source, location_path, decoded, limits, false)
+}
+
+pub(crate) fn type3_declared_width(
+    decoded: &[u8],
+    limits: &ResourceLimits,
+) -> Result<Option<f64>, ParseError> {
+    let mut parser = ContentTokenizer::new(decoded, limits);
+    let mut first = None;
+    let mut arguments = 0_u8;
+    while let Some(token) = parser.next_token()? {
+        match token {
+            Token::Operand(operand) if arguments < 6 => {
+                let value = match operand {
+                    Operand::Integer(value) => value.to_string().parse::<f64>().ok(),
+                    Operand::NumberRange(range) => decoded
+                        .get(range)
+                        .filter(|number| {
+                            number.iter().all(|byte| {
+                                byte.is_ascii_digit() || matches!(byte, b'.' | b'+' | b'-')
+                            })
+                        })
+                        .and_then(|number| std::str::from_utf8(number).ok())
+                        .and_then(|number| number.parse::<f64>().ok()),
+                    _ => None,
+                };
+                let Some(value) = value else { return Ok(None) };
+                if arguments == 0 {
+                    first = Some(value);
+                }
+                arguments = arguments.saturating_add(1);
+            }
+            Token::Operator(op, _) if matches!((op.as_str(), arguments), ("d0", 2) | ("d1", 6)) => {
+                return Ok(first);
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn summarize_content_stream_with_text(
+    source: ObjectKey,
+    location_path: &str,
+    decoded: &[u8],
+    limits: &ResourceLimits,
+    retain_text: bool,
+) -> Result<ContentStreamSummary, ParseError> {
     let mut parser = ContentTokenizer::new(decoded, limits);
     let mut operands = Vec::new();
     let mut operand_bytes = 0_u64;
@@ -446,6 +510,7 @@ pub(crate) fn summarize_content_stream(
         marked_content: Vec::new(),
         resource_uses: Vec::new(),
         rendering_intents: Vec::new(),
+        text_operands: BTreeMap::new(),
         warnings: Vec::new(),
         truncated: false,
     };
@@ -453,6 +518,7 @@ pub(crate) fn summarize_content_stream(
     let mut marked_depth = 0_u32;
     let mut marked_stack = Vec::new();
 
+    let mut warned_at_operator = 0;
     while let Some(token) = parser.next_token()? {
         match token {
             Token::Operand(operand) => push_operand(
@@ -477,6 +543,20 @@ pub(crate) fn summarize_content_stream(
                 )?;
                 let location =
                     operator_location(source, location_path, summary.operators_seen, offset);
+                if retain_text
+                    && summary.warnings.len() == warned_at_operator
+                    && matches!(op.as_str(), "Tj" | "TJ" | "'" | "\"")
+                    && let Some(Operand::TextRange(range)) = operands.last()
+                    && let Some(bytes) = decoded.get(range.clone())
+                {
+                    match crate::parser::parse_text_operand(bytes, limits, op.as_str() == "TJ") {
+                        Ok(strings) => {
+                            summary.text_operands.insert(offset, TextOperand(strings));
+                        }
+                        Err(error @ ParseError::LimitExceeded { .. }) => return Err(error),
+                        Err(_) => {}
+                    }
+                }
                 classify_operator(
                     op,
                     &operands,
@@ -491,6 +571,7 @@ pub(crate) fn summarize_content_stream(
                 )?;
                 operands.clear();
                 operand_bytes = 0;
+                warned_at_operator = summary.warnings.len();
             }
         }
     }
@@ -945,11 +1026,18 @@ impl<'a> ContentTokenizer<'a> {
                 let bytes = decode_name(name_bytes, self.limits)?;
                 Token::Operand(Operand::Name(PdfName::new(bytes, self.limits)?))
             }
-            Some(b'(') => Token::Operand(Operand::Bytes(self.consume_literal_string()?)),
-            Some(b'<') if self.peek_byte(1) != Some(b'<') => {
-                Token::Operand(Operand::Bytes(self.consume_hex_string()?))
+            Some(b'(') => {
+                self.consume_literal_string()?;
+                Token::Operand(Operand::TextRange(start..self.pos))
             }
-            Some(b'[') => Token::Operand(Operand::Bytes(self.consume_composite()?)),
+            Some(b'<') if self.peek_byte(1) != Some(b'<') => {
+                self.consume_hex_string()?;
+                Token::Operand(Operand::TextRange(start..self.pos))
+            }
+            Some(b'[') => {
+                self.consume_composite()?;
+                Token::Operand(Operand::TextRange(start..self.pos))
+            }
             Some(b'<') if self.peek_byte(1) == Some(b'<') => {
                 Token::Operand(Operand::Composite(self.consume_composite_bytes()?))
             }
@@ -973,9 +1061,7 @@ impl<'a> ContentTokenizer<'a> {
             return Ok(Token::Operand(Operand::Integer(integer)));
         }
         if is_number_like(slice) {
-            return Ok(Token::Operand(Operand::Bytes(
-                u64::try_from(slice.len()).unwrap_or(u64::MAX),
-            )));
+            return Ok(Token::Operand(Operand::NumberRange(start..self.pos)));
         }
         Ok(Token::Operator(
             OperatorName::new(slice, self.limits)?,
@@ -1168,6 +1254,7 @@ impl<'a> ContentTokenizer<'a> {
                 Some(b'(') => {
                     self.consume_literal_string()?;
                 }
+                Some(b'%') => self.skip_ws_and_comments(),
                 Some(b'<') => {
                     self.consume_hex_string()?;
                 }
@@ -1347,11 +1434,35 @@ fn malformed_content(message: &'static str) -> ParseError {
 mod tests {
     use std::num::NonZeroU32;
 
-    use super::{OperatorFact, ResourceFamily, summarize_content_stream};
+    use super::{
+        OperatorFact, ResourceFamily, summarize_content_stream, summarize_content_stream_with_text,
+    };
     use crate::{ObjectKey, ResourceLimits};
 
     fn key() -> ObjectKey {
         ObjectKey::new(NonZeroU32::MIN, 0)
+    }
+
+    #[test]
+    fn test_should_decode_text_show_operands_and_preserve_string_boundaries() -> crate::Result<()> {
+        let content = b"[(A\\101) % ] is part of the comment\n <4> -150 (B\\\r\nC)] TJ";
+        let limits = ResourceLimits::default();
+        let summary = summarize_content_stream_with_text(key(), "test", content, &limits, true)?;
+        let strings: Vec<_> = summary
+            .text_operands
+            .values()
+            .flat_map(|text| text.0.iter().map(crate::PdfString::as_bytes))
+            .collect();
+        assert_eq!(
+            strings,
+            [b"AA".as_slice(), b"@".as_slice(), b"BC".as_slice()]
+        );
+        assert!(
+            summarize_content_stream(key(), "test", content, &limits)?
+                .text_operands
+                .is_empty()
+        );
+        Ok(())
     }
 
     #[test]

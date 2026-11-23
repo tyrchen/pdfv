@@ -44,12 +44,10 @@ Current release-hardening evidence is stored in
 
 ## Known Drift
 
-The committed live T2 public oracle rows currently classify three mismatches as
-`expectedDriftUnsupportedRule`: veraPDF returns `Valid` or `Invalid`, while pdfv
-returns `Incomplete`. This is intentionally not a false-compliant result.
-
-No live T2 row is classified as `unexpectedDrift`, `pdfvBug`, or
-false-compliant in the G8 snapshot.
+The three rows in the checked-in public T2 manifest agree with veraPDF.
+Both PDF/A-1b positives are valid and the negative remains invalid.
+The supplemental public PDF/UA fixtures and some font formats still exercise
+runtime evidence gaps. See the [live conformance review](reviews/m9-live-conformance-review.md).
 
 ## Release Blocker
 
@@ -76,8 +74,8 @@ Use `make oracle-t3-manifest` with `PDFV_ORACLE_T3_CORPUS_ROOT` to generate a
 private `t3RealWorld` manifest; do not commit that manifest or the private PDFs.
 
 An additional public run covered PDF/A-1b, PDF/A-4, PDF/UA-1, and PDF/UA-2.
-After the physical COS rule fixes, all four PDF/A samples completed and the
-four PDF/UA samples returned `Incomplete`. See the
+All four PDF/A samples match veraPDF and the four PDF/UA samples return
+`Incomplete`. See the
 [live conformance review](reviews/m9-live-conformance-review.md) for the sample
 manifest, outcome agreement, and the auto-fallback behavior.
 
