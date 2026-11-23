@@ -63,6 +63,19 @@ matches 11 of 13 decisions with zero false-compliant decisions. The two
 PDF/UA-1 files each have one unsupported `7.21.5-1` evaluation because
 `widthFromFontProgram` is unavailable for a used font. [Live review](../docs/reviews/m9-live-conformance-review.md#private-use-code-points-in-text-strings)
 
+## Step 3 evidence
+
+Both remaining PDF/UA-1 fixtures now measure glyph widths from their
+embedded TrueType character maps and horizontal metrics. The positive
+fixture passes all six width assertions. The negative passes all fifteen
+width assertions and fails its real-content requirements. Both fixtures
+also pass the embedded TrueType `cmap` checks and agree with veraPDF on
+document status. The 13-row supplemental manifest and the 8-row checked-in
+manifest both have complete outcome agreement, zero unsupported checks,
+and zero false-compliant decisions. The 41 additional PDF/A font and
+colour controls also match their expected document decisions.
+[Live review](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths)
+
 ## Implementation constraints
 
 Use a family for each rule scope and preserve context in assertions. A shared

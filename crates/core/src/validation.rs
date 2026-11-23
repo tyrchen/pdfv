@@ -2445,6 +2445,11 @@ impl ModelRegistry {
                 EMPTY_LINK_NAMES,
             ),
             family(
+                glyphs::TRUE_TYPE_PROGRAM,
+                glyphs::TRUE_TYPE_PROGRAM_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 glyphs::CID_SET_FAMILY,
                 &["fontName", "containsCIDSet", "cidSetListsAllGlyphs"],
                 EMPTY_LINK_NAMES,
@@ -2609,7 +2614,11 @@ impl ModelRegistry {
             && structure_roles::rule_family(family.as_str()).is_none()
             && !matches!(
                 family.as_str(),
-                "pageBox" | glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY | glyphs::UNICODE_FAMILY
+                "pageBox"
+                    | glyphs::WIDTH_FAMILY
+                    | glyphs::CID_SET_FAMILY
+                    | glyphs::UNICODE_FAMILY
+                    | glyphs::TRUE_TYPE_PROGRAM
             )
             && self.has_family(family)
     }
@@ -3521,7 +3530,10 @@ impl<'a> ModelGraph<'a> {
                 || family.as_str() == "resourceUse"
                 || matches!(
                     family.as_str(),
-                    glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY | glyphs::UNICODE_FAMILY
+                    glyphs::WIDTH_FAMILY
+                        | glyphs::CID_SET_FAMILY
+                        | glyphs::UNICODE_FAMILY
+                        | glyphs::TRUE_TYPE_PROGRAM
                 )
                 || cmap::FAMILIES.contains(&family.as_str())
                 || matches!(
@@ -3578,6 +3590,7 @@ impl<'a> ModelGraph<'a> {
     fn needs_glyph_evidence(&self) -> bool {
         self.active_flavour.is_some()
             && (self.materializes(glyphs::WIDTH_FAMILY)
+                || self.materializes(glyphs::TRUE_TYPE_PROGRAM)
                 || self.materializes(glyphs::CID_SET_FAMILY)
                 || self.materializes(glyphs::UNICODE_FAMILY)
                 || cmap::FAMILIES
@@ -3604,6 +3617,7 @@ impl<'a> ModelGraph<'a> {
                 && !xmp_extension::FAMILIES.contains(&family.as_str())
                 && !semantic_names::FAMILIES.contains(&family.as_str())
                 && !device_color::FAMILIES.contains(&family.as_str())
+                && family.as_str() != glyphs::TRUE_TYPE_PROGRAM
                 && !matches!(
                     family.as_str(),
                     "document"

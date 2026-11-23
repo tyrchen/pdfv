@@ -7,10 +7,14 @@ of the current implementation phase.
 
 ## Open M9 Findings
 
-- **P1.** PDF/UA-1 rule `7.21.5-1` still lacks font-program width evidence
-  on `7.2-t17-pass-d` and `7.1-t03-fail-b`. Trace their rendered codes
-  back to the embedded font programs and verify the per-glyph widths against
-  veraPDF. See [step 3](./29-rule-check-completion-impl-plan.md#work-order).
+- **P2.** Two controls that reuse a font across a page and Form report an
+  extra passing PDF/UA-1 `7.21.5-1` assertion. Audit glyph identity across
+  page, Form, structure-parent, and appearance views before combining
+  equivalent observations. An unreadable font program also produces
+  unavailable width evidence and needs a conformance decision backed by
+  the embedded-font rules. See
+  [the glyph measurement](../crates/core/src/validation/glyphs.rs) and
+  [the live comparisons](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
 - **P1.** PDF/A-3 rule `6.8-4` needs associated-file evidence from the
   applicable `/AF` arrays. Its current generic property treats
   `AFRelationship` and name-tree membership as association evidence.
@@ -40,3 +44,7 @@ of the current implementation phase.
   evidence from PDF text use sites. All 170 targeted rule comparisons agree
   with veraPDF. The PDF/UA-2 supplemental document decisions now match.
   See [the text-string review](../docs/reviews/m9-live-conformance-review.md#private-use-code-points-in-text-strings).
+- **P1.** PDF/UA-1 glyph widths and TrueType `cmap` rules use embedded
+  font-program evidence on both supplemental fixtures. Their 6 and 15
+  passing width assertions and their document decisions match veraPDF.
+  See [the font review](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).

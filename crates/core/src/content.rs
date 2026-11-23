@@ -370,6 +370,7 @@ pub(crate) struct MarkedContentSpan {
     pub properties_name: Option<PdfName>,
     /// Presence of the text and language entries in a direct property list.
     pub inline_text: MarkedTextProperties,
+    pub(crate) inline_properties_offset: Option<u64>,
     /// Language value declared in a direct marked-content property list.
     pub inline_language: Option<InlineLanguage>,
     /// Whether the begin operator has a valid form and a matching end operator.
@@ -826,6 +827,7 @@ fn classify_operator(
                     mcid,
                     properties,
                     properties_name,
+                    inline_properties_offset: inline.as_ref().and(location.offset),
                     inline_text: inline.as_ref().filter(|_| operands.len() == 2).map_or_else(
                         MarkedTextProperties::default,
                         MarkedTextProperties::from_dictionary,

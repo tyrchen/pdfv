@@ -269,10 +269,38 @@ PDF/UA-2 positive passes and the PDF/UA-2 negative fails on real content.
 Both agree with veraPDF and have zero unsupported rules. Each supplemental
 PDF/UA-1 file still has one unsupported glyph-width rule.
 
+## Built-In TrueType Encoding and Glyph Widths
+
+Simple TrueType fonts with built-in encodings resolve rendered character
+codes through their embedded `cmap` tables. The width comparison uses
+horizontal advances scaled by units per em, the `FirstChar` to `LastChar`
+dictionary range, and `MissingWidth` for codes outside that range.
+The TrueType program rules read `cmap` encoding records from embedded
+programs used by text-show operators. They count each font dictionary once,
+including a font reached through both a page and an invoked Form.
+
+| PDF/UA-1 supplemental fixture | Passing width checks | Document outcome in both engines |
+| --- | ---: | --- |
+| `7.2-t17-pass-d` | 6 | Valid |
+| `7.1-t03-fail-b` | 15 | Invalid |
+
+Both documents have zero unsupported rules and each passes both TrueType
+program checks. The expanded public manifest is 13/13 and the checked-in
+manifest is 8/8, with zero incomplete or false-compliant decisions. The
+41 PDF/A font and colour controls also agree on document outcome.
+
+The three targeted PDF/UA-1 rules agree on pass and fail counts in 132 of
+135 comparisons across 45 controls. In two controls, pdfv records a passing
+width assertion in both the page and Form stream. Greenfield counts the
+shared glyph once. The corrupt-font control still produces unavailable
+width evidence in pdfv. Greenfield records a pass with a null font width.
+See [the review backlog](../../specs/93-improvements-review.md#open-m9-findings).
+
 ## Release Blockers
 
-- Two supplemental PDF/UA-1 documents remain incomplete on glyph-width rule
-  `7.21.5-1`. Both lack `widthFromFontProgram` evidence for a used font.
+- The across-profile audit still needs rule-level coverage for PDF/A-3
+  associated files and newly sampled models. See
+  [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).
