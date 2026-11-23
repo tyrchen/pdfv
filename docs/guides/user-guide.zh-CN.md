@@ -48,13 +48,14 @@ pdfv validate ./incoming --recursive --non-pdf-extension --format json
 
 ## 选择 Profile
 
-让 `pdfv` 根据 XMP 元数据自动判断 flavour；如果判断不出来，就用 PDF/A-1b 兜底：
+让 `pdfv` 根据 XMP 元数据自动判断 flavour。没有识别到受支持的声明时，
+当前会运行基础检查 `pdfv-m4`，并把回退 flavour 标记为 PDF/A-1b。
 
 ```bash
 pdfv validate document.pdf --flavour auto --default-flavour pdfa-1b
 ```
 
-也可以直接指定一个内置 flavour：
+需要执行指定标准的导入规则时，请显式选择内置 flavour。
 
 ```bash
 pdfv validate document.pdf --flavour pdfa-2b --format json

@@ -73,9 +73,12 @@ oracle-corpus-summary:
 oracle-t3-manifest:
 	@cargo run -p pdfv-core --example oracle_t3_manifest
 
-readiness-gates: parity-model-schema parity-corpus parity-profile-report parity-burn-down oracle-corpus oracle-corpus-summary
+readiness-gates: parity-model-schema parity-corpus parity-profile-report parity-burn-down oracle-corpus
+	@$(MAKE) oracle-corpus-summary
 
-readiness-release-gate: standard-gates readiness-gates
+readiness-release-gate: standard-gates
+	@$(MAKE) oracle-corpus PDFV_ORACLE_CORPUS_MANIFEST=tests/oracle-t2-public-conformance.yml PDFV_ORACLE_CORPUS_ROOT=. PDFV_ORACLE_OUTPUT_DIR=target/parity/t2
+	@$(MAKE) readiness-gates
 	@PDFV_ORACLE_REQUIRE_T3_RELEASE=1 cargo run -p pdfv-core --example oracle_corpus_summary
 
 .PHONY: build test standard-gates test-conformance-verapdf check-agent-sync release update-submodule generate-profiles parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down oracle-corpus oracle-corpus-summary oracle-t3-manifest readiness-gates readiness-release-gate

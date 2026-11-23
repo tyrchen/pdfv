@@ -3718,6 +3718,8 @@ impl<'a> DocumentModel<'a> {
     }
 
     fn root_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        let syntax = &self.document.file_syntax;
+        let [byte1, byte2, byte3, byte4] = syntax.header_comment;
         match name {
             "headerOffset" => {
                 Some(u64_to_f64(header_offset(self.document)).map(ModelValue::Number))
@@ -3751,14 +3753,16 @@ impl<'a> DocumentModel<'a> {
             "spacingCompliesPDFA" => {
                 Some(Ok(ModelValue::Bool(stream_spacing_complies(self.document))))
             }
-            "subsectionHeaderSpaceSeparated" => Some(Ok(ModelValue::Bool(true))),
-            "xrefEOLMarkersComplyPDFA" => {
-                Some(Ok(ModelValue::Bool(xref_eol_markers_comply(self.document))))
+            "subsectionHeaderSpaceSeparated" => {
+                Some(Ok(ModelValue::Bool(syntax.xref_subsection_space_separated)))
             }
-            "headerByte1" => Some(Ok(ModelValue::Number(37.0))),
-            "headerByte2" => Some(Ok(ModelValue::Number(80.0))),
-            "headerByte3" => Some(Ok(ModelValue::Number(68.0))),
-            "headerByte4" => Some(Ok(ModelValue::Number(70.0))),
+            "xrefEOLMarkersComplyPDFA" => {
+                Some(Ok(ModelValue::Bool(syntax.xref_keyword_eol_compliant)))
+            }
+            "headerByte1" => Some(Ok(ModelValue::Number(f64::from(byte1)))),
+            "headerByte2" => Some(Ok(ModelValue::Number(f64::from(byte2)))),
+            "headerByte3" => Some(Ok(ModelValue::Number(f64::from(byte3)))),
+            "headerByte4" => Some(Ok(ModelValue::Number(f64::from(byte4)))),
             _ => None,
         }
     }
@@ -7426,18 +7430,6 @@ fn stream_spacing_complies(document: &ParsedDocument) -> bool {
                     endstream_keyword_eol_compliant: false,
                     ..
                 },
-                ..
-            }
-        )
-    })
-}
-
-fn xref_eol_markers_comply(document: &ParsedDocument) -> bool {
-    document.parse_facts.iter().all(|fact| {
-        !matches!(
-            fact,
-            crate::ParseFact::Xref {
-                fact: crate::XrefFact::MalformedClassic,
                 ..
             }
         )
@@ -11435,7 +11427,9 @@ fn push_linked<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Cursor, sync::Arc};
+    use std::{io::Cursor, num::NonZeroU32, sync::Arc};
+
+    use rstest::rstest;
 
     use super::{
         AnnotationModel, CatalogModel, ContentStreamModel, FontModel, OutputIntentModel, PageModel,
@@ -11458,6 +11452,71 @@ mod tests {
         ) -> crate::Result<Vec<ValidationProfile>> {
             Ok(vec![self.0.clone()])
         }
+    }
+
+    #[rstest]
+    #[case(b"%\xf6\xe4\xfc\xdf\r\n", "\r\n", " ", [false, false, false])]
+    #[case(b"%\xf6\xe4\xfc\xdf\r", "\r", " ", [false, false, false])]
+    #[case(b"%\xf6\xe4\xfc\n", "\n", " ", [true, false, false])]
+    #[case(b"%\xf6\xe4\xfcA\n", "\n\n", "  ", [true, true, true])]
+    #[case(b"\n", " \n", "\t", [true, true, true])]
+    fn test_should_evaluate_pdfa_file_syntax_rules(
+        #[case] comment: &[u8],
+        #[case] xref_separator: &str,
+        #[case] subsection_separator: &str,
+        #[case] failures: [bool; 3],
+    ) -> crate::Result<()> {
+        let mut pdf = b"%PDF-1.4\r\n".to_vec();
+        pdf.extend(comment);
+        pdf.extend(b"1 0 obj\r\n<< /Type /Catalog >>\r\nendobj\r\n");
+        pdf.extend(
+            format!(
+                "xref{xref_separator}0{subsection_separator}2\r\n0000000000 65535 f\r\n0000000009 \
+                 00000 n\r\ntrailer\r\n<< /Root 1 0 R /Size 2 >>\r\n%%EOF\r\n"
+            )
+            .as_bytes(),
+        );
+        let validator = Validator::new(
+            ValidationOptions::builder()
+                .flavour(FlavourSelection::Explicit {
+                    flavour: ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?,
+                })
+                .resource_limits(ResourceLimits {
+                    max_parse_facts: 1,
+                    ..ResourceLimits::default()
+                })
+                .record_passed_assertions(true)
+                .build(),
+        )?;
+        let report = validator.validate_reader(Cursor::new(pdf), InputName::memory())?;
+        let profile =
+            report
+                .profile_reports
+                .first()
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "testProfile",
+                })?;
+        for (id, fails) in [
+            "iso-19005-1-6-1-2-2",
+            "iso-19005-1-6-1-4-2",
+            "iso-19005-1-6-1-4-1",
+        ]
+        .into_iter()
+        .zip(failures)
+        {
+            let assertions = if fails {
+                &profile.failed_assertions
+            } else {
+                &profile.passed_assertions
+            };
+            assert!(
+                assertions
+                    .iter()
+                    .any(|assertion| assertion.rule_id.0.as_str() == id),
+                "{id}"
+            );
+        }
+        Ok(())
     }
 
     fn m1_model_pdf() -> &'static [u8] {
@@ -13135,7 +13194,7 @@ trailer
         );
         assert_eq!(
             document.properties.get(&header_byte4),
-            Some(&crate::FeatureValue::Number(70.0))
+            Some(&crate::FeatureValue::Number(0.0))
         );
 
         assert!(report.objects.iter().any(|object| {

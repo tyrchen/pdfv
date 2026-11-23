@@ -60,6 +60,13 @@ pub enum CosObject {
 
 Header parsing is tolerant like veraPDF: search for `%PDF-`, record leading bytes and header offset, parse the version if available, and emit a fact if the header is malformed but recoverable (`vendors/veraPDF-parser/src/main/java/org/verapdf/parser/PDFParser.java:94`, `vendors/veraPDF-parser/src/main/java/org/verapdf/parser/PDFParser.java:127`). The parser must not silently normalize away anomalies that validation rules need.
 
+Retain the first four octets after the percent marker on the line immediately
+following the header for the PDF/A binary-comment rule. A missing or short
+comment supplies zero values. Classic xref validation observes the separator
+after the `xref` keyword and the single ASCII space in each subsection header
+independently of entry recovery. CRLF counts as one line ending. The parser
+keeps these fixed-size observations even when the diagnostic fact cap is reached.
+
 Stream parsing validates declared `/Length` against `endstream`; when invalid, it scans for `endstream` within bounded limits and records both declared and discovered lengths. This follows the veraPDF behaviour where stream parsing validates length and falls back to scanning (`vendors/veraPDF-parser/src/main/java/org/verapdf/parser/SeekableCOSParser.java:113`, `vendors/veraPDF-parser/src/main/java/org/verapdf/parser/SeekableCOSParser.java:124`, `vendors/veraPDF-parser/src/main/java/org/verapdf/parser/SeekableCOSParser.java:134`).
 
 Xref parsing supports classic xref tables in M0 and records unsupported xref stream facts rather than crashing. Xref streams land in M1 because many modern PDFs require them for broad coverage.

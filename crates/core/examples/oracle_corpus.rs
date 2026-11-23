@@ -7,31 +7,43 @@
 )]
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
-    io::{Read, Seek, SeekFrom},
+    io::{self, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use pdfv_core::{
-    BoundedText, ConfigError, CorpusOutcome, CorpusTier, ENGINE_VERSION, OracleCorpusManifest,
-    OracleCorpusReport, OracleCorpusResultRow, OracleDriftClassification, OracleExecutionStatus,
-    OracleReportMetadata, OracleRowObservation, PdfvError, ReportError, Result, Validator,
-    oracle_drift_report,
+    BoundedText, ConfigError, CorpusOutcome, CorpusTier, ENGINE_VERSION, Identifier,
+    OracleCorpusManifest, OracleCorpusReport, OracleCorpusResultRow, OracleExecutionStatus,
+    OracleProfilePolicy, OracleReportMetadata, OracleRowObservation, PdfvError, ReportError,
+    Result, ValidationFlavour, Validator, oracle_drift_report,
 };
+use serde::Deserialize;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::Command as AsyncCommand,
+    runtime::Builder as RuntimeBuilder,
+    time::timeout,
+};
+
+#[path = "support/oracle_gates.rs"]
+mod oracle_gates;
+
+use oracle_gates::{COMPARABLE_REPORT_SCHEMA, ensure_oracle_gates, oracle_output_dir};
 
 const MANIFEST_ENV: &str = "PDFV_ORACLE_CORPUS_MANIFEST";
 const CORPUS_ROOT_ENV: &str = "PDFV_ORACLE_CORPUS_ROOT";
 const VERAPDF_BIN_ENV: &str = "PDFV_VERAPDF_BIN";
 const TIMEOUT_SECONDS_ENV: &str = "PDFV_ORACLE_TIMEOUT_SECONDS";
 const MAX_OUTPUT_BYTES_ENV: &str = "PDFV_ORACLE_MAX_OUTPUT_BYTES";
-const OUTPUT_DIR: &str = "target/parity";
 const DEFAULT_VERAPDF_BIN: &str = "verapdf";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 const DEFAULT_MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_TIMEOUT_SECONDS: u64 = 600;
+const MAX_PROCESS_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
 
 fn main() -> Result<()> {
@@ -44,8 +56,16 @@ fn main() -> Result<()> {
     let corpus_root = corpus_root(manifest_dir, &manifest)?;
     let vera_pdf_bin =
         env::var(VERAPDF_BIN_ENV).unwrap_or_else(|_| String::from(DEFAULT_VERAPDF_BIN));
-    let timeout = Duration::from_secs(env_u64(TIMEOUT_SECONDS_ENV, DEFAULT_TIMEOUT_SECONDS)?);
-    let max_output_bytes = env_u64(MAX_OUTPUT_BYTES_ENV, DEFAULT_MAX_OUTPUT_BYTES)?;
+    let timeout = Duration::from_secs(env_u64(
+        TIMEOUT_SECONDS_ENV,
+        DEFAULT_TIMEOUT_SECONDS,
+        MAX_TIMEOUT_SECONDS,
+    )?);
+    let max_output_bytes = env_u64(
+        MAX_OUTPUT_BYTES_ENV,
+        DEFAULT_MAX_OUTPUT_BYTES,
+        MAX_PROCESS_OUTPUT_BYTES,
+    )?;
 
     let metadata = report_metadata(&vera_pdf_bin, timeout, max_output_bytes)?;
     let rows = manifest
@@ -53,24 +73,27 @@ fn main() -> Result<()> {
         .iter()
         .map(|row| run_row(row, &corpus_root, &vera_pdf_bin, timeout, max_output_bytes))
         .collect::<Result<Vec<_>>>()?;
-    let report = OracleCorpusReport::new("phase22-oracle-corpus-v1", true, metadata, rows)?;
+    let report = OracleCorpusReport::new(COMPARABLE_REPORT_SCHEMA, true, metadata, rows)?;
 
     write_artifacts(&report)?;
-    ensure_oracle_gates(&report)
+    ensure_oracle_gates(&report, None)
 }
 
 fn read_manifest(path: &Path) -> Result<OracleCorpusManifest> {
-    let metadata = fs::metadata(path).map_err(|source| PdfvError::Io {
+    let io_error = |source| PdfvError::Io {
         path: Some(path.to_path_buf()),
         source,
-    })?;
-    if metadata.len() > MAX_MANIFEST_BYTES {
+    };
+    let mut contents = String::new();
+    Read::take(
+        fs::File::open(path).map_err(io_error)?,
+        MAX_MANIFEST_BYTES.saturating_add(1),
+    )
+    .read_to_string(&mut contents)
+    .map_err(io_error)?;
+    if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_MANIFEST_BYTES {
         return Err(invalid_value("manifest", "manifest exceeds byte limit"));
     }
-    let contents = fs::read_to_string(path).map_err(|source| PdfvError::Io {
-        path: Some(path.to_path_buf()),
-        source,
-    })?;
     config::Config::builder()
         .add_source(config::File::from_str(&contents, config::FileFormat::Yaml))
         .build()
@@ -108,9 +131,15 @@ fn run_row(
     timeout: Duration,
     max_output_bytes: u64,
 ) -> Result<OracleCorpusResultRow> {
-    let path = resolve_row_path(corpus_root, row.path.as_str())?;
-    let pdfv = run_pdfv(row, &path);
+    let path = resolve_row_path(corpus_root, row.path.as_str(), row.tier)?;
+    let (mut pdfv, flavours) = run_pdfv(row, &path);
     let vera_pdf = run_verapdf(row, &path, vera_pdf_bin, timeout, max_output_bytes)?;
+    if !vera_pdf.profiles.is_empty()
+        && !pdfv.profiles.is_empty()
+        && vera_pdf.profiles != pdfv.profiles
+    {
+        pdfv.status = OracleExecutionStatus::IncompatibleProfiles;
+    }
     let observation = OracleRowObservation {
         vera_pdf_outcome: vera_pdf.outcome,
         pdfv_outcome: pdfv.outcome,
@@ -118,26 +147,55 @@ fn run_row(
         vera_pdf_status: vera_pdf.status,
         pdfv_status: pdfv.status,
     };
-    OracleCorpusResultRow::from_observation(row, observation)
+    let mut result = OracleCorpusResultRow::from_observation(row, observation)?;
+    if !flavours.is_empty() {
+        result.profile_family = resolved_profile_family(&flavours)?;
+    }
+    Ok(result)
 }
 
-fn run_pdfv(row: &pdfv_core::OracleCorpusRow, path: &Path) -> ValidatorOutcome {
+fn resolved_profile_family(flavours: &[ValidationFlavour]) -> Result<Identifier> {
+    let families = flavours
+        .iter()
+        .map(|flavour| flavour.family.as_str())
+        .collect::<BTreeSet<_>>();
+    let family = match (families.len(), families.first()) {
+        (1, Some(family)) => family,
+        (2, _) if families.contains("pdfa") && families.contains("pdfua") => "pdfa-pdfua",
+        _ => "mixed",
+    };
+    Ok(Identifier::new(family.to_owned())?)
+}
+
+fn run_pdfv(
+    row: &pdfv_core::OracleCorpusRow,
+    path: &Path,
+) -> (ValidatorOutcome, Vec<ValidationFlavour>) {
     let options = row.profile_policy.validation_options();
     match Validator::new(options).and_then(|validator| validator.validate_path(path)) {
-        Ok(report) => ValidatorOutcome {
-            outcome: Some(CorpusOutcome::from(report.status)),
-            status: OracleExecutionStatus::Completed,
-            unsupported_rules: report
-                .profile_reports
-                .iter()
-                .map(|profile| u64::try_from(profile.unsupported_rules.len()).unwrap_or(u64::MAX))
-                .sum(),
-        },
-        Err(_) => ValidatorOutcome {
-            outcome: None,
-            status: OracleExecutionStatus::Failed,
-            unsupported_rules: 0,
-        },
+        Ok(report) => (
+            ValidatorOutcome {
+                outcome: Some(CorpusOutcome::from(report.status)),
+                status: OracleExecutionStatus::Completed,
+                profiles: report
+                    .profile_reports
+                    .iter()
+                    .map(|profile| profile.profile.name.as_str().to_owned())
+                    .collect(),
+                unsupported_rules: report
+                    .profile_reports
+                    .iter()
+                    .map(|profile| {
+                        u64::try_from(profile.unsupported_rules.len()).unwrap_or(u64::MAX)
+                    })
+                    .sum(),
+            },
+            report.flavours,
+        ),
+        Err(_) => (
+            ValidatorOutcome::failed(OracleExecutionStatus::Failed),
+            Vec::new(),
+        ),
     }
 }
 
@@ -149,97 +207,114 @@ fn run_verapdf(
     max_output_bytes: u64,
 ) -> Result<ValidatorOutcome> {
     let mut command = Command::new(vera_pdf_bin);
-    command.arg("--format").arg("json");
-    if let Some(flavour) = row.profile_policy.verapdf_flavour_code() {
-        command.arg("--flavour").arg(flavour);
-    }
+    command.args(["--format", "json", "--maxfailuresdisplayed", "1"]);
+    let (option, flavour) = verapdf_profile_arg(&row.profile_policy)?;
+    command.arg(option).arg(flavour);
     command.arg(path);
-    let output = run_capture(command, timeout, max_output_bytes)?;
+    let Ok(output) = run_capture(command, timeout, max_output_bytes) else {
+        return Ok(ValidatorOutcome::failed(OracleExecutionStatus::Failed));
+    };
     if output.timed_out {
-        return Ok(ValidatorOutcome {
-            outcome: None,
-            status: OracleExecutionStatus::Timeout,
-            unsupported_rules: 0,
-        });
+        return Ok(ValidatorOutcome::failed(OracleExecutionStatus::Timeout));
     }
-    let outcome = verapdf_outcome(&output.stdout, output.exit_code);
-    Ok(ValidatorOutcome {
-        outcome,
-        status: outcome.map_or(OracleExecutionStatus::Failed, |_| {
-            OracleExecutionStatus::Completed
-        }),
-        unsupported_rules: 0,
-    })
+    Ok(verapdf_outcome(&output.stdout, output.exit_code)
+        .unwrap_or_else(|| ValidatorOutcome::failed(OracleExecutionStatus::Failed)))
+}
+
+fn verapdf_profile_arg(policy: &OracleProfilePolicy) -> Result<(&'static str, String)> {
+    let (option, flavour) = match policy {
+        OracleProfilePolicy::AutoDefaultPdfa1b => {
+            return Ok(("--defaultflavour", String::from("1b")));
+        }
+        OracleProfilePolicy::Auto {
+            default: Some(flavour),
+        } => ("--defaultflavour", flavour),
+        OracleProfilePolicy::Explicit { flavour } => ("--flavour", flavour),
+        _ => {
+            return Err(invalid_value(
+                "profilePolicy",
+                "use an explicit flavour or configure an automatic fallback for veraPDF",
+            ));
+        }
+    };
+    OracleProfilePolicy::Explicit {
+        flavour: flavour.clone(),
+    }
+    .verapdf_flavour_code()
+    .map(|code| (option, code))
+    .ok_or_else(|| invalid_value("profilePolicy", "profile has no veraPDF CLI equivalent"))
 }
 
 fn run_capture(
-    mut command: Command,
+    command: Command,
     timeout: Duration,
     max_output_bytes: u64,
 ) -> Result<ProcessOutput> {
-    let temp_dir = tempfile::tempdir().map_err(|source| PdfvError::Io { path: None, source })?;
-    let stdout_path = temp_dir.path().join("stdout");
-    let stderr_path = temp_dir.path().join("stderr");
-    let stdout = fs::File::create(&stdout_path).map_err(|source| PdfvError::Io {
-        path: Some(stdout_path.clone()),
-        source,
-    })?;
-    let stderr = fs::File::create(&stderr_path).map_err(|source| PdfvError::Io {
-        path: Some(stderr_path.clone()),
-        source,
-    })?;
-    let mut child = command
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .map_err(|source| PdfvError::Io { path: None, source })?;
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|source| PdfvError::Io { path: None, source })?
-        {
-            break Some(status);
-        }
-        if started.elapsed() >= timeout {
-            child
-                .kill()
-                .map_err(|source| PdfvError::Io { path: None, source })?;
-            child
-                .wait()
-                .map_err(|source| PdfvError::Io { path: None, source })?;
-            break None;
-        }
-        thread::sleep(Duration::from_millis(20));
-    };
-    let stdout = read_bounded(&stdout_path, max_output_bytes)?;
-    let stderr = read_bounded(&stderr_path, max_output_bytes)?;
-    Ok(ProcessOutput {
-        stdout,
-        stderr,
-        exit_code: status.and_then(|status| status.code()),
-        timed_out: status.is_none(),
-    })
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(process_io_error)?;
+    runtime.block_on(capture_process(command.into(), timeout, max_output_bytes))
 }
 
-fn read_bounded(path: &Path, max_output_bytes: u64) -> Result<String> {
-    let mut file = fs::File::open(path).map_err(|source| PdfvError::Io {
-        path: Some(path.to_path_buf()),
-        source,
-    })?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|source| PdfvError::Io {
-            path: Some(path.to_path_buf()),
-            source,
-        })?;
-    let limit = max_output_bytes.saturating_add(1);
+async fn capture_process(
+    mut command: AsyncCommand,
+    deadline: Duration,
+    max_output_bytes: u64,
+) -> Result<ProcessOutput> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(process_io_error)?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| invalid_value("processOutput", "missing stdout pipe"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| invalid_value("processOutput", "missing stderr pipe"))?;
+    let captured = timeout(deadline, async {
+        tokio::try_join!(
+            read_bounded(stdout, max_output_bytes),
+            read_bounded(stderr, max_output_bytes),
+            async { child.wait().await.map_err(process_io_error) }
+        )
+    })
+    .await;
+    match captured {
+        Ok(Ok((stdout, stderr, status))) => Ok(ProcessOutput {
+            stdout,
+            stderr,
+            exit_code: status.code(),
+            timed_out: false,
+        }),
+        Ok(Err(error)) => {
+            child.kill().await.map_err(process_io_error)?;
+            Err(error)
+        }
+        Err(_) => {
+            child.kill().await.map_err(process_io_error)?;
+            Ok(ProcessOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: None,
+                timed_out: true,
+            })
+        }
+    }
+}
+
+async fn read_bounded(reader: impl AsyncRead + Unpin, max_output_bytes: u64) -> Result<String> {
     let mut bytes = Vec::new();
-    file.take(limit)
+    reader
+        .take(max_output_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|source| PdfvError::Io {
-            path: Some(path.to_path_buf()),
-            source,
-        })?;
+        .await
+        .map_err(process_io_error)?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_output_bytes {
         return Err(invalid_value(
             "processOutput",
@@ -249,67 +324,129 @@ fn read_bounded(path: &Path, max_output_bytes: u64) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn verapdf_outcome(stdout: &str, exit_code: Option<i32>) -> Option<CorpusOutcome> {
-    let json = serde_json::from_str::<serde_json::Value>(stdout).ok();
-    if let Some(value) = &json {
-        if numeric_field_gt_zero(value, "failedToParse") {
-            return Some(CorpusOutcome::ParseFailed);
-        }
-        if numeric_field_gt_zero(value, "encrypted") {
-            return Some(CorpusOutcome::Encrypted);
-        }
-        if let Some(is_compliant) = first_bool_field(value, "isCompliant") {
-            return Some(if is_compliant {
-                CorpusOutcome::Valid
-            } else {
-                CorpusOutcome::Invalid
-            });
-        }
-    }
-    match exit_code {
-        Some(0) => Some(CorpusOutcome::Valid),
-        Some(1) => Some(CorpusOutcome::Invalid),
-        Some(7) => Some(CorpusOutcome::ParseFailed),
-        _ => None,
-    }
+fn process_io_error(source: io::Error) -> PdfvError {
+    PdfvError::Io { path: None, source }
 }
 
-fn first_bool_field(value: &serde_json::Value, key: &str) -> Option<bool> {
-    match value {
-        serde_json::Value::Object(map) => map
-            .get(key)
-            .and_then(serde_json::Value::as_bool)
-            .or_else(|| map.values().find_map(|child| first_bool_field(child, key))),
-        serde_json::Value::Array(values) => {
-            values.iter().find_map(|child| first_bool_field(child, key))
-        }
-        _ => None,
+fn verapdf_outcome(stdout: &str, exit_code: Option<i32>) -> Option<ValidatorOutcome> {
+    let VeraPdfOutput { report } = serde_json::from_str(stdout).ok()?;
+    let [job] = report.jobs.as_slice() else {
+        return None;
+    };
+    let summary = report.batch_summary;
+    if summary.total_jobs != 1 || summary.out_of_memory != 0 || summary.vera_exceptions != 0 {
+        return None;
     }
+    let outcomes = job.validation_result.as_slice();
+    if outcomes
+        .iter()
+        .any(|result| !matches!(result.job_end_status, VeraPdfJobEndStatus::Normal))
+    {
+        return None;
+    }
+    let outcome = match (
+        exit_code,
+        summary.failed_parsing_jobs,
+        summary.failed_encrypted_jobs,
+        outcomes,
+    ) {
+        (Some(7), 1, 0, []) => CorpusOutcome::ParseFailed,
+        (Some(8), 0, 1, []) => CorpusOutcome::Encrypted,
+        (Some(0), 0, 0, [_, ..]) if outcomes.iter().all(|result| result.compliant) => {
+            CorpusOutcome::Valid
+        }
+        (Some(1), 0, 0, [_, ..]) if outcomes.iter().any(|result| !result.compliant) => {
+            CorpusOutcome::Invalid
+        }
+        _ => return None,
+    };
+    let profiles = outcomes
+        .iter()
+        .map(|result| result.profile_name.as_str().to_owned())
+        .collect();
+    Some(ValidatorOutcome {
+        outcome: Some(outcome),
+        status: OracleExecutionStatus::Completed,
+        profiles,
+        unsupported_rules: 0,
+    })
 }
 
-fn numeric_field_gt_zero(value: &serde_json::Value, key: &str) -> bool {
-    match value {
-        serde_json::Value::Object(map) => {
-            map.get(key)
-                .and_then(serde_json::Value::as_u64)
-                .is_some_and(|count| count > 0)
-                || map.values().any(|child| numeric_field_gt_zero(child, key))
-        }
-        serde_json::Value::Array(values) => {
-            values.iter().any(|child| numeric_field_gt_zero(child, key))
-        }
-        _ => false,
-    }
+#[derive(Debug, Deserialize)]
+struct VeraPdfOutput {
+    report: VeraPdfReport,
 }
 
-fn resolve_row_path(root: &Path, relative: &str) -> Result<PathBuf> {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VeraPdfReport {
+    jobs: Vec<VeraPdfJob>,
+    batch_summary: VeraPdfBatchSummary,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VeraPdfJob {
+    #[serde(default)]
+    validation_result: Vec<VeraPdfValidationResult>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VeraPdfValidationResult {
+    compliant: bool,
+    job_end_status: VeraPdfJobEndStatus,
+    profile_name: BoundedText,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum VeraPdfJobEndStatus {
+    Normal,
+    #[serde(other)]
+    Failed,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VeraPdfBatchSummary {
+    total_jobs: u32,
+    out_of_memory: u32,
+    vera_exceptions: u32,
+    failed_parsing_jobs: u32,
+    failed_encrypted_jobs: u32,
+}
+
+fn resolve_row_path(root: &Path, relative: &str, tier: CorpusTier) -> Result<PathBuf> {
     let joined = root.join(relative);
-    let canonical = joined.canonicalize().map_err(|source| PdfvError::Io {
-        path: Some(joined),
-        source,
-    })?;
+    let canonical = joined
+        .canonicalize()
+        .map_err(|source| PdfvError::Io { path: None, source })?;
     if !canonical.starts_with(root) {
         return Err(invalid_value("path", "canonical path escapes corpus root"));
+    }
+    let canonical_relative = canonical
+        .strip_prefix(root)
+        .map_err(|_| invalid_value("path", "canonical path escapes corpus root"))?;
+    if tier == CorpusTier::T3RealWorld
+        && canonical_relative
+            .components()
+            .map(|component| component.as_os_str().to_str())
+            .ne(relative.split('/').map(Some))
+    {
+        return Err(invalid_value(
+            "path",
+            "T3 paths must name canonical files directly",
+        ));
+    }
+    if !fs::metadata(&canonical)
+        .map_err(|source| PdfvError::Io { path: None, source })?
+        .is_file()
+    {
+        return Err(invalid_value(
+            "path",
+            "corpus path must name a regular file",
+        ));
     }
     Ok(canonical)
 }
@@ -394,9 +531,9 @@ fn vendor_pins() -> BTreeMap<String, String> {
 }
 
 fn write_artifacts(report: &OracleCorpusReport) -> Result<()> {
-    let output_dir = Path::new(OUTPUT_DIR);
-    fs::create_dir_all(output_dir).map_err(|source| PdfvError::Io {
-        path: Some(output_dir.to_path_buf()),
+    let output_dir = oracle_output_dir();
+    fs::create_dir_all(&output_dir).map_err(|source| PdfvError::Io {
+        path: Some(output_dir.clone()),
         source,
     })?;
     write_json_file(&output_dir.join("oracle-corpus.json"), report)?;
@@ -416,51 +553,21 @@ fn write_json_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
-fn ensure_oracle_gates(report: &OracleCorpusReport) -> Result<()> {
-    if report.summary.false_compliant > 0 {
-        return Err(invalid_value(
-            "oracleCorpus",
-            "oracle corpus has false-compliant rows",
-        ));
-    }
-    if report.summary.unexpected_drift > 0 {
-        return Err(invalid_value(
-            "oracleCorpus",
-            "oracle corpus has unexpected drift",
-        ));
-    }
-    let t3 = report
-        .rows
-        .iter()
-        .filter(|row| matches!(row.tier, CorpusTier::T3RealWorld))
-        .collect::<Vec<_>>();
-    if !t3.is_empty() {
-        let matches = t3
-            .iter()
-            .filter(|row| matches!(row.classification, OracleDriftClassification::Match))
-            .count();
-        let basis_points = u64::try_from(matches)
-            .unwrap_or(u64::MAX)
-            .saturating_mul(10_000)
-            / u64::try_from(t3.len()).unwrap_or(u64::MAX);
-        if basis_points < 9_500 {
-            return Err(invalid_value("oracleCorpus", "T3 match rate is below 95%"));
-        }
-    }
-    Ok(())
-}
-
 fn required_path_env(name: &'static str) -> Result<PathBuf> {
     env::var_os(name)
         .map(PathBuf::from)
         .ok_or_else(|| invalid_value(name, format!("{name} must be set")))
 }
 
-fn env_u64(name: &'static str, default: u64) -> Result<u64> {
+fn env_u64(name: &'static str, default: u64, max: u64) -> Result<u64> {
     match env::var(name) {
         Ok(value) => value
             .parse::<u64>()
-            .map_err(|source| invalid_value(name, format!("invalid integer value: {source}"))),
+            .ok()
+            .filter(|parsed| (1..=max).contains(parsed))
+            .ok_or_else(|| {
+                invalid_value(name, format!("expected an integer from 1 through {max}"))
+            }),
         Err(env::VarError::NotPresent) => Ok(default),
         Err(source) => Err(invalid_value(
             name,
@@ -480,7 +587,19 @@ fn invalid_value(field: &'static str, reason: impl Into<String>) -> PdfvError {
 struct ValidatorOutcome {
     outcome: Option<CorpusOutcome>,
     status: OracleExecutionStatus,
+    profiles: BTreeSet<String>,
     unsupported_rules: u64,
+}
+
+impl ValidatorOutcome {
+    fn failed(status: OracleExecutionStatus) -> Self {
+        Self {
+            outcome: None,
+            status,
+            profiles: BTreeSet::new(),
+            unsupported_rules: 0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -493,32 +612,173 @@ struct ProcessOutput {
 
 #[cfg(test)]
 mod tests {
-    use pdfv_core::CorpusOutcome;
-    use serde_json::json;
+    use std::num::NonZeroU32;
+    #[cfg(unix)]
+    use std::{
+        error::Error, fs, os::unix::fs::symlink, process::Command, result::Result as StdResult,
+        time::Duration,
+    };
 
-    use super::{first_bool_field, numeric_field_gt_zero, verapdf_outcome};
+    use pdfv_core::{CorpusOutcome, OracleProfilePolicy, Result, ValidationFlavour};
+    use rstest::rstest;
 
-    #[test]
-    fn test_should_parse_recursive_verapdf_json_compliance() {
-        let value = json!({"jobs": [{"validationReport": {"isCompliant": false}}]});
+    #[cfg(unix)]
+    use super::{resolve_row_path, run_capture};
+    use super::{verapdf_outcome, verapdf_profile_arg};
 
-        assert_eq!(first_bool_field(&value, "isCompliant"), Some(false));
+    #[rstest]
+    #[case(&[true], 0, Some(CorpusOutcome::Valid))]
+    #[case(&[false], 1, Some(CorpusOutcome::Invalid))]
+    #[case(&[true, false], 1, Some(CorpusOutcome::Invalid))]
+    #[case(&[false, true], 1, Some(CorpusOutcome::Invalid))]
+    #[case(&[true, false], 0, None)]
+    #[case(&[true], 3, None)]
+    #[case(&[], 0, None)]
+    fn test_should_classify_complete_validation_reports(
+        #[case] compliant: &[bool],
+        #[case] exit_code: i32,
+        #[case] expected: Option<CorpusOutcome>,
+    ) {
+        let results = compliant
+            .iter()
+            .enumerate()
+            .map(|(index, compliant)| {
+                serde_json::json!({
+                    "compliant": compliant, "jobEndStatus": "normal", "profileName": format!("profile-{index}"),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let output = vera_pdf_report(serde_json::json!({"validationResult": results}), 0, 0);
+
+        let result = verapdf_outcome(&output, Some(exit_code));
+        if let Some(result) = &result {
+            assert_eq!(result.profiles.len(), compliant.len());
+        }
+        assert_eq!(result.and_then(|result| result.outcome), expected);
     }
 
-    #[test]
-    fn test_should_prefer_failed_to_parse_batch_summary() {
-        let value = r#"{"batchSummary":{"failedToParse":1},"jobs":[]}"#;
+    #[rstest]
+    #[case(1, 0, 7, Some(CorpusOutcome::ParseFailed))]
+    #[case(0, 1, 8, Some(CorpusOutcome::Encrypted))]
+    #[case(0, 0, 7, None)]
+    #[case(1, 0, 0, None)]
+    fn test_should_require_exit_code_and_summary_to_agree(
+        #[case] parse_failures: u32,
+        #[case] encrypted: u32,
+        #[case] exit_code: i32,
+        #[case] expected: Option<CorpusOutcome>,
+    ) {
+        let output = vera_pdf_report(serde_json::json!({}), parse_failures, encrypted);
 
         assert_eq!(
-            verapdf_outcome(value, Some(1)),
-            Some(CorpusOutcome::ParseFailed)
+            verapdf_outcome(&output, Some(exit_code)).and_then(|result| result.outcome),
+            expected,
         );
     }
 
     #[test]
-    fn test_should_find_numeric_fields_recursively() {
-        let value = json!({"outer": [{"batchSummary": {"encrypted": 1}}]});
+    fn test_should_reject_partial_or_invalid_json_output() {
+        let incomplete = vera_pdf_report(
+            serde_json::json!({"validationResult": [
+                {"compliant": true, "jobEndStatus": "normal", "profileName": "profile-a"},
+                {"compliant": false, "jobEndStatus": "error", "profileName": "profile-b"},
+            ]}),
+            0,
+            0,
+        );
 
-        assert!(numeric_field_gt_zero(&value, "encrypted"));
+        assert!(verapdf_outcome(&incomplete, Some(1)).is_none());
+        assert!(verapdf_outcome("", Some(0)).is_none());
+        assert!(verapdf_outcome("{", Some(1)).is_none());
+    }
+
+    #[test]
+    fn test_should_forward_explicit_and_fallback_flavours() -> Result<()> {
+        let flavour = ValidationFlavour::new(
+            "pdfa",
+            NonZeroU32::new(4).ok_or(pdfv_core::ProfileError::UnsupportedSelection)?,
+            "none",
+        )?;
+        assert_eq!(
+            verapdf_profile_arg(&OracleProfilePolicy::Explicit {
+                flavour: flavour.clone(),
+            })?,
+            ("--flavour", String::from("4")),
+        );
+        assert_eq!(
+            verapdf_profile_arg(&OracleProfilePolicy::Auto {
+                default: Some(flavour),
+            })?,
+            ("--defaultflavour", String::from("4")),
+        );
+        assert!(verapdf_profile_arg(&OracleProfilePolicy::Auto { default: None }).is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_should_stop_capture_at_the_output_limit() -> Result<()> {
+        let mut command = Command::new("printf");
+        command.arg("%s").arg("test");
+        assert_eq!(
+            run_capture(command, Duration::from_secs(2), 4)?.stdout,
+            "test"
+        );
+
+        let mut command = Command::new("printf");
+        command.arg("%s").arg("exceeds limit");
+        assert!(matches!(
+            run_capture(command, Duration::from_secs(2), 4),
+            Err(pdfv_core::PdfvError::Configuration(
+                pdfv_core::ConfigError::InvalidValue {
+                    field: "processOutput",
+                    ..
+                }
+            )),
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_should_mark_timed_out_process_capture() -> Result<()> {
+        let mut command = Command::new("sleep");
+        command.arg("5");
+        assert!(run_capture(command, Duration::from_millis(30), 64)?.timed_out);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_should_require_a_direct_regular_t3_document() -> StdResult<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().canonicalize()?;
+        let document = root.join("file.pdf");
+        fs::write(&document, b"%PDF-1.4")?;
+        symlink(&document, root.join("alias.pdf"))?;
+        fs::create_dir(root.join("directory.pdf"))?;
+
+        let tier = pdfv_core::CorpusTier::T3RealWorld;
+        assert_eq!(resolve_row_path(&root, "file.pdf", tier)?, document);
+        assert!(resolve_row_path(&root, "alias.pdf", tier).is_err());
+        assert!(resolve_row_path(&root, "directory.pdf", tier).is_err());
+        Ok(())
+    }
+
+    fn vera_pdf_report(job: serde_json::Value, parse_failures: u32, encrypted: u32) -> String {
+        serde_json::json!({
+            "report": {
+                "jobs": [job],
+                "batchSummary": {
+                    "totalJobs": 1,
+                    "outOfMemory": 0,
+                    "veraExceptions": 0,
+                    "failedParsingJobs": parse_failures,
+                    "failedEncryptedJobs": encrypted,
+                },
+            },
+        })
+        .to_string()
     }
 }

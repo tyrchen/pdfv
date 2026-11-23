@@ -36,6 +36,7 @@ flate2.workspace = true
 proptest.workspace = true
 rstest.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "process", "time"] }
 
 [[bench]]
 name = "parser_m1"

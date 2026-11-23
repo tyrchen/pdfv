@@ -67,12 +67,18 @@ strong parity metrics and conservative `Incomplete` reporting for unsupported
 or unproven semantics. Do not present it as a release-grade replacement for
 veraPDF on arbitrary private collections.
 
-The executable release gate is `make readiness-release-gate`. It sets
-`PDFV_ORACLE_REQUIRE_T3_RELEASE=1` for the oracle summary step and fails unless
-the report contains at least 1,000 T3 rows by default, at least 95% T3
-outcome-class match, no unexpected drift, and no false-compliant rows.
+The executable release gate is `make readiness-release-gate`. It runs the
+checked-in public T2 manifest before the operator's T3 manifest. It requires
+at least 1,000 distinct, in-scope T3 documents, at least 95% T3 outcome-class
+agreement, and zero unexpected or false-compliant rows. It also rejects
+incomplete oracle execution and results for different selected profiles.
 Use `make oracle-t3-manifest` with `PDFV_ORACLE_T3_CORPUS_ROOT` to generate a
 private `t3RealWorld` manifest; do not commit that manifest or the private PDFs.
+
+An additional public run covered PDF/A-1b, PDF/A-4, PDF/UA-1, and PDF/UA-2.
+All eight samples returned `Incomplete` from pdfv. See the
+[live conformance review](reviews/m9-live-conformance-review.md) for the sample
+manifest, measured gaps, and the auto-fallback behavior.
 
 ## Out Of Scope For The First Claim
 

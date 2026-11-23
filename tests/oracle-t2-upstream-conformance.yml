@@ -1,0 +1,131 @@
+# veraPDF-corpus revision bb75f4f0073d9350dfd058c0162a367e6fadf25e.
+# Set PDFV_ORACLE_CORPUS_ROOT to that checkout.
+schemaVersion: phase22-oracle-manifest-v1
+corpusRoot: .
+rows:
+  - id: pdfa-1-6-2-2-t01-pass-a
+    path: "PDF_A-1b/6.2 Graphics/6.2.2 Output intent/veraPDF test suite 6-2-2-t01-pass-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: b
+    expectedFeatures:
+      - color
+      - outputIntent
+    sizeBucket: tiny
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-1-6-7-11-t02-fail-a
+    path: "PDF_A-1b/6.7 Metadata/6.7.11 Version and conformance level identification/veraPDF test suite 6-7-11-t02-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: b
+    expectedFeatures:
+      - metadata
+    sizeBucket: tiny
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-4-6-2-4-3-t01-pass-e
+    path: "PDF_A-4/6.2 Graphics/6.2.4 Colour spaces/6.2.4.3 Uncalibrated -Device colour spaces/veraPDF test suite 6-2-4-3-t01-pass-e.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 4
+        conformance: none
+    expectedFeatures:
+      - color
+      - resource
+    sizeBucket: tiny
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-4-6-1-8-t01-fail-a
+    path: "PDF_A-4/6.1 File structure/6.1.8 Indirect objects/veraPDF test suite 6-1-8-t01-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 4
+        conformance: none
+    expectedFeatures:
+      - parser
+    sizeBucket: tiny
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfua-1-7-2-t17-pass-d
+    path: "PDF_UA-1/7.2 Text/7.2-t17-pass-d.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfua
+        part: 1
+        conformance: none
+    expectedFeatures:
+      - accessibility
+      - font
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfua-1-7-1-t03-fail-b
+    path: "PDF_UA-1/7.1 General/7.1-t03-fail-b.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfua
+        part: 1
+        conformance: none
+    expectedFeatures:
+      - accessibility
+      - structure
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfua-2-8-4-5-8-t01-pass-a
+    path: "PDF_UA-2/8.4 Text representation for content/8.4.5 Fonts/8.4.5.8 Unicode character maps/8.4.5.8-t01-pass-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfua
+        part: 2
+        conformance: iso32005
+    expectedFeatures:
+      - accessibility
+      - font
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfua-2-8-2-2-t01-fail-a
+    path: "PDF_UA-2/8.2 Logical structure/8.2.2 Real content/8.2.2-t01-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfua
+        part: 2
+        conformance: iso32005
+    expectedFeatures:
+      - accessibility
+      - structure
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable

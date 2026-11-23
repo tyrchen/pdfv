@@ -74,6 +74,7 @@ impl CorpusPath {
             || value.len() > 1024
             || value.contains('\0')
             || value.starts_with('/')
+            || (value != "." && value.split('/').any(|part| part == "."))
             || value.split('/').any(|part| part == ".." || part.is_empty());
         if invalid {
             return Err(ConfigError::InvalidValue {
@@ -384,6 +385,8 @@ pub enum OracleExecutionStatus {
     Timeout,
     /// Process failed before an outcome could be derived.
     Failed,
+    /// Both engines produced validation results for different profile sets.
+    IncompatibleProfiles,
 }
 
 /// Observed pdfv and veraPDF outcomes for one manifest row.
@@ -713,37 +716,39 @@ pub fn classify_oracle_observation(
     row: &OracleCorpusRow,
     observation: &OracleRowObservation,
 ) -> OracleDriftClassification {
-    if observation.vera_pdf_outcome == observation.pdfv_outcome
-        && observation.vera_pdf_outcome.is_some()
-        && matches!(
-            observation.vera_pdf_status,
-            OracleExecutionStatus::Completed
-        )
-        && matches!(observation.pdfv_status, OracleExecutionStatus::Completed)
-    {
-        return OracleDriftClassification::Match;
-    }
-    if is_false_compliant(observation) {
-        return row
-            .expected_classification
-            .filter(|classification| {
-                matches!(
-                    classification,
-                    OracleDriftClassification::VeraPdfAmbiguity
-                        | OracleDriftClassification::PdfvBug
-                )
-            })
-            .unwrap_or(OracleDriftClassification::UnexpectedDrift);
-    }
-    if matches!(observation.pdfv_status, OracleExecutionStatus::Timeout)
-        || matches!(observation.vera_pdf_status, OracleExecutionStatus::Timeout)
+    let (Some(vera_pdf), Some(pdfv)) = (observation.vera_pdf_outcome, observation.pdfv_outcome)
+    else {
+        return OracleDriftClassification::UnexpectedDrift;
+    };
+    if observation.vera_pdf_status != OracleExecutionStatus::Completed
+        || observation.pdfv_status != OracleExecutionStatus::Completed
     {
         return OracleDriftClassification::UnexpectedDrift;
     }
-    if let Some(classification) = row.expected_classification {
-        return classification;
+    if vera_pdf == pdfv {
+        return OracleDriftClassification::Match;
     }
-    OracleDriftClassification::UnexpectedDrift
+    let Some(expected) = row
+        .expected_classification
+        .filter(|_| has_classification_note(row))
+    else {
+        return OracleDriftClassification::UnexpectedDrift;
+    };
+    match expected {
+        OracleDriftClassification::Match => OracleDriftClassification::UnexpectedDrift,
+        OracleDriftClassification::VeraPdfAmbiguity | OracleDriftClassification::PdfvBug => {
+            expected
+        }
+        _ if is_false_compliant(observation) => OracleDriftClassification::UnexpectedDrift,
+        OracleDriftClassification::ExpectedDriftUnsupportedRule
+            if pdfv != CorpusOutcome::Incomplete
+                || !matches!(vera_pdf, CorpusOutcome::Valid | CorpusOutcome::Invalid)
+                || observation.pdfv_unsupported_rules == 0 =>
+        {
+            OracleDriftClassification::UnexpectedDrift
+        }
+        _ => expected,
+    }
 }
 
 fn validate_row(
@@ -788,7 +793,7 @@ fn validate_classification_note(row: &OracleCorpusRow) -> Result<()> {
         }
         .into());
     }
-    if row.classification_note.is_none() {
+    if !has_classification_note(row) {
         return Err(ConfigError::InvalidValue {
             field: "classificationNote",
             reason: BoundedText::unchecked("known drift rows require a classification note"),
@@ -796,6 +801,12 @@ fn validate_classification_note(row: &OracleCorpusRow) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+fn has_classification_note(row: &OracleCorpusRow) -> bool {
+    row.classification_note
+        .as_ref()
+        .is_some_and(|note| !note.as_str().trim().is_empty())
 }
 
 fn validate_tier_license(row: &OracleCorpusRow) -> Result<()> {
@@ -825,11 +836,21 @@ fn result_reason(
     observation: &OracleRowObservation,
     classification: OracleDriftClassification,
 ) -> Result<Option<BoundedText>> {
-    if let Some(note) = &row.classification_note {
-        return Ok(Some(note.clone()));
+    if observation.pdfv_status == OracleExecutionStatus::IncompatibleProfiles {
+        return Ok(Some(BoundedText::unchecked(
+            "pdfv and veraPDF selected different validation profiles",
+        )));
     }
     if matches!(classification, OracleDriftClassification::Match) {
         return Ok(None);
+    }
+    if classification
+        == row
+            .expected_classification
+            .unwrap_or(OracleDriftClassification::Match)
+        && let Some(note) = &row.classification_note
+    {
+        return Ok(Some(note.clone()));
     }
     let reason = match (observation.vera_pdf_outcome, observation.pdfv_outcome) {
         (Some(vera_pdf), Some(pdfv)) => format!("veraPDF {vera_pdf:?}, pdfv {pdfv:?}"),
@@ -841,7 +862,9 @@ fn result_reason(
 }
 
 fn is_false_compliant(observation: &OracleRowObservation) -> bool {
-    matches!(observation.pdfv_outcome, Some(CorpusOutcome::Valid))
+    observation.vera_pdf_status == OracleExecutionStatus::Completed
+        && observation.pdfv_status == OracleExecutionStatus::Completed
+        && matches!(observation.pdfv_outcome, Some(CorpusOutcome::Valid))
         && matches!(observation.vera_pdf_outcome, Some(CorpusOutcome::Invalid))
 }
 
@@ -849,6 +872,7 @@ fn verapdf_flavour_code(flavour: &ValidationFlavour) -> Option<String> {
     let family = flavour.family.as_str();
     let conformance = flavour.conformance.as_str();
     match family {
+        "pdfa" if flavour.part.get() == 4 && conformance == "none" => Some(String::from("4")),
         "pdfa" => Some(format!("{}{conformance}", flavour.part)),
         "pdfua" if flavour.part.get() == 1 => Some(String::from("ua1")),
         "pdfua" if flavour.part.get() == 2 => Some(String::from("ua2")),
@@ -1025,6 +1049,73 @@ mod tests {
             OracleDriftClassification::ExpectedDriftUnsupportedRule
         );
         assert!(!result.release_blocking);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_reject_stale_unsupported_rule_triage() -> crate::Result<()> {
+        let mut row = base_row()?;
+        row.expected_classification = Some(OracleDriftClassification::ExpectedDriftUnsupportedRule);
+        row.classification_note = Some(BoundedText::new("triaged unsupported rule drift", 64)?);
+        let observation = OracleRowObservation {
+            vera_pdf_outcome: Some(CorpusOutcome::Valid),
+            pdfv_outcome: Some(CorpusOutcome::Invalid),
+            pdfv_unsupported_rules: 0,
+            vera_pdf_status: OracleExecutionStatus::Completed,
+            pdfv_status: OracleExecutionStatus::Completed,
+        };
+        let result = OracleCorpusResultRow::from_observation(&row, observation)?;
+
+        assert_eq!(
+            result.classification,
+            OracleDriftClassification::UnexpectedDrift
+        );
+        assert!(result.release_blocking);
+        assert_ne!(result.reason, row.classification_note);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_block_failed_execution_despite_manifest_triage() -> crate::Result<()> {
+        let mut row = base_row()?;
+        row.expected_classification = Some(OracleDriftClassification::ExpectedDriftScope);
+        row.classification_note = Some(BoundedText::new("example triage", 64)?);
+        let observation = OracleRowObservation {
+            vera_pdf_outcome: None,
+            pdfv_outcome: Some(CorpusOutcome::Valid),
+            pdfv_unsupported_rules: 0,
+            vera_pdf_status: OracleExecutionStatus::Failed,
+            pdfv_status: OracleExecutionStatus::Completed,
+        };
+        let result = OracleCorpusResultRow::from_observation(&row, observation)?;
+
+        assert_eq!(
+            result.classification,
+            OracleDriftClassification::UnexpectedDrift
+        );
+        assert!(result.release_blocking);
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_block_different_profiles_without_counting_false_compliance() -> crate::Result<()>
+    {
+        let row = base_row()?;
+        let observation = OracleRowObservation {
+            vera_pdf_outcome: Some(CorpusOutcome::Invalid),
+            pdfv_outcome: Some(CorpusOutcome::Valid),
+            pdfv_unsupported_rules: 0,
+            vera_pdf_status: OracleExecutionStatus::Completed,
+            pdfv_status: OracleExecutionStatus::IncompatibleProfiles,
+        };
+        let result = OracleCorpusResultRow::from_observation(&row, observation)?;
+
+        assert_eq!(
+            result.classification,
+            OracleDriftClassification::UnexpectedDrift
+        );
+        assert!(result.release_blocking);
+        assert!(!result.false_compliant);
         Ok(())
     }
 

@@ -54,6 +54,10 @@ Runtime contract:
 - Requires `PDFV_ORACLE_CORPUS_MANIFEST`.
 - Records veraPDF version, pdfv commit, vendor pins, OS, Java version, command-line profile selection, and report format.
 - Runs veraPDF and pdfv with equivalent profile/flavour selection where possible.
+- A single-file veraPDF result requires complete JSON and a corresponding
+  process exit code. For validation decisions, compare the complete profile
+  sets reported by both engines. Comparison failures block the gate and are
+  recorded separately from document outcomes.
 - Compares outcome class first; assertion-level and report-field comparison are secondary diagnostics.
 - Does not invoke shells with interpolated corpus paths.
 
@@ -84,6 +88,12 @@ For the first veraPDF-grade readiness claim:
 - Performance and resource-limit summaries are attached to the release snapshot.
 
 Corpus size thresholds are release-specific and recorded in the milestone review. The first release-grade snapshot must not use fewer than 1,000 T3 documents unless [99-key-decisions.md](./99-key-decisions.md) records why a smaller corpus is statistically acceptable.
+
+The strict target runs the checked-in T2 manifest before the supplied T3
+manifest and writes the T2 evidence under `target/parity/t2`. T3 counts one row
+per canonical document path with a PDF/A or PDF/UA profile. Repeated paths and
+non-comparable outcomes fail the gate. WTPDF and undetermined profiles do not
+contribute to the T3 threshold.
 
 ## 7. Oracle Report Schema
 

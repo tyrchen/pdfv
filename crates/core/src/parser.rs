@@ -487,6 +487,27 @@ pub struct ParsedDocument {
     pub parse_facts: Vec<ParseFact>,
     /// Recoverable parser warnings.
     pub warnings: Vec<ValidationWarning>,
+    #[serde(default)]
+    pub(crate) file_syntax: FileSyntax,
+}
+
+/// Fixed-size syntax observations used by conformance rules.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FileSyntax {
+    pub(crate) header_comment: [u8; 4],
+    pub(crate) xref_keyword_eol_compliant: bool,
+    pub(crate) xref_subsection_space_separated: bool,
+}
+
+impl Default for FileSyntax {
+    fn default() -> Self {
+        Self {
+            header_comment: [0; 4],
+            xref_keyword_eol_compliant: true,
+            xref_subsection_space_separated: true,
+        }
+    }
 }
 
 impl ParsedDocument {
@@ -882,6 +903,7 @@ struct ByteParser<'a> {
     pos: usize,
     parse_facts: Vec<ParseFact>,
     warnings: Vec<ValidationWarning>,
+    file_syntax: FileSyntax,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -912,6 +934,7 @@ impl<'a> ByteParser<'a> {
             pos: 0,
             parse_facts: Vec::new(),
             warnings: Vec::new(),
+            file_syntax: FileSyntax::default(),
         }
     }
 
@@ -963,6 +986,7 @@ impl<'a> ByteParser<'a> {
                             trailers,
                             parse_facts: self.parse_facts,
                             warnings: self.warnings,
+                            file_syntax: self.file_syntax,
                         });
                     }
                     Err(error) => return Err(error.into_parse_error().into()),
@@ -976,6 +1000,7 @@ impl<'a> ByteParser<'a> {
                     trailers,
                     parse_facts: self.parse_facts,
                     warnings: self.warnings,
+                    file_syntax: self.file_syntax,
                 });
             }
 
@@ -989,6 +1014,7 @@ impl<'a> ByteParser<'a> {
                     trailers,
                     parse_facts: self.parse_facts,
                     warnings: self.warnings,
+                    file_syntax: self.file_syntax,
                 });
             }
         }
@@ -1006,6 +1032,7 @@ impl<'a> ByteParser<'a> {
             trailers,
             parse_facts: self.parse_facts,
             warnings: self.warnings,
+            file_syntax: self.file_syntax,
         })
     }
 
@@ -1365,6 +1392,7 @@ impl<'a> ByteParser<'a> {
                 message: BoundedText::unchecked("malformed PDF header version recovered as 1.4"),
             });
         }
+        self.file_syntax.header_comment = header_comment_bytes(&self.source, self.pos);
         Ok((
             u64::try_from(header_pos).map_err(|_| ParseError::ArithmeticOverflow {
                 context: "header offset",
@@ -1792,7 +1820,11 @@ impl<'a> ByteParser<'a> {
     ) -> std::result::Result<(), ParseError> {
         let section_offset = self.offset()?;
         self.consume_bytes(b"xref")?;
-        let mut compliant = true;
+        let keyword_eol_compliant = offset_after_eol(&self.source, self.pos)
+            .and_then(|offset| self.source.byte(offset))
+            .is_some_and(|byte| byte.is_ascii_digit());
+        self.file_syntax.xref_keyword_eol_compliant &= keyword_eol_compliant;
+        let mut compliant = keyword_eol_compliant;
         let mut parsed_entries = 0_u64;
         loop {
             self.skip_ws_and_comments();
@@ -1807,7 +1839,13 @@ impl<'a> ByteParser<'a> {
                 self.skip_line();
                 continue;
             };
+            let separator_start = self.pos;
             self.skip_required_ws()?;
+            let space_separated = self.source.byte(separator_start) == Some(b' ')
+                && self.pos == separator_start.saturating_add(1)
+                && self.peek_byte().is_some_and(|byte| byte.is_ascii_digit());
+            self.file_syntax.xref_subsection_space_separated &= space_separated;
+            compliant &= space_separated;
             let Some(count) = self.parse_unsigned_u32()? else {
                 compliant = false;
                 self.skip_line();
@@ -1815,7 +1853,7 @@ impl<'a> ByteParser<'a> {
             };
             self.skip_line();
             for _ in 0..count {
-                let line_start = self.pos;
+                let next_line = next_line_start(&self.source, self.pos);
                 let offset = self.parse_fixed_digits(10);
                 self.skip_xref_spaces();
                 let generation = self.parse_fixed_digits(5);
@@ -1824,7 +1862,7 @@ impl<'a> ByteParser<'a> {
                 if offset.is_none()
                     || generation.is_none()
                     || !matches!(marker, Some(b'n' | b'f'))
-                    || !line_had_eol(&self.source, line_start)
+                    || next_line.is_none()
                 {
                     compliant = false;
                 }
@@ -1839,7 +1877,7 @@ impl<'a> ByteParser<'a> {
                         limit: "max_objects",
                     });
                 }
-                self.skip_line();
+                self.pos = next_line.unwrap_or_else(|| self.source.len());
             }
         }
         self.push_fact(ParseFact::Xref {
@@ -2028,12 +2066,7 @@ impl<'a> ByteParser<'a> {
     }
 
     fn skip_line(&mut self) {
-        while let Some(byte) = self.peek_byte() {
-            self.pos = self.pos.saturating_add(1);
-            if matches!(byte, b'\n' | b'\r') {
-                break;
-            }
-        }
+        self.pos = next_line_start(&self.source, self.pos).unwrap_or_else(|| self.source.len());
     }
 
     fn consume_bytes(&mut self, expected: &[u8]) -> std::result::Result<(), ParseError> {
@@ -2117,11 +2150,45 @@ fn has_eol_before(source: &SourceStorage, pos: usize) -> bool {
     )
 }
 
-fn line_had_eol(source: &SourceStorage, line_start: usize) -> bool {
-    let Some(relative) = source.find_bytes(b"\n", line_start, source.len()) else {
-        return source.find_bytes(b"\r", line_start, source.len()).is_some();
+fn offset_after_eol(source: &SourceStorage, pos: usize) -> Option<usize> {
+    match source.byte(pos)? {
+        b'\r' if source.byte(pos.saturating_add(1)) == Some(b'\n') => pos.checked_add(2),
+        b'\r' | b'\n' => pos.checked_add(1),
+        _ => None,
+    }
+}
+
+fn next_line_start(source: &SourceStorage, pos: usize) -> Option<usize> {
+    let mut start = pos;
+    let mut chunk_len = 64;
+    while start < source.len() {
+        let end = start.saturating_add(chunk_len).min(source.len());
+        let bytes = source.slice(start, end).ok()?;
+        if let Some(relative) = bytes.iter().position(|byte| matches!(byte, b'\r' | b'\n')) {
+            return offset_after_eol(source, start.checked_add(relative)?);
+        }
+        start = end;
+        chunk_len = SPILL_SEARCH_CHUNK_BYTES;
+    }
+    None
+}
+
+fn header_comment_bytes(source: &SourceStorage, version_end: usize) -> [u8; 4] {
+    let Some(comment_start) = next_line_start(source, version_end) else {
+        return [0; 4];
     };
-    relative >= line_start
+    if source.byte(comment_start) != Some(b'%') {
+        return [0; 4];
+    }
+    let mut comment = [0; 4];
+    for (index, byte) in comment.iter_mut().enumerate() {
+        let offset = comment_start.saturating_add(1).saturating_add(index);
+        match source.byte(offset) {
+            Some(b'\r' | b'\n') | None => return [0; 4],
+            Some(value) => *byte = value,
+        }
+    }
+    comment
 }
 
 fn endstream_after_optional_eol(source: &SourceStorage, offset: usize) -> Option<usize> {
