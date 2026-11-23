@@ -76,6 +76,21 @@ and zero false-compliant decisions. The 41 additional PDF/A font and
 colour controls also match their expected document decisions.
 [Live review](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths)
 
+## Step 4 evidence to date
+
+PDF/A-3 attachment rules now use typed file specifications, actual `/AF`
+references, and the embedded streams selected by `/EF`. All 581 attachment
+assertions across 136 PDF/A-3b controls agree with veraPDF, including the
+12 upstream attachment fixtures. The attachment rules produce zero
+unsupported evaluations.
+
+The broader audit sampled all 15 built-in profiles. Twenty of its 30
+whole-document decisions agree and ten differ, with zero false-compliant
+decisions. The 12 upstream attachment fixtures expose additional image-mask,
+DeviceN, XMP, and annotation gaps outside the attachment rules. The checked-in
+8-row and supplemental 13-row release checks continue to agree.
+[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit)
+
 ## Implementation constraints
 
 Use a family for each rule scope and preserve context in assertions. A shared

@@ -1552,7 +1552,7 @@ fn structure_dictionary<'a>(
     Some((key, offset, dictionary))
 }
 
-fn is_structure_element(document: &ParsedDocument, dictionary: &Dictionary) -> bool {
+pub(crate) fn is_structure_element(document: &ParsedDocument, dictionary: &Dictionary) -> bool {
     match resolved_value(document, dictionary.get("Type")) {
         Some(CosObject::Name(name)) => name.matches("StructElem"),
         None | Some(CosObject::Null) => !is_mcr(dictionary) && !is_objr(dictionary),

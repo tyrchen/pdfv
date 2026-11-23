@@ -368,6 +368,7 @@ pub(crate) struct MarkedContentSpan {
     pub properties: Option<ObjectKey>,
     /// Optional named property-list resource.
     pub properties_name: Option<PdfName>,
+    pub(crate) associated_file_property: Option<PdfName>,
     /// Presence of the text and language entries in a direct property list.
     pub inline_text: MarkedTextProperties,
     pub(crate) inline_properties_offset: Option<u64>,
@@ -827,6 +828,14 @@ fn classify_operator(
                     mcid,
                     properties,
                     properties_name,
+                    associated_file_property: match (op_name, operands) {
+                        ("BDC", [.., Operand::Name(tag), Operand::Name(name)])
+                            if tag.matches("AF") =>
+                        {
+                            Some(name.clone())
+                        }
+                        _ => None,
+                    },
                     inline_properties_offset: inline.as_ref().and(location.offset),
                     inline_text: inline.as_ref().filter(|_| operands.len() == 2).map_or_else(
                         MarkedTextProperties::default,

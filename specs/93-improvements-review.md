@@ -15,12 +15,16 @@ of the current implementation phase.
   the embedded-font rules. See
   [the glyph measurement](../crates/core/src/validation/glyphs.rs) and
   [the live comparisons](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
-- **P1.** PDF/A-3 rule `6.8-4` needs associated-file evidence from the
-  applicable `/AF` arrays. Its current generic property treats
-  `AFRelationship` and name-tree membership as association evidence.
-  Verify reachable catalog, page, structure, resource, and marked-content
-  association sites against the oracle. See
-  [the associated-file property](../crates/core/src/validation.rs).
+- **P1.** The expanded profile audit found six incomplete decisions and
+  four incorrectly invalid ones. Scope the mask, DeviceN, transparency,
+  annotation, and XMP rules to their actual model objects. Resolve the
+  remaining object-stream, CIDSet, glyph-width, and Unicode evidence. The
+  [live audit](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit)
+  records the rule IDs and representative fixtures.
+- **P1.** Embedded PDF conformance checks `isValidPDFA12` and
+  `isValidPDFA124` still need evidence from `/EF` stream traversal and
+  bounded nested validation. Reuse the MIME rule's
+  [attachment selection](../crates/core/src/validation/file_spec.rs).
 - **P1.** Resolve active object identity across incremental xref sections for
   generation changes, free entries, and compressed replacements. Linked
   revision detection identifies the current sections. The object store still
@@ -48,3 +52,7 @@ of the current implementation phase.
   font-program evidence on both supplemental fixtures. Their 6 and 15
   passing width assertions and their document decisions match veraPDF.
   See [the font review](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
+- **P1.** PDF/A-3 attachment rules use real `/AF` references and
+  `/EF`-selected streams. Every clause 6.8 assertion agrees with veraPDF
+  across 136 controls. See
+  [the attachment review](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit).

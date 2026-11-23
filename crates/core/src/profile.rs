@@ -2550,8 +2550,7 @@ fn import_verapdf_profile_xml_impl(xml: &str) -> Result<ProfileImportSummary> {
                             }
                             .into());
                         }
-                        current_rule =
-                            Some(XmlRuleBuilder::from_rule_start(&element, flavour.as_ref())?);
+                        current_rule = Some(XmlRuleBuilder::from_rule_start(&element)?);
                     }
                     b"name" if current_rule.is_none() => {
                         current_text = XmlTextTarget::ProfileName;
@@ -2778,13 +2777,9 @@ struct XmlRuleBuilder {
 }
 
 impl XmlRuleBuilder {
-    fn from_rule_start(
-        element: &quick_xml::events::BytesStart<'_>,
-        flavour: Option<&ValidationFlavour>,
-    ) -> Result<Self> {
+    fn from_rule_start(element: &quick_xml::events::BytesStart<'_>) -> Result<Self> {
         let source_object_type = required_attr(element, b"object")?;
-        let (object_type, unsupported_reason) =
-            map_verapdf_object_type(&source_object_type, flavour)?;
+        let (object_type, unsupported_reason) = map_verapdf_object_type(&source_object_type)?;
         Ok(Self {
             object_type: Some(object_type),
             unsupported_reason,
@@ -2825,6 +2820,17 @@ impl XmlRuleBuilder {
         if unicode_test.is_some() {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::UNICODE_FAMILY);
         }
+        if object_type.as_str() == "embeddedFontFile"
+            && source_test
+                .as_str()
+                .split_once("&&")
+                .is_some_and(|(presence, syntax)| {
+                    presence.trim() == "Subtype != null"
+                        && syntax.trim() == r"/^[-\w+\.]+\/[-\w+\.]+$/.test(Subtype)"
+                })
+        {
+            object_type = ObjectTypeName::unchecked(crate::validation::file_spec::EMBEDDED_FILE);
+        }
         let mut test = if let Some(reason) = self.unsupported_reason {
             RuleExpr::Unsupported {
                 fragment: source_test.clone(),
@@ -2841,26 +2847,16 @@ impl XmlRuleBuilder {
             })
         };
         match object_type.as_str() {
+            crate::validation::file_spec::EMBEDDED_FILE => {
+                test = property_expr("hasValidMimeType")?;
+            }
             "cosInteger" if test == signed_32_bit_range()? => {
                 test = property_expr("fitsSigned32")?;
             }
             "cosName" => lower_cos_byte_lengths(&mut test, "internalRepresentation")?,
             "cosString" => lower_cos_byte_lengths(&mut test, "value")?,
             crate::validation::language::FAMILY => {
-                if let Some(property) = match source_test.as_str() {
-                    "/^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/.test(unicodeValue)" => {
-                        Some("isLanguageTag")
-                    }
-                    "unicodeValue == '' || \
-                     /^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/.test(unicodeValue)" => {
-                        Some("isLanguageTagOrEmpty")
-                    }
-                    "unicodeValue == '' || \
-                     /^[a-zA-Z]{1,8}(-[a-zA-Z]{1,8})*$/.test(unicodeValue)" => {
-                        Some("isAlphabeticLanguageTagOrEmpty")
-                    }
-                    _ => None,
-                } {
+                if let Some(property) = imported_language_property(source_test.as_str()) {
                     test = property_expr(property)?;
                 }
             }
@@ -2891,6 +2887,19 @@ impl XmlRuleBuilder {
             error: ErrorTemplate { message },
             references: self.references,
         })
+    }
+}
+
+fn imported_language_property(test: &str) -> Option<&'static str> {
+    match test {
+        "/^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/.test(unicodeValue)" => Some("isLanguageTag"),
+        "unicodeValue == '' || /^[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*$/.test(unicodeValue)" => {
+            Some("isLanguageTagOrEmpty")
+        }
+        "unicodeValue == '' || /^[a-zA-Z]{1,8}(-[a-zA-Z]{1,8})*$/.test(unicodeValue)" => {
+            Some("isAlphabeticLanguageTagOrEmpty")
+        }
+        _ => None,
     }
 }
 
@@ -3183,10 +3192,7 @@ fn profile_id_for_flavour(flavour: &ValidationFlavour) -> Result<Identifier> {
     clippy::too_many_lines,
     reason = "veraPDF object taxonomy mapping is intentionally centralized for schema checks"
 )]
-fn map_verapdf_object_type(
-    value: &str,
-    flavour: Option<&ValidationFlavour>,
-) -> Result<(ObjectTypeName, Option<BoundedText>)> {
+fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<BoundedText>)> {
     let mapped = match value {
         "CosDocument" | "PDDocument" | "CosXRef" | "CosTrailer" => Some("document"),
         "CosIndirect" => Some("cosIndirect"),
@@ -3204,16 +3210,11 @@ fn map_verapdf_object_type(
         "CosDict" => Some("cosDictionary"),
         "CosBBox" => Some("pageBox"),
         "CosLang" => Some(crate::validation::language::FAMILY),
-        "CosFileSpecification"
-            if flavour
-                .is_some_and(|flavour| matches!(flavour.family.as_str(), "pdfua" | "wtpdf")) =>
-        {
-            Some(crate::validation::file_spec::FAMILY)
-        }
+        "CosFileSpecification" => Some(crate::validation::file_spec::FAMILY),
         "CosTextString" => Some(crate::validation::scoped_pua::TEXT_STRING),
         "CosActualText" => Some(crate::validation::scoped_pua::ACTUAL_TEXT),
         "CosAlt" => Some(crate::validation::scoped_pua::ALT),
-        "CosUnicodeName" | "CosFileSpecification" => Some("object"),
+        "CosUnicodeName" => Some("object"),
         "GFCosMetadata"
         | "PDMetadata"
         | "Metadata"

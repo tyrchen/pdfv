@@ -87,6 +87,9 @@ pub(super) fn append<'a>(
         .unwrap_or_else(|| GraphicsState::initial(model.is_form, &defaults));
     state.transparency = transparency_space(graph, model, &resources)?.or(state.transparency);
     let uses = used_devices(graph, &resources, summary, state, &defaults)?;
+    if model.object_type.as_str() == super::language::CONTENT_FAMILY {
+        return Ok(uses.invocations);
+    }
     let mut output = None;
     for (device, location) in uses.devices {
         if !graph.materializes(device.family()) || defaults.contains(&device) {
@@ -117,6 +120,8 @@ pub(super) fn append<'a>(
 pub(super) struct GraphicsState {
     fill: Option<Device>,
     stroke: Option<Device>,
+    fill_pattern: bool,
+    stroke_pattern: bool,
     text_mode: Option<u8>,
     transparency: Option<BlendingSpace>,
 }
@@ -127,6 +132,8 @@ impl GraphicsState {
         Self {
             fill: device,
             stroke: device,
+            fill_pattern: false,
+            stroke_pattern: false,
             text_mode: (!is_form).then_some(0),
             transparency: None,
         }
@@ -146,6 +153,14 @@ impl GraphicsState {
             _ => (false, false),
         };
         [self.fill.filter(|_| fill), self.stroke.filter(|_| stroke)]
+    }
+
+    fn follows_pattern_invocation(self, operator: &str, require_pattern: bool) -> bool {
+        match operator {
+            "scn" => self.fill_pattern || !require_pattern,
+            "SCN" => self.stroke_pattern || !require_pattern,
+            _ => false,
+        }
     }
 }
 
@@ -207,13 +222,12 @@ fn used_devices<'a>(
                     uses.devices.entry(device).or_insert(location);
                 }
                 let active = selected.filter(|device| !defaults.contains(device));
-                match operator {
-                    "g" | "rg" | "k" | "cs" => state.fill = active,
-                    "G" | "RG" | "K" | "CS" => state.stroke = active,
-                    "scn" | "SCN" if let Some(offset) = location.offset => {
-                        uses.invocations.insert(offset, state);
-                    }
-                    _ => {}
+                let name = selectors.get(&location.offset).copied();
+                update_selection(graph, resources, operator, name, active, &mut state);
+                if state.follows_pattern_invocation(operator, graph.associated_files.is_some())
+                    && let Some(offset) = location.offset
+                {
+                    uses.invocations.insert(offset, state);
                 }
             }
             OperatorFact::InlineImage {
@@ -260,6 +274,49 @@ fn used_devices<'a>(
         }
     }
     Ok(uses)
+}
+
+fn update_selection(
+    graph: &ModelGraph<'_>,
+    resources: &EffectiveResources<'_>,
+    operator: &str,
+    name: Option<&PdfName>,
+    active: Option<Device>,
+    state: &mut GraphicsState,
+) {
+    let patterned = || {
+        graph.associated_files.is_some()
+            && name.is_some_and(|name| is_pattern_space(graph.document, resources, name))
+    };
+    match operator {
+        "g" | "rg" | "k" | "cs" => {
+            state.fill = active;
+            state.fill_pattern = operator == "cs" && patterned();
+        }
+        "G" | "RG" | "K" | "CS" => {
+            state.stroke = active;
+            state.stroke_pattern = operator == "CS" && patterned();
+        }
+        _ => {}
+    }
+}
+
+fn is_pattern_space(
+    document: &ParsedDocument,
+    resources: &EffectiveResources<'_>,
+    name: &PdfName,
+) -> bool {
+    if name.matches("Pattern") {
+        return true;
+    }
+    let value = resources.dictionaries.iter().rev().find_map(|dictionary| {
+        resource_value(document, dictionary, ResourceFamily::ColorSpace, name)
+    });
+    let first = match semantic_names::resolve(document, value) {
+        Some(CosObject::Array(parts)) => parts.first(),
+        value => value,
+    };
+    semantic_names::name(document, first).is_some_and(|name| name.matches("Pattern"))
 }
 
 fn inline_color(

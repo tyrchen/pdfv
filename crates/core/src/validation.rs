@@ -1800,23 +1800,21 @@ impl ValidationSession {
         let mut stack = Vec::from([ModelObjectRef::Document(DocumentModel::new(&self.document))]);
         let mut visited = HashSet::new();
         let mut deferred = Vec::new();
+        let mut attachments = file_spec::Attachments::default();
 
         while let Some(object) = stack.pop() {
             let visited_key = object.identity_key();
             if !visited.insert(visited_key) {
                 continue;
             }
-            let object_rules = index.rules_for(&object);
-            for rule in object_rules {
-                if matches!(rule.test, crate::RuleExpr::Unsupported { .. }) {
-                    continue;
-                }
-                if rule.deferred {
-                    deferred.push((object.clone(), rule));
-                } else {
-                    state.apply_rule(&object, rule, &mut evaluator)?;
-                }
-            }
+            attachments.capture(&graph, &object)?;
+            apply_model_rules(
+                &object,
+                index.rules_for(&object),
+                &mut state,
+                &mut evaluator,
+                &mut deferred,
+            )?;
             if u64::try_from(visited.len()).map_err(|_| ValidationError::LimitExceeded {
                 limit: "max_objects",
             })? > self.limits.max_objects
@@ -1831,23 +1829,31 @@ impl ValidationSession {
                 stack.push(linked);
             }
         }
-        if let Some(scope) = index.physical_scope() {
+        if let Some(scope) = index.physical_scope(&graph) {
             let budget = remaining_object_budget(&self.limits, visited.len(), 0)?;
-            index.walk_physical_objects(&self.document, budget, scope, |object, rules| {
-                for rule in rules {
-                    if matches!(rule.test, crate::RuleExpr::Unsupported { .. }) {
-                        continue;
-                    }
-                    if rule.deferred {
-                        deferred.push((object.clone(), *rule));
-                    } else {
-                        state.apply_rule(&object, rule, &mut evaluator)?;
-                    }
-                }
-                Ok(())
+            index.walk_physical_objects(&graph, budget, scope, |object, rules| {
+                attachments.capture(&graph, &object)?;
+                apply_model_rules(
+                    &object,
+                    rules.iter().copied(),
+                    &mut state,
+                    &mut evaluator,
+                    &mut deferred,
+                )
             })?;
         }
-        for (object, rule) in deferred {
+        let budget = remaining_object_budget(&self.limits, visited.len(), 0)?;
+        for object in attachments.models(&graph, budget)? {
+            apply_model_rules(
+                &object,
+                index.rules_for(&object),
+                &mut state,
+                &mut evaluator,
+                &mut deferred,
+            )?;
+        }
+        for (mut object, rule) in deferred {
+            file_spec::association::finalize(&graph, &mut object)?;
             state.apply_rule(&object, rule, &mut evaluator)?;
         }
         if graph.materializes(glyphs::CID_SET_FAMILY) {
@@ -2434,6 +2440,11 @@ impl ModelRegistry {
             family("formField", FORM_FIELD_PROPERTIES, FORM_FIELD_LINKS),
             family("fileSpec", FILE_SPEC_PROPERTIES, EMPTY_LINK_NAMES),
             family(file_spec::FAMILY, file_spec::PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                file_spec::EMBEDDED_FILE,
+                &["hasValidMimeType"],
+                EMPTY_LINK_NAMES,
+            ),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 glyphs::WIDTH_FAMILY,
@@ -2609,6 +2620,7 @@ impl ModelRegistry {
     fn has_feature_family(&self, family: &ObjectTypeName) -> bool {
         !cos::is_primitive_family(family.as_str())
             && family.as_str() != file_spec::FAMILY
+            && family.as_str() != file_spec::EMBEDDED_FILE
             && family.as_str() != language::FAMILY
             && !scoped_pua::FAMILIES.contains(&family.as_str())
             && structure_roles::rule_family(family.as_str()).is_none()
@@ -3441,6 +3453,7 @@ pub struct ModelGraph<'a> {
     text_bytes: Cell<u64>,
     character_resources: RefCell<BTreeMap<String, Option<Arc<crate::Dictionary>>>>,
     cid_audit: RefCell<glyphs::CidAudit>,
+    associated_files: Option<RefCell<file_spec::association::Associations>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3520,28 +3533,41 @@ impl<'a> ModelGraph<'a> {
                 &mut materialized_families,
             );
         }
-        if materialized_families.iter().any(|family| {
-            family.as_str() == semantic_names::INTENT
-                || family.as_str() == language::FAMILY
-                || scoped_pua::FAMILIES.contains(&family.as_str())
-                || family.as_str() == semantic_names::INLINE_FILTER
-                || family.as_str() == semantic_names::BLEND_MODE
-                || family.as_str() == "halftone"
-                || family.as_str() == "resourceUse"
-                || matches!(
-                    family.as_str(),
-                    glyphs::WIDTH_FAMILY
-                        | glyphs::CID_SET_FAMILY
-                        | glyphs::UNICODE_FAMILY
-                        | glyphs::TRUE_TYPE_PROGRAM
-                )
-                || cmap::FAMILIES.contains(&family.as_str())
-                || matches!(
-                    family.as_str(),
-                    tagged_content::MARKED | tagged_content::PAINTED
-                )
-                || device_color::FAMILIES.contains(&family.as_str())
-        }) {
+        let needs_associations = active_flavour.family.as_str() == "pdfa"
+            && active_flavour.part.get() == 3
+            && materialized_families
+                .iter()
+                .any(|family| family.as_str() == file_spec::FAMILY);
+        if materialized_families
+            .iter()
+            .any(|family| family.as_str() == file_spec::EMBEDDED_FILE)
+        {
+            materialized_families.insert(ObjectTypeName::unchecked(file_spec::FAMILY));
+        }
+        if needs_associations
+            || materialized_families.iter().any(|family| {
+                family.as_str() == semantic_names::INTENT
+                    || family.as_str() == language::FAMILY
+                    || scoped_pua::FAMILIES.contains(&family.as_str())
+                    || family.as_str() == semantic_names::INLINE_FILTER
+                    || family.as_str() == semantic_names::BLEND_MODE
+                    || family.as_str() == "halftone"
+                    || family.as_str() == "resourceUse"
+                    || matches!(
+                        family.as_str(),
+                        glyphs::WIDTH_FAMILY
+                            | glyphs::CID_SET_FAMILY
+                            | glyphs::UNICODE_FAMILY
+                            | glyphs::TRUE_TYPE_PROGRAM
+                    )
+                    || cmap::FAMILIES.contains(&family.as_str())
+                    || matches!(
+                        family.as_str(),
+                        tagged_content::MARKED | tagged_content::PAINTED
+                    )
+                    || device_color::FAMILIES.contains(&family.as_str())
+            })
+        {
             materialized_families.insert(ObjectTypeName::unchecked("contentStream"));
             materialized_families.insert(ObjectTypeName::unchecked("formXObject"));
         }
@@ -3559,6 +3585,7 @@ impl<'a> ModelGraph<'a> {
             text_content_mode,
             accessibility_cache: OnceLock::new(),
             cid_audit: RefCell::new(glyphs::CidAudit::default()),
+            associated_files: needs_associations.then(RefCell::default),
             text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
         }
@@ -3576,6 +3603,7 @@ impl<'a> ModelGraph<'a> {
             text_content_mode: scoped_pua::ContentMode::default(),
             accessibility_cache: OnceLock::new(),
             cid_audit: RefCell::new(glyphs::CidAudit::default()),
+            associated_files: None,
             text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
         }
@@ -3611,6 +3639,7 @@ impl<'a> ModelGraph<'a> {
         self.materialized_families.iter().any(|family| {
             !cos::is_primitive_family(family.as_str())
                 && family.as_str() != file_spec::FAMILY
+                && family.as_str() != file_spec::EMBEDDED_FILE
                 && family.as_str() != language::FAMILY
                 && !scoped_pua::FAMILIES.contains(&family.as_str())
                 && structure_roles::rule_family(family.as_str()).is_none()
@@ -3746,7 +3775,9 @@ impl<'a> ModelGraph<'a> {
     }
 
     fn needs_scoped_text_glyph_evidence(&self) -> bool {
-        language::enabled(self) || scoped_pua::ordinary_content_enabled(self)
+        language::enabled(self)
+            || scoped_pua::ordinary_content_enabled(self)
+            || self.associated_files.is_some()
     }
 
     fn charge_text_bytes(&self, bytes: usize) -> Result<()> {
@@ -4396,10 +4427,12 @@ impl ModelObject for DocumentModel<'_> {
             icc::append(graph, &mut objects, max_objects)?;
         }
         if graph.active_flavour.is_some() && graph.materializes(file_spec::FAMILY) {
+            file_spec::association::collect_catalog(graph)?;
             file_spec::append_embedded_files(
                 graph.document,
                 max_objects,
                 graph.limits.max_file_bytes,
+                graph.limits.max_object_depth,
                 &mut objects,
             )?;
         }
@@ -5269,6 +5302,7 @@ fn page_linked_objects<'a>(
     max_objects: usize,
 ) -> Result<Vec<ModelObjectRef<'a>>> {
     let mut objects = Vec::new();
+    file_spec::association::collect_page(graph, page)?;
     if graph.materializes("pageBox") {
         append_page_boxes(page, graph.document, &mut objects, max_objects)?;
     }
@@ -5676,7 +5710,12 @@ impl<'a> AnnotationModel<'a> {
         let Some(page_dictionary) = page_dictionary(document, page.key) else {
             return Ok(annotations);
         };
-        for (ordinal, value) in array_values(page_dictionary.get("Annots")).enumerate() {
+        for (ordinal, value) in array_values(semantic_names::resolve(
+            document,
+            page_dictionary.get("Annots"),
+        ))
+        .enumerate()
+        {
             if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
                 if annotations.len() >= max_objects {
                     return Err(ValidationError::LimitExceeded {
@@ -6153,11 +6192,11 @@ impl<'a> ContentStreamModel<'a> {
         let nearest = page
             .as_ref()
             .and_then(|page| page.dictionaries.last().copied());
-        let local = self
-            .character_resources
-            .as_ref()
-            .and_then(|resources| resources.dictionary.as_deref())
-            .or(self.resource_context);
+        let local = self.resource_context.or_else(|| {
+            self.character_resources
+                .as_ref()
+                .and_then(|resources| resources.dictionary.as_deref())
+        });
         Ok(EffectiveResources {
             dictionaries: nearest.into_iter().chain(local).collect(),
             cyclic: page.is_some_and(|page| page.cyclic),
@@ -10397,6 +10436,11 @@ impl<'a> GenericModel<'a> {
         {
             return self.direct_value.clone().map(Ok);
         }
+        if self.object_type.as_str() == file_spec::EMBEDDED_FILE
+            && name.as_str() == "hasValidMimeType"
+        {
+            return self.direct_value.clone().map(Ok);
+        }
         self.primitive
             .map(|primitive| primitive.property(name))
             .or_else(|| {
@@ -11015,14 +11059,26 @@ fn append_scoped_content_models<'a>(
         language::append_content(graph, model, summary, objects, max_objects)?;
     }
     scoped_pua::append_content(graph, model, summary, objects, max_objects)?;
-    if model.object_type.as_str() == language::CONTENT_FAMILY {
+    file_spec::association::collect_content(graph, model, summary)?;
+    let language_only = model.object_type.as_str() == language::CONTENT_FAMILY;
+    let invocation_states = if graph.associated_files.is_some()
+        || (!language_only
+            && device_color::FAMILIES
+                .iter()
+                .any(|family| graph.materializes(family)))
+    {
+        device_color::append(model, graph, summary, objects, max_objects)?
+    } else {
+        BTreeMap::new()
+    };
+    if language_only {
         let text = glyphs::text_invocations(model, graph, summary)?;
         return append_content_resources(
             model,
             graph,
             &summary.resource_uses,
             ContentInvocationStates {
-                color: &BTreeMap::new(),
+                color: &invocation_states,
                 text: &text,
                 tags: &BTreeMap::new(),
             },
@@ -11031,14 +11087,6 @@ fn append_scoped_content_models<'a>(
         );
     }
     append_content_semantic_names(model, graph, summary, objects, max_objects)?;
-    let invocation_states = if device_color::FAMILIES
-        .iter()
-        .any(|family| graph.materializes(family))
-    {
-        device_color::append(model, graph, summary, objects, max_objects)?
-    } else {
-        BTreeMap::new()
-    };
     let text_states = if graph.needs_glyph_evidence() {
         glyphs::inspect(model, graph, summary, objects, max_objects)?
     } else if graph.needs_scoped_text_glyph_evidence() && model.page_key.is_some() {
@@ -11153,7 +11201,15 @@ fn append_content_resources<'a>(
     let effective = model.effective_resources(graph.document)?;
     for used in uses.iter().filter(|used| match used.family {
         ResourceFamily::ExtGState => check_graphics_states,
-        ResourceFamily::Pattern | ResourceFamily::XObject => follow_content,
+        ResourceFamily::XObject => follow_content,
+        ResourceFamily::Pattern => {
+            follow_content
+                && (graph.associated_files.is_none()
+                    || used
+                        .location
+                        .offset
+                        .is_some_and(|offset| states.color.contains_key(&offset)))
+        }
         _ => false,
     }) {
         let Some(resource) = effective.dictionaries.iter().rev().find_map(|resources| {
@@ -11383,7 +11439,14 @@ fn resource_content_stream<'a>(
             resolve_dictionary_value(graph.document, stream.dictionary.get("Resources")),
             None,
         ),
-        ResourceContent::CharProc(resources) => (None, Some(resources)),
+        ResourceContent::CharProc(resources) => (
+            if graph.associated_files.is_some() {
+                resolve_dictionary_value(graph.document, stream.dictionary.get("Resources"))
+            } else {
+                None
+            },
+            Some(resources),
+        ),
     };
     Some(ContentStreamModel {
         document: graph.document,
@@ -12037,6 +12100,26 @@ impl ModelObject for StreamModel<'_> {
     }
 }
 
+fn apply_model_rules<'doc, 'rules>(
+    object: &ModelObjectRef<'doc>,
+    rules: impl IntoIterator<Item = &'rules Rule>,
+    state: &mut ProfileState,
+    evaluator: &mut DefaultRuleEvaluator<'_>,
+    deferred: &mut Vec<(ModelObjectRef<'doc>, &'rules Rule)>,
+) -> Result<()> {
+    for rule in rules {
+        if matches!(rule.test, crate::RuleExpr::Unsupported { .. }) {
+            continue;
+        }
+        if rule.deferred {
+            deferred.push((object.clone(), rule));
+        } else {
+            state.apply_rule(object, rule, evaluator)?;
+        }
+    }
+    Ok(())
+}
+
 struct RuleIndex<'a> {
     by_type: BTreeMap<&'a str, Vec<&'a Rule>>,
 }
@@ -12053,7 +12136,7 @@ impl<'a> RuleIndex<'a> {
         Self { by_type }
     }
 
-    fn physical_scope(&self) -> Option<cos::WalkScope> {
+    fn physical_scope(&self, graph: &ModelGraph<'_>) -> Option<cos::WalkScope> {
         let has_executable_rule = |rules: &[&Rule]| {
             rules
                 .iter()
@@ -12065,11 +12148,7 @@ impl<'a> RuleIndex<'a> {
             .any(|(family, rules)| cos::is_primitive_family(family) && has_executable_rule(rules))
         {
             Some(cos::WalkScope::All)
-        } else if self
-            .by_type
-            .get(file_spec::FAMILY)
-            .is_some_and(|rules| has_executable_rule(rules))
-        {
+        } else if graph.materializes(file_spec::FAMILY) {
             Some(cos::WalkScope::Containers)
         } else {
             None
@@ -12078,17 +12157,21 @@ impl<'a> RuleIndex<'a> {
 
     fn walk_physical_objects<'document>(
         &self,
-        document: &'document ParsedDocument,
+        graph: &ModelGraph<'document>,
         budget: usize,
         scope: cos::WalkScope,
         mut visit: impl FnMut(ModelObjectRef<'document>, &[&'a Rule]) -> Result<()>,
     ) -> Result<()> {
-        let file_spec_rules = self.by_type.get(file_spec::FAMILY);
+        let document = graph.document;
+        let file_spec_rules = self
+            .by_type
+            .get(file_spec::FAMILY)
+            .map_or(&[][..], Vec::as_slice);
         cos::walk_primitives(document, budget, scope, |primitive, origin| {
-            if let Some(rules) = file_spec_rules
+            if graph.materializes(file_spec::FAMILY)
                 && let Some(object) = file_spec::physical_model(document, primitive, origin)
             {
-                visit(object, rules)?;
+                visit(object, file_spec_rules)?;
             }
             if let Some(rules) = self.by_type.get(primitive.family()) {
                 visit(

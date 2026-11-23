@@ -1,23 +1,28 @@
 //! File specification checks with physical COS and embedded-file name-tree scope.
 
-use std::collections::{HashMap, HashSet};
+pub(super) mod association;
+
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::{
-    GenericModel, ModelObjectRef, catalog_dictionary_value,
+    GenericModel, ModelGraph, ModelObjectRef, catalog_dictionary_value,
     cos::{CosOrigin, CosPrimitive},
-    push_linked, semantic_names, unknown_property,
+    object_key_text, push_linked, semantic_names, unknown_property,
 };
 use crate::{
-    BoundedText, CosObject, Dictionary, ModelValue, ObjectLocation, ParsedDocument, PropertyName,
-    Result, ValidationError, pdf_text,
+    BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument,
+    PropertyName, Result, ValidationError, pdf_text,
 };
 
 pub(crate) const FAMILY: &str = "cosFileSpecification";
+pub(crate) const EMBEDDED_FILE: &str = "embeddedAttachment";
 pub(super) const PROPERTIES: &[&str] = &[
     "containsEF",
     "containsDesc",
     "presentInEmbeddedFiles",
     "hasNonemptyFileNames",
+    "isAssociatedFile",
+    "AFRelationship",
     "F",
     "UF",
 ];
@@ -26,6 +31,122 @@ pub(super) const PROPERTIES: &[&str] = &[
 pub(super) struct Evidence<'a> {
     pub(super) dictionary: &'a Dictionary,
     pub(super) in_name_tree: bool,
+    pub(super) associated: bool,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct Attachments(BTreeSet<ObjectKey>);
+
+impl Attachments {
+    pub(super) fn capture(
+        &mut self,
+        graph: &ModelGraph<'_>,
+        object: &ModelObjectRef<'_>,
+    ) -> Result<()> {
+        if !graph.materializes(EMBEDDED_FILE) {
+            return Ok(());
+        }
+        if let ModelObjectRef::Generic(model) = object
+            && let Some(evidence) = model.file_spec
+            && let Some((_, CosObject::Dictionary(files))) = resolve_reference(
+                graph.document,
+                evidence.dictionary.get("EF"),
+                graph.limits.max_object_depth,
+            )?
+        {
+            for name in ["F", "UF", "DOS", "Mac", "Unix"] {
+                if let Some((Some(key), CosObject::Stream(_))) = resolve_reference(
+                    graph.document,
+                    files.get(name),
+                    graph.limits.max_object_depth,
+                )? {
+                    self.0.insert(key);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn models<'a>(
+        &self,
+        graph: &ModelGraph<'a>,
+        budget: usize,
+    ) -> Result<Vec<ModelObjectRef<'a>>> {
+        if self.0.len() > budget {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_objects",
+            }
+            .into());
+        }
+        let mut models = Vec::with_capacity(self.0.len());
+        let document = graph.document;
+        for (ordinal, key) in self.0.iter().enumerate() {
+            let Some(object) = document.objects.get(key) else {
+                continue;
+            };
+            let CosObject::Stream(stream) = &object.object else {
+                continue;
+            };
+            let valid_mime = matches!(
+                resolve_reference(document, stream.dictionary.get("Subtype"), graph.limits.max_object_depth)?,
+                Some((_, CosObject::Name(name))) if has_mime_type(name.as_bytes())
+            );
+            let mut model = GenericModel::new_value(
+                document,
+                EMBEDDED_FILE,
+                ModelValue::Bool(valid_mime),
+                ordinal,
+                format!("root/{EMBEDDED_FILE}[{}]", object_key_text(*key)),
+            );
+            model.key = Some(*key);
+            model.offset = Some(object.offset);
+            model.supertypes.clear();
+            models.push(ModelObjectRef::Generic(model));
+        }
+        Ok(models)
+    }
+}
+
+pub(super) fn resolve_reference<'a>(
+    document: &'a ParsedDocument,
+    value: Option<&'a CosObject>,
+    max_depth: u32,
+) -> Result<Option<(Option<ObjectKey>, &'a CosObject)>> {
+    let Some(mut value) = value else {
+        return Ok(None);
+    };
+    let mut owner = None;
+    let mut aliases = HashSet::new();
+    for _ in 0..=max_depth {
+        let CosObject::Reference(key) = value else {
+            return Ok(Some((owner, value)));
+        };
+        let Some(object) = document.objects.get(key) else {
+            return Ok(None);
+        };
+        if matches!(object.object, CosObject::Reference(_)) && !aliases.insert(*key) {
+            return Ok(None);
+        }
+        value = &object.object;
+        owner = Some(*key);
+    }
+    Err(ValidationError::LimitExceeded {
+        limit: "attachment_reference_depth",
+    }
+    .into())
+}
+
+fn has_mime_type(value: &[u8]) -> bool {
+    let mime_token = |token: &[u8]| {
+        !token.is_empty()
+            && token.iter().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'+' | b'.')
+            })
+    };
+    let mut parts = value.split(|byte| *byte == b'/');
+    parts.next().is_some_and(mime_token)
+        && parts.next().is_some_and(mime_token)
+        && parts.next().is_none()
 }
 
 impl Evidence<'_> {
@@ -38,6 +159,13 @@ impl Evidence<'_> {
             "containsEF" => ModelValue::Bool(self.contains_key("EF")),
             "containsDesc" => ModelValue::Bool(self.contains_key("Desc")),
             "presentInEmbeddedFiles" => ModelValue::Bool(self.in_name_tree),
+            "isAssociatedFile" => ModelValue::Bool(self.associated),
+            "AFRelationship" => {
+                semantic_names::name(document, self.dictionary.get("AFRelationship"))
+                    .map_or(ModelValue::Null, |name| {
+                        ModelValue::from(CosObject::Name(name.clone()))
+                    })
+            }
             "hasNonemptyFileNames" => ModelValue::Bool(
                 self.has_nonempty_name(document, "F") && self.has_nonempty_name(document, "UF"),
             ),
@@ -85,6 +213,7 @@ pub(super) fn physical_model<'a>(
     let evidence = Evidence {
         dictionary,
         in_name_tree: false,
+        associated: false,
     };
     let location = ObjectLocation {
         object: origin.owner,
@@ -123,6 +252,7 @@ pub(super) fn append_embedded_files<'a>(
     document: &'a ParsedDocument,
     max_objects: usize,
     mut remaining_key_bytes: u64,
+    max_reference_depth: u32,
     objects: &mut Vec<ModelObjectRef<'a>>,
 ) -> Result<()> {
     let Some(root) = catalog_dictionary_value(document, "Names", "EmbeddedFiles") else {
@@ -155,18 +285,13 @@ pub(super) fn append_embedded_files<'a>(
             semantic_names::resolve(document, dictionary.get("Names"))
         {
             for value in name_tree_entries(document, names, &mut remaining_key_bytes)? {
-                let Some(dictionary) = semantic_names::resolve(document, Some(value))
-                    .and_then(CosObject::as_dictionary)
+                let Some((key, CosObject::Dictionary(dictionary))) =
+                    resolve_reference(document, Some(value), max_reference_depth)?
                 else {
                     continue;
                 };
-                let (key, offset) = match value {
-                    CosObject::Reference(key) => (
-                        Some(*key),
-                        document.objects.get(key).map(|object| object.offset),
-                    ),
-                    _ => (None, None),
-                };
+                let offset =
+                    key.and_then(|key| document.objects.get(&key).map(|object| object.offset));
                 let location = ObjectLocation {
                     object: key,
                     offset,
@@ -177,6 +302,7 @@ pub(super) fn append_embedded_files<'a>(
                 let evidence = Evidence {
                     dictionary,
                     in_name_tree: true,
+                    associated: false,
                 };
                 push_linked(
                     objects,
@@ -304,6 +430,58 @@ trailer
 << /Root 1 0 R /Type /Filespec /EF <<>> >>
 %%EOF
 ";
+
+    #[rstest]
+    #[case("/Subtype /text#2Fplain", "5 0 R", (1, 0))]
+    #[case("/Subtype /application#2Fvnd.test+zip", "6 0 R", (1, 0))]
+    #[case("/Subtype /t#C3#A9xt#2Fplain", "5 0 R", (0, 1))]
+    #[case("", "5 0 R", (0, 1))]
+    #[case("/Type /EmbeddedFile /Subtype /image#2Fpng", "9 0 R", (0, 0))]
+    fn test_should_check_mime_on_distinct_ef_linked_streams(
+        #[case] dictionary: &str,
+        #[case] reference: &str,
+        #[case] expected: (usize, usize),
+    ) -> Result<()> {
+        let pdf = format!(
+            "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /AF [2 0 R] /Names << /EmbeddedFiles << /Names \
+             [(file) 2 0 R] >> >> >>\nendobj\n2 0 obj\n<< /Type /Filespec /F (file) /UF (file) \
+             /AFRelationship /Data /EF 3 0 R >>\nendobj\n3 0 obj\n4 0 R\nendobj\n4 0 obj\n<< /F \
+             {reference} /UF {reference} >>\nendobj\n5 0 obj\n<< /Length 1 {dictionary} \
+             >>\nstream\nx\nendstream\nendobj\n6 0 obj\n5 0 R\nendobj\ntrailer\n<< /Root 1 0 R \
+             >>\n%%EOF\n"
+        );
+        let part = NonZeroU32::new(3).ok_or(ProfileError::UnsupportedSelection)?;
+        let flavour = ValidationFlavour::new("pdfa", part, "b")?;
+        let options = ValidationOptions::builder()
+            .flavour(FlavourSelection::Explicit { flavour })
+            .record_passed_assertions(true)
+            .max_failed_assertions_per_rule(MaxDisplayedFailures::new(NonZeroU32::MAX))
+            .build();
+        let report = Validator::new(options)?
+            .validate_reader(Cursor::new(pdf.as_bytes()), InputName::memory())?;
+        let profile = report
+            .profile_reports
+            .first()
+            .ok_or(ProfileError::UnsupportedSelection)?;
+        let matches_rule =
+            |assertion: &&crate::Assertion| assertion.rule_id.0.as_str() == "iso-19005-3-6-8-1";
+        assert_eq!(
+            (
+                profile
+                    .passed_assertions
+                    .iter()
+                    .filter(matches_rule)
+                    .count(),
+                profile
+                    .failed_assertions
+                    .iter()
+                    .filter(matches_rule)
+                    .count()
+            ),
+            expected
+        );
+        Ok(())
+    }
 
     #[rstest]
     #[case("pdfua", 1, "none", "iso-14289-1-7-11-1", 2, 2)]

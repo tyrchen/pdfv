@@ -296,10 +296,42 @@ shared glyph once. The corrupt-font control still produces unavailable
 width evidence in pdfv. Greenfield records a pass with a null font width.
 See [the review backlog](../../specs/93-improvements-review.md#open-m9-findings).
 
+## PDF/A-3 Associated Files and Profile Audit
+
+A file specification's association comes from the resolved member of an
+`/AF` array on a reachable owner or the array referenced by an executed
+`/AF /name BDC` mark. An `AFRelationship` name and a name-tree entry
+receive independent checks. Attachment MIME checks read the streams selected
+by `/EF`, including streams that omit `/Type /EmbeddedFile`. Several
+selectors can point to one stream, which receives one MIME check.
+
+veraPDF Greenfield 1.30.4 and pdfv agree on all PDF/A-3b `6.8-1` through
+`6.8-4` assertion counts across 136 controls. The matching evidence comprises
+581 individual checks with zero unsupported evaluations for these rules.
+The controls include 12 upstream fixtures, indirect aliases, reachable and
+detached resources, and marked content in pages, Forms, appearances, tiling
+patterns, and Type 3 glyph programs. Four of the 12 upstream fixtures also
+match at document level. The other eight expose rules outside clause 6.8.
+[Pinned PDF/A-3b attachment fixtures](https://github.com/veraPDF/veraPDF-corpus/tree/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_A-3b/6.8%20Embedded%20files)
+
+A separate 30-case audit sampled all 15 built-in profiles, using two
+controls per profile. Twenty document outcomes match. Six are incomplete
+and four are incorrectly invalid. The audit found zero false-compliant
+decisions. These are the representative gaps for the next rule-scope work.
+
+| Profile | Representative control | Rules needing evidence or scope |
+| --- | --- | --- |
+| PDF/A-1a | `6-3-8-t01-pass-a`, `6-3-8-t01-fail-a` | Font width `6.3.6-1`, Unicode `6.3.8-1`, and CIDSet `6.3.5-2` |
+| PDF/A-2a | `6-2-11-7-3-t01-pass-a`, `6-2-11-7-3-t01-fail-a` | Object stream `6.1.8-1` |
+| PDF/A-2b | `6-1-12-t01-pass-a` | Transparency `6.4.3-1` through `6.4.3-3` |
+| PDF/A-2u | `6-2-11-7-2-t01-pass-a`, `6-2-11-7-2-t01-fail-a` | Width, Unicode, and CMap rules `6.2.11.5-1`, `6.2.11.7.2-1/-2`, `6.2.11.4.2-1` |
+| PDF/A-3b | Upstream `6-8-t02-*` attachment fixtures | Mask stream `6.2.8-5`, DeviceN limit `6.1.13-9`, XMP `6.6.2.3.1-1/-2` and `6.6.2.3.2-1`, annotation appearance `6.3.3-1` |
+| PDF/A-4e, PDF/A-4f | `6-2-4-1-t01-pass-a`, `6-3-1-t01-pass-a` | Annotation appearance `6.3.3-1` |
+
 ## Release Blockers
 
-- The across-profile audit still needs rule-level coverage for PDF/A-3
-  associated files and newly sampled models. See
+- The audit of the 15 profiles still has ten whole-document differences
+  in its 30 controls. See
   [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the

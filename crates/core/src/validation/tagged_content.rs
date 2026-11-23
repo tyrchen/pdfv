@@ -248,12 +248,7 @@ pub(super) fn resolve_property_list<'a>(
             let name = name?;
             resources.dictionaries.iter().rev().find_map(|resources| {
                 let dictionary = resolve_dictionary_value(document, resources.get("Properties"))?;
-                resolve_dictionary_value(
-                    document,
-                    dictionary
-                        .entries()
-                        .find_map(|(key, value)| (key == name).then_some(value)),
-                )
+                resolve_dictionary_value(document, dictionary.get_name(name))
             })
         })
 }

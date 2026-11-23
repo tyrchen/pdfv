@@ -637,6 +637,11 @@ impl CosObject {
 pub struct Dictionary(BTreeMap<PdfName, CosObject>);
 
 impl Dictionary {
+    /// Looks up an entry by a parsed PDF name.
+    pub(crate) fn get_name(&self, key: &PdfName) -> Option<&CosObject> {
+        self.0.get(key)
+    }
+
     /// Inserts a key/value pair.
     pub fn insert(&mut self, key: PdfName, value: CosObject) {
         self.0.insert(key, value);
