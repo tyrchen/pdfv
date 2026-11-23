@@ -7,10 +7,10 @@ of the current implementation phase.
 
 ## Open M9 Findings
 
-- **P1.** Context-dependent targets such as `CosActualText`, `CosAlt`, and `CosTextString`
-  still map to the generic `object` target. Preserve their
-  actual use-site semantics and compare each assertion on passing and failing
-  fixtures. See [the type mapping](../crates/core/src/profile.rs).
+- **P1.** PDF/UA-1 rule `7.21.5-1` still lacks font-program width evidence
+  on `7.2-t17-pass-d` and `7.1-t03-fail-b`. Trace their rendered codes
+  back to the embedded font programs and verify the per-glyph widths against
+  veraPDF. See [step 3](./29-rule-check-completion-impl-plan.md#work-order).
 - **P1.** PDF/A-3 rule `6.8-4` needs associated-file evidence from the
   applicable `/AF` arrays. Its current generic property treats
   `AFRelationship` and name-tree membership as association evidence.
@@ -36,3 +36,7 @@ of the current implementation phase.
 - **P1.** The language rule uses scoped PDF text evidence. Seventy-two public
   controls agree with the oracle on language assertions. See
   [the language review](../docs/reviews/m9-live-conformance-review.md#language-and-incremental-revisions).
+- **P1.** `CosActualText`, `CosAlt`, and `CosTextString` use typed
+  evidence from PDF text use sites. All 170 targeted rule comparisons agree
+  with veraPDF. The PDF/UA-2 supplemental document decisions now match.
+  See [the text-string review](../docs/reviews/m9-live-conformance-review.md#private-use-code-points-in-text-strings).

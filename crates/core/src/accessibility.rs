@@ -213,6 +213,7 @@ pub(crate) struct AccessibilityNode {
     pub has_actual_text: bool,
     /// Bounded `/ActualText` byte count.
     pub actual_text_bytes: u64,
+    pub(crate) replacement_text: crate::pdf_text::ReplacementText,
     /// Whether the dictionary declares `/E`.
     pub has_expansion_text: bool,
     /// Bounded `/E` byte count.
@@ -562,6 +563,9 @@ fn traverse_structure_tree(
         let Some((key, offset, dictionary)) = structure_dictionary(document, item.value) else {
             continue;
         };
+        if !is_structure_element(document, dictionary) {
+            continue;
+        }
         if let Some(key) = key
             && !visited.insert(key)
         {
@@ -570,9 +574,7 @@ fn traverse_structure_tree(
                 .push(warning("structure tree cycle detected"));
             continue;
         }
-        let Some(role) = role_name(document, dictionary) else {
-            continue;
-        };
+        let role = role_name(document, dictionary).unwrap_or_default();
         if u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX) >= limits.max_structure_nodes {
             graph.truncated = true;
             graph.warnings.push(warning("structure node cap reached"));
@@ -615,6 +617,7 @@ fn traverse_structure_tree(
             alt_text_bytes: text_bytes(dictionary.get("Alt")),
             has_actual_text: dictionary.get("ActualText").is_some(),
             actual_text_bytes: text_bytes(dictionary.get("ActualText")),
+            replacement_text: crate::pdf_text::ReplacementText::from_dictionary(dictionary),
             has_expansion_text: dictionary.get("E").is_some(),
             expansion_text_bytes: text_bytes(dictionary.get("E")),
             has_language: dictionary.get("Lang").is_some(),
@@ -708,7 +711,19 @@ fn collect_kid_value<'a>(
     let Some((_key, _offset, dictionary)) = structure_dictionary(collector.document, value) else {
         return Ok(());
     };
-    if is_mcr(dictionary) {
+    if is_structure_element(collector.document, dictionary) {
+        collector.stack.push(TraversalItem {
+            value,
+            parent: Some(collector.node_id),
+            inherited_page: dictionary.get("Pg").and_then(object_ref).or(collector.page),
+            depth: collector
+                .depth
+                .checked_add(1)
+                .ok_or(ValidationError::LimitExceeded {
+                    limit: "max_structure_depth",
+                })?,
+        });
+    } else if is_mcr(dictionary) {
         let mcid = integer_value(resolved_value(collector.document, dictionary.get("MCID")));
         let item_page = dictionary.get("Pg").and_then(object_ref).or(collector.page);
         if let Some(mcid) = mcid {
@@ -738,18 +753,6 @@ fn collect_kid_value<'a>(
                     .and_then(|object| object.object.as_dictionary())
                     .is_some_and(is_link_annotation),
             });
-    } else {
-        collector.stack.push(TraversalItem {
-            value,
-            parent: Some(collector.node_id),
-            inherited_page: dictionary.get("Pg").and_then(object_ref).or(collector.page),
-            depth: collector
-                .depth
-                .checked_add(1)
-                .ok_or(ValidationError::LimitExceeded {
-                    limit: "max_structure_depth",
-                })?,
-        });
     }
     Ok(())
 }
@@ -1541,11 +1544,20 @@ fn structure_dictionary<'a>(
     document: &'a ParsedDocument,
     value: &'a CosObject,
 ) -> Option<(Option<ObjectKey>, Option<u64>, &'a Dictionary)> {
-    let (key, offset, dictionary) = dictionary_ref_or_inline(document, value)?;
-    if role_name(document, dictionary).is_some() || is_mcr(dictionary) || is_objr(dictionary) {
-        return Some((key, offset, dictionary));
+    let Some(CosObject::Dictionary(dictionary)) = resolved_value(document, Some(value)) else {
+        return None;
+    };
+    let key = object_ref(value);
+    let offset = key.and_then(|key| document.objects.get(&key).map(|object| object.offset));
+    Some((key, offset, dictionary))
+}
+
+fn is_structure_element(document: &ParsedDocument, dictionary: &Dictionary) -> bool {
+    match resolved_value(document, dictionary.get("Type")) {
+        Some(CosObject::Name(name)) => name.matches("StructElem"),
+        None | Some(CosObject::Null) => !is_mcr(dictionary) && !is_objr(dictionary),
+        _ => false,
     }
-    None
 }
 
 fn dictionary_ref_or_inline<'a>(

@@ -227,11 +227,25 @@ pub(super) fn property_list<'a>(
     resources: &EffectiveResources<'a>,
     span: &MarkedContentSpan,
 ) -> Option<&'a Dictionary> {
-    span.properties
+    resolve_property_list(
+        document,
+        resources,
+        span.properties,
+        span.properties_name.as_ref(),
+    )
+}
+
+pub(super) fn resolve_property_list<'a>(
+    document: &'a ParsedDocument,
+    resources: &EffectiveResources<'a>,
+    reference: Option<ObjectKey>,
+    name: Option<&PdfName>,
+) -> Option<&'a Dictionary> {
+    reference
         .and_then(|key| document.objects.get(&key))
         .and_then(|object| object.object.as_dictionary())
         .or_else(|| {
-            let name = span.properties_name.as_ref()?;
+            let name = name?;
             resources.dictionaries.iter().rev().find_map(|resources| {
                 let dictionary = resolve_dictionary_value(document, resources.get("Properties"))?;
                 resolve_dictionary_value(

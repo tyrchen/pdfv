@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, ops::Range};
 
 use crate::{
     BoundedText, CosObject, Dictionary, ObjectKey, ObjectLocation, ParseError, PdfName,
-    ResourceLimits, ValidationWarning, parser::parse_content_dictionary,
+    ResourceLimits, ValidationWarning, parser::parse_content_dictionary, pdf_text::ReplacementText,
 };
 
 const DEFAULT_MAX_OPERATOR_NAME_BYTES: usize = 32;
@@ -67,6 +67,7 @@ pub(crate) struct ContentStreamSummary {
     pub facts: Vec<OperatorFact>,
     /// Marked-content spans retained for structure phases.
     pub marked_content: Vec<MarkedContentSpan>,
+    pub(crate) marked_text_uses: Vec<MarkedTextUse>,
     /// Resource references found in operators.
     pub resource_uses: Vec<ResourceUse>,
     /// Rendering-intent names retained with their use sites.
@@ -74,6 +75,7 @@ pub(crate) struct ContentStreamSummary {
     pub(crate) text_operands: BTreeMap<u64, TextOperand>,
     /// A marked-content or invocation operand group exceeded a configured cap.
     pub(crate) scoped_operands_truncated: bool,
+    pub(crate) marked_points_truncated: bool,
     /// Recoverable parsing warnings.
     pub warnings: Vec<ValidationWarning>,
     /// Whether parsing stopped at an operator cap.
@@ -386,6 +388,15 @@ pub(crate) enum InlineLanguage {
     Reference(ObjectKey),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MarkedTextUse {
+    pub(crate) point: bool,
+    pub(crate) properties: Option<ObjectKey>,
+    pub(crate) properties_name: Option<PdfName>,
+    pub(crate) inline: ReplacementText,
+    pub(crate) location: ObjectLocation,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -549,10 +560,12 @@ pub(crate) fn summarize_content_stream_with_text(
         operators_seen: 0,
         facts: Vec::new(),
         marked_content: Vec::new(),
+        marked_text_uses: Vec::new(),
         resource_uses: Vec::new(),
         rendering_intents: Vec::new(),
         text_operands: BTreeMap::new(),
         scoped_operands_truncated: false,
+        marked_points_truncated: false,
         warnings: Vec::new(),
         truncated: false,
     };
@@ -586,8 +599,12 @@ pub(crate) fn summarize_content_stream_with_text(
                 let location =
                     operator_location(source, location_path, summary.operators_seen, offset);
                 let operands_complete = summary.warnings.len() == warned_at_operator;
-                if !operands_complete && matches!(op.as_str(), "BMC" | "BDC" | "EMC" | "Do") {
-                    summary.scoped_operands_truncated = true;
+                if !operands_complete {
+                    match op.as_str() {
+                        "BMC" | "BDC" | "EMC" | "Do" => summary.scoped_operands_truncated = true,
+                        "DP" => summary.marked_points_truncated = true,
+                        _ => {}
+                    }
                 }
                 if retain_text
                     && operands_complete
@@ -744,7 +761,7 @@ fn classify_operator(
                 Some(tag) => tag,
                 None => unknown_pdf_name(limits)?,
             };
-            let properties = if op_name == "BDC"
+            let properties = if matches!(op_name, "BDC" | "DP")
                 && let [
                     Operand::Name(_),
                     Operand::Integer(_),
@@ -757,22 +774,37 @@ fn classify_operator(
                 None
             };
             let properties_name =
-                if let ("BDC", [.., Operand::Name(_), Operand::Name(name)]) = (op_name, operands) {
+                if let ("BDC" | "DP", [.., Operand::Name(name)]) = (op_name, operands) {
                     Some(name.clone())
                 } else {
                     None
                 };
-            if matches!(op_name, "BMC" | "BDC") {
-                let inline = match operands {
-                    [.., Operand::Name(_), Operand::Composite(bytes)] if op_name == "BDC" => {
-                        match parse_content_dictionary(bytes, limits) {
-                            Ok(dictionary) => Some(dictionary),
-                            Err(error @ ParseError::LimitExceeded { .. }) => return Err(error),
-                            Err(_) => None,
-                        }
+            let inline = match (op_name, operands) {
+                ("BDC" | "DP", [.., Operand::Composite(bytes)]) => {
+                    match parse_content_dictionary(bytes, limits) {
+                        Ok(dictionary) => Some(dictionary),
+                        Err(error @ ParseError::LimitExceeded { .. }) => return Err(error),
+                        Err(_) => None,
                     }
-                    _ => None,
-                };
+                }
+                _ => None,
+            };
+            let replacement_text = inline
+                .as_ref()
+                .map_or_else(ReplacementText::default, ReplacementText::from_dictionary);
+            if replacement_text != ReplacementText::default()
+                || properties.is_some()
+                || properties_name.is_some()
+            {
+                summary.marked_text_uses.push(MarkedTextUse {
+                    point: op_name == "DP",
+                    properties,
+                    properties_name: properties_name.clone(),
+                    inline: replacement_text,
+                    location: location.clone(),
+                });
+            }
+            if matches!(op_name, "BMC" | "BDC") {
                 let mcid = inline
                     .as_ref()
                     .filter(|_| operands.len() == 2)
@@ -786,6 +818,7 @@ fn classify_operator(
                     || (op_name == "BDC"
                         && (properties.is_some()
                             || (operands.len() == 2
+                                && matches!(operands.first(), Some(Operand::Name(_)))
                                 && (inline.is_some() || properties_name.is_some()))));
                 summary.marked_content.push(MarkedContentSpan {
                     tag: tag.clone(),

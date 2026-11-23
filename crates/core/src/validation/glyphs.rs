@@ -277,7 +277,14 @@ pub(super) fn inspect<'a>(
         return Ok(BTreeMap::new());
     }
     let resources = content.effective_resources(graph.document)?;
-    let uses = collect_uses(content, graph.document, &resources, summary, graph.limits)?;
+    let uses = collect_uses(
+        content,
+        graph.document,
+        &resources,
+        summary,
+        graph.limits,
+        ShowScope::Glyphs,
+    )?;
     let mut cid_audit = graph.cid_audit_mut()?;
     if graph.materializes(CID_SET_FAMILY) && uses.unresolved.is_some() {
         cid_audit
@@ -357,12 +364,19 @@ fn push_unresolved_glyph<'a>(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShowScope {
+    Glyphs,
+    Operators,
+}
+
 fn collect_uses<'a>(
     content: &ContentStreamModel<'_>,
     document: &ParsedDocument,
     resources: &EffectiveResources<'_>,
     summary: &'a ContentStreamSummary,
     limits: &ResourceLimits,
+    show_scope: ShowScope,
 ) -> Result<TextUses<'a>> {
     let mut uses = TextUses::default();
     let mut selections = FontSelections::new(summary);
@@ -409,7 +423,10 @@ fn collect_uses<'a>(
                 let text = location
                     .offset
                     .and_then(|offset| summary.text_operands.get(&offset));
-                if text.is_some_and(|text| text.0.iter().all(|string| string.as_bytes().is_empty()))
+                if show_scope == ShowScope::Glyphs
+                    && text.is_some_and(|text| {
+                        text.0.iter().all(|string| string.as_bytes().is_empty())
+                    })
                 {
                     continue;
                 }
@@ -454,11 +471,18 @@ pub(super) fn shown_fonts(
     summary: &ContentStreamSummary,
     limits: &ResourceLimits,
 ) -> Result<Vec<FontSelection>> {
-    Ok(collect_uses(content, document, resources, summary, limits)?
-        .fonts
-        .into_values()
-        .map(|(font, _samples)| font)
-        .collect())
+    Ok(collect_uses(
+        content,
+        document,
+        resources,
+        summary,
+        limits,
+        ShowScope::Operators,
+    )?
+    .fonts
+    .into_values()
+    .map(|(font, _samples)| font)
+    .collect())
 }
 
 pub(super) fn text_invocations(
@@ -467,7 +491,15 @@ pub(super) fn text_invocations(
     summary: &ContentStreamSummary,
 ) -> Result<BTreeMap<u64, TextState>> {
     let resources = content.effective_resources(graph.document)?;
-    Ok(collect_uses(content, graph.document, &resources, summary, graph.limits)?.invocations)
+    Ok(collect_uses(
+        content,
+        graph.document,
+        &resources,
+        summary,
+        graph.limits,
+        ShowScope::Glyphs,
+    )?
+    .invocations)
 }
 
 #[derive(Clone, Debug)]

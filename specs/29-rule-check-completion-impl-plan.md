@@ -48,6 +48,21 @@ unsupported count fell from 73 to 14. Twelve events are the alternative,
 replacement, and general text rules. Two events are the PDF/UA-1 width rule
 `7.21.5-1`. [Live review](../docs/reviews/m9-live-conformance-review.md#language-and-incremental-revisions)
 
+## Step 2 evidence
+
+All 170 rule comparisons across 83 fixture and profile selections match
+veraPDF Greenfield 1.30.4. The controls cover PDF/UA-2, WTPDF accessibility
+and reuse, PDF/A-4, and combined PDF/A-4 and PDF/UA-2 auto-detection. They
+exercise all three Unicode private-use ranges, PDFDocEncoding, direct and
+indirect text, named marked-content properties, and reachable outlines.
+
+The four supplemental PDF/UA files have zero unsupported text-property
+checks. The PDF/UA-2 positive is `Valid` and the PDF/UA-2 negative is
+`Invalid`, in agreement with veraPDF. The expanded public manifest now
+matches 11 of 13 decisions with zero false-compliant decisions. The two
+PDF/UA-1 files each have one unsupported `7.21.5-1` evaluation because
+`widthFromFontProgram` is unavailable for a used font. [Live review](../docs/reviews/m9-live-conformance-review.md#private-use-code-points-in-text-strings)
+
 ## Implementation constraints
 
 Use a family for each rule scope and preserve context in assertions. A shared

@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use super::{
     ContentStreamModel, GenericModel, ModelGraph, ModelObjectRef, ResourceContent, catalog_value,
     glyphs::shown_fonts, push_linked, resolve_dictionary_value, resource_content_stream,
-    semantic_names, tagged_content,
+    scoped_pua, semantic_names, tagged_content,
 };
 use crate::{
     BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument,
@@ -23,6 +23,7 @@ pub(super) const PROPERTIES: &[&str] = &[
     "isLanguageTag",
     "isLanguageTagOrEmpty",
     "isAlphabeticLanguageTagOrEmpty",
+    "containsPUA",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,15 +40,13 @@ pub(super) struct CharacterResources {
 }
 
 pub(super) fn enabled(graph: &ModelGraph<'_>) -> bool {
-    graph.active_flavour.is_some() && graph.materializes(FAMILY)
+    graph.active_flavour.is_some()
+        && (graph.materializes(FAMILY) || graph.materializes(scoped_pua::TEXT_STRING))
 }
 
 pub(super) fn semantic_content_enabled(graph: &ModelGraph<'_>) -> bool {
-    enabled(graph)
-        && graph
-            .active_flavour
-            .as_ref()
-            .is_some_and(|flavour| matches!(flavour.family.as_str(), "pdfua" | "wtpdf"))
+    (enabled(graph) || scoped_pua::replacement_enabled(graph))
+        && graph.text_content_mode.has_semantic()
 }
 
 pub(super) fn read(graph: &ModelGraph<'_>, value: Option<&CosObject>) -> Result<Option<String>> {
@@ -58,22 +57,8 @@ pub(super) fn read(graph: &ModelGraph<'_>, value: Option<&CosObject>) -> Result<
 }
 
 fn decode(graph: &ModelGraph<'_>, bytes: &[u8]) -> Result<String> {
-    charge_bytes(graph, bytes.len())?;
+    graph.charge_text_bytes(bytes.len())?;
     Ok(pdf_text::decode(bytes))
-}
-
-pub(super) fn charge_bytes(graph: &ModelGraph<'_>, bytes: usize) -> Result<()> {
-    let limit = || ValidationError::LimitExceeded {
-        limit: "language_evidence_bytes",
-    };
-    let size = u64::try_from(bytes).map_err(|_| limit())?;
-    let remaining = graph
-        .language_bytes
-        .get()
-        .checked_sub(size)
-        .ok_or_else(limit)?;
-    graph.language_bytes.set(remaining);
-    Ok(())
 }
 
 pub(super) fn append<'a>(
@@ -113,14 +98,6 @@ pub(super) fn append_content<'a>(
     objects: &mut Vec<ModelObjectRef<'a>>,
     max_objects: usize,
 ) -> Result<()> {
-    if content.language_view == StreamView::CharacterProcedure
-        && summary.operators_seen > graph.limits.max_type3_charproc_ops
-    {
-        return Err(ValidationError::LimitExceeded {
-            limit: "max_type3_charproc_ops",
-        }
-        .into());
-    }
     if summary.truncated || summary.scoped_operands_truncated {
         return Err(ValidationError::LimitExceeded {
             limit: "content_language_evidence",
@@ -166,7 +143,7 @@ fn model<'a>(graph: &ModelGraph<'a>, value: &str, owner: &ObjectLocation) -> Gen
     );
     model.key = owner.object;
     model.offset = owner.offset;
-    model.supertypes.clear();
+    model.supertypes = vec![crate::ObjectTypeName::unchecked(scoped_pua::TEXT_STRING)];
     model
 }
 
@@ -364,16 +341,6 @@ pub(super) fn append_parent_language<'a>(
     Ok(())
 }
 
-pub(super) fn require_complete_structure(truncated: bool) -> Result<()> {
-    if truncated {
-        return Err(ValidationError::LimitExceeded {
-            limit: "structure_language_evidence",
-        }
-        .into());
-    }
-    Ok(())
-}
-
 pub(super) fn property(value: &BoundedText, name: &PropertyName) -> Option<ModelValue> {
     let value = value.as_str();
     let result = match name.as_str() {
@@ -381,6 +348,7 @@ pub(super) fn property(value: &BoundedText, name: &PropertyName) -> Option<Model
         "isLanguageTag" => is_language_tag(value, true),
         "isLanguageTagOrEmpty" => value.is_empty() || is_language_tag(value, true),
         "isAlphabeticLanguageTagOrEmpty" => value.is_empty() || is_language_tag(value, false),
+        "containsPUA" => value.chars().any(pdf_text::is_pua),
         _ => return None,
     };
     Some(ModelValue::Bool(result))

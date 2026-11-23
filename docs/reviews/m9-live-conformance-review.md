@@ -242,10 +242,37 @@ Each of the four supplemental PDF/UA files now reports one passing language
 assertion. The total unsupported count fell from 73 to 14. The document
 decisions remain `Incomplete` in these four files.
 
+## Private-Use Code Points in Text Strings
+
+The PDF/UA-2 and WTPDF rules read `ActualText` and `Alt` on reachable
+structure elements and marked-content sequences in the semantic content view.
+PDF/A-4 also checks replacement text in ordinary content streams and
+marked-content points. Automatic selection of PDF/A-4 and PDF/UA-2 makes
+both content views available to the applicable rules. A reachable outline's
+`Title` and each scoped `Lang` string receive the readable-text check.
+
+veraPDF Greenfield 1.30.4 and pdfv agree on all 170 pass and fail count
+comparisons across 83 fixture and profile selections. This includes four
+passing readable-text assertions on each of the two original supplemental
+PDF/UA-2 fixtures and three passes and one failure on the upstream
+`8.6-t01-fail-a` fixture. [PDF/UA-2 readable-text fixture](https://github.com/veraPDF/veraPDF-corpus/blob/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_UA-2/8.6%20Text%20string%20objects/8.6-t01-fail-a.pdf)
+
+Separate edge probes found three Greenfield limitations. It keeps the first
+property binding when a stream is shared across pages, skips a valid code
+unit following a malformed UTF-16BE high surrogate, and can abort on an
+indirect string in a named marked-content property dictionary. pdfv retains
+both property outcomes, recovers the following code unit, and resolves the
+indirect string. The regression suite covers these paths.
+
+The expanded public manifest now matches 11 of 13 document decisions. The
+PDF/UA-2 positive passes and the PDF/UA-2 negative fails on real content.
+Both agree with veraPDF and have zero unsupported rules. Each supplemental
+PDF/UA-1 file still has one unsupported glyph-width rule.
+
 ## Release Blockers
 
-- The four supplemental PDF/UA documents remain incomplete. Open work includes
-  alternative and replacement text, readable text strings, and glyph widths.
+- Two supplemental PDF/UA-1 documents remain incomplete on glyph-width rule
+  `7.21.5-1`. Both lack `widthFromFontProgram` evidence for a used font.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

@@ -7,6 +7,7 @@ pub(crate) mod file_spec;
 pub(crate) mod glyphs;
 mod icc;
 pub(crate) mod language;
+pub(crate) mod scoped_pua;
 mod semantic_names;
 pub(crate) mod structure_roles;
 mod tagged_content;
@@ -1666,9 +1667,10 @@ impl Validator {
             self.options.max_failed_assertions_per_rule.get(),
             self.options.record_passed_assertions,
         );
+        let text_content_mode = scoped_pua::ContentMode::for_profiles(&profiles);
         let mut profile_reports = Vec::with_capacity(profiles.len());
         for profile in &profiles {
-            profile_reports.push(session.validate_profile(profile)?);
+            profile_reports.push(session.validate_profile(profile, text_content_mode)?);
         }
         let mut status = if profile_reports
             .iter()
@@ -1775,13 +1777,18 @@ impl ValidationSession {
         }
     }
 
-    fn validate_profile(&mut self, profile: &crate::ValidationProfile) -> Result<ProfileReport> {
+    fn validate_profile(
+        &mut self,
+        profile: &crate::ValidationProfile,
+        text_content_mode: scoped_pua::ContentMode,
+    ) -> Result<ProfileReport> {
         let index = RuleIndex::new(&profile.rules);
         let graph = ModelGraph::for_rules(
             &self.document,
             &self.limits,
             &profile.rules,
             &profile.flavour,
+            text_content_mode,
         );
         let mut evaluator = DefaultRuleEvaluator::with_graph(self.limits.clone(), &graph);
         let mut state = ProfileState::new(
@@ -2348,6 +2355,17 @@ impl ModelRegistry {
             family("pageTree", PAGE_TREE_PROPERTIES, EMPTY_LINK_NAMES),
             family("pageBox", PAGE_BOX_COORDINATES, EMPTY_LINK_NAMES),
             family(language::FAMILY, language::PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                scoped_pua::ACTUAL_TEXT,
+                scoped_pua::PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(scoped_pua::ALT, scoped_pua::PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                scoped_pua::TEXT_STRING,
+                scoped_pua::PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("resource", RESOURCE_PROPERTIES, EMPTY_LINK_NAMES),
             family("names", NAMES_PROPERTIES, NAMES_LINKS),
             family("outline", OUTLINE_PROPERTIES, OUTLINE_LINKS),
@@ -2587,6 +2605,7 @@ impl ModelRegistry {
         !cos::is_primitive_family(family.as_str())
             && family.as_str() != file_spec::FAMILY
             && family.as_str() != language::FAMILY
+            && !scoped_pua::FAMILIES.contains(&family.as_str())
             && structure_roles::rule_family(family.as_str()).is_none()
             && !matches!(
                 family.as_str(),
@@ -3379,7 +3398,7 @@ impl<'a> ModelObjectRef<'a> {
             Self::OutputIntent(model) => model.linked_objects(graph, max_objects),
             Self::ContentStream(model) => {
                 let mut objects = model.linked_objects(graph, max_objects)?;
-                if language::enabled(graph) && model.page_key.is_some() {
+                if graph.needs_scoped_text_glyph_evidence() && model.page_key.is_some() {
                     language::append_type3_streams(
                         graph,
                         model,
@@ -3408,8 +3427,9 @@ pub struct ModelGraph<'a> {
     limits: &'a ResourceLimits,
     materialized_families: BTreeSet<ObjectTypeName>,
     active_flavour: Option<ValidationFlavour>,
+    text_content_mode: scoped_pua::ContentMode,
     accessibility_cache: OnceLock<Arc<AccessibilityGraph>>,
-    language_bytes: Cell<u64>,
+    text_bytes: Cell<u64>,
     character_resources: RefCell<BTreeMap<String, Option<Arc<crate::Dictionary>>>>,
     cid_audit: RefCell<glyphs::CidAudit>,
 }
@@ -3475,6 +3495,7 @@ impl<'a> ModelGraph<'a> {
         limits: &'a ResourceLimits,
         rules: &[Rule],
         active_flavour: &ValidationFlavour,
+        text_content_mode: scoped_pua::ContentMode,
     ) -> Self {
         let registry = ModelRegistry::default_registry();
         let mut materialized_families = BTreeSet::new();
@@ -3493,6 +3514,7 @@ impl<'a> ModelGraph<'a> {
         if materialized_families.iter().any(|family| {
             family.as_str() == semantic_names::INTENT
                 || family.as_str() == language::FAMILY
+                || scoped_pua::FAMILIES.contains(&family.as_str())
                 || family.as_str() == semantic_names::INLINE_FILTER
                 || family.as_str() == semantic_names::BLEND_MODE
                 || family.as_str() == "halftone"
@@ -3522,9 +3544,10 @@ impl<'a> ModelGraph<'a> {
             limits,
             materialized_families,
             active_flavour: Some(active_flavour.clone()),
+            text_content_mode,
             accessibility_cache: OnceLock::new(),
             cid_audit: RefCell::new(glyphs::CidAudit::default()),
-            language_bytes: Cell::new(limits.max_file_bytes),
+            text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
         }
     }
@@ -3538,9 +3561,10 @@ impl<'a> ModelGraph<'a> {
                 .cloned()
                 .collect(),
             active_flavour: None,
+            text_content_mode: scoped_pua::ContentMode::default(),
             accessibility_cache: OnceLock::new(),
             cid_audit: RefCell::new(glyphs::CidAudit::default()),
-            language_bytes: Cell::new(limits.max_file_bytes),
+            text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
         }
     }
@@ -3575,6 +3599,7 @@ impl<'a> ModelGraph<'a> {
             !cos::is_primitive_family(family.as_str())
                 && family.as_str() != file_spec::FAMILY
                 && family.as_str() != language::FAMILY
+                && !scoped_pua::FAMILIES.contains(&family.as_str())
                 && structure_roles::rule_family(family.as_str()).is_none()
                 && !xmp_extension::FAMILIES.contains(&family.as_str())
                 && !semantic_names::FAMILIES.contains(&family.as_str())
@@ -3615,23 +3640,25 @@ impl<'a> ModelGraph<'a> {
     }
 
     fn materializes_accessibility(&self) -> bool {
-        self.materialized_families.iter().any(|family| {
-            structure_roles::rule_family(family.as_str()).is_some()
-                || matches!(
-                    family.as_str(),
-                    "accessibilityDocument"
-                        | "structureTreeRoot"
-                        | "structureElement"
-                        | "textChunk"
-                        | "imageChunk"
-                        | "accessibilityAnnotation"
-                        | "artifact"
-                        | "table"
-                        | "list"
-                        | "heading"
-                        | "link"
-                )
-        })
+        language::enabled(self)
+            || scoped_pua::replacement_enabled(self)
+            || self.materialized_families.iter().any(|family| {
+                structure_roles::rule_family(family.as_str()).is_some()
+                    || matches!(
+                        family.as_str(),
+                        "accessibilityDocument"
+                            | "structureTreeRoot"
+                            | "structureElement"
+                            | "textChunk"
+                            | "imageChunk"
+                            | "accessibilityAnnotation"
+                            | "artifact"
+                            | "table"
+                            | "list"
+                            | "heading"
+                            | "link"
+                    )
+            })
     }
 
     fn accessibility_graph(&self) -> Result<Arc<AccessibilityGraph>> {
@@ -3696,12 +3723,26 @@ impl<'a> ModelGraph<'a> {
                 first.continuation = additional;
             }
         }
-        if self.needs_glyph_evidence() || language::enabled(self) {
+        if self.needs_glyph_evidence() || self.needs_scoped_text_glyph_evidence() {
             for stream in &mut streams {
                 stream.retain_glyph_text = true;
             }
         }
         Ok(streams)
+    }
+
+    fn needs_scoped_text_glyph_evidence(&self) -> bool {
+        language::enabled(self) || scoped_pua::ordinary_content_enabled(self)
+    }
+
+    fn charge_text_bytes(&self, bytes: usize) -> Result<()> {
+        let limit = || ValidationError::LimitExceeded {
+            limit: "text_evidence_bytes",
+        };
+        let size = u64::try_from(bytes).map_err(|_| limit())?;
+        let remaining = self.text_bytes.get().checked_sub(size).ok_or_else(limit)?;
+        self.text_bytes.set(remaining);
+        Ok(())
     }
 
     fn push_streams(
@@ -4353,6 +4394,9 @@ impl ModelObject for DocumentModel<'_> {
         }
         if language::enabled(graph) {
             language::append_form_fields(graph, &mut objects, max_objects)?;
+        }
+        if graph.materializes(scoped_pua::TEXT_STRING) {
+            scoped_pua::append_outline_titles(graph, &mut objects, max_objects)?;
         }
         if graph.materializes_accessibility() {
             push_linked(
@@ -5716,7 +5760,7 @@ impl ModelObject for AnnotationModel<'_> {
         max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut objects = Vec::new();
-        if graph.needs_glyph_evidence() || language::enabled(graph) {
+        if graph.needs_glyph_evidence() || graph.needs_scoped_text_glyph_evidence() {
             append_appearance_content(self, graph, &mut objects, max_objects)?;
         }
         if language::enabled(graph) {
@@ -6978,8 +7022,13 @@ impl ModelObject for AccessibilityModel<'_> {
         let mut objects = Vec::new();
         match self.kind {
             AccessibilityModelKind::Document => {
-                if language::enabled(graph) {
-                    language::require_complete_structure(self.graph.truncated)?;
+                if self.graph.truncated
+                    && (language::enabled(graph) || scoped_pua::replacement_enabled(graph))
+                {
+                    return Err(ValidationError::LimitExceeded {
+                        limit: "structure_text_evidence",
+                    }
+                    .into());
                 }
                 for node in &self.graph.nodes {
                     push_linked(
@@ -7001,6 +7050,13 @@ impl ModelObject for AccessibilityModel<'_> {
             }
             AccessibilityModelKind::StructureElement(node_id) => {
                 let node = self.node(node_id)?;
+                scoped_pua::append_replacements(
+                    graph,
+                    node.replacement_text,
+                    &node.location,
+                    &mut objects,
+                    max_objects,
+                )?;
                 if language::enabled(graph) {
                     if let Some(key) = node.language_reference {
                         if let Some(value) =
@@ -7015,7 +7071,7 @@ impl ModelObject for AccessibilityModel<'_> {
                             )?;
                         }
                     } else if let Some(value) = &node.language {
-                        language::charge_bytes(graph, value.len())?;
+                        graph.charge_text_bytes(value.len())?;
                         language::append(graph, value, &node.location, &mut objects, max_objects)?;
                     }
                 }
@@ -10290,6 +10346,9 @@ impl<'a> GenericModel<'a> {
                     |(source, text)| language::operator_identity(source, text),
                 );
         }
+        if scoped_pua::FAMILIES.contains(&self.object_type.as_str()) {
+            return format!("{}:{:?}", self.context, self.direct_value);
+        }
         if self.primitive.is_some()
             || self.file_spec.is_some()
             || self.tagged_content.is_some()
@@ -10318,6 +10377,11 @@ impl<'a> GenericModel<'a> {
             && let Some(ModelValue::String(value)) = &self.direct_value
         {
             return language::property(value, name).map(Ok);
+        }
+        if scoped_pua::FAMILIES.contains(&self.object_type.as_str())
+            && name.as_str() == "containsPUA"
+        {
+            return self.direct_value.clone().map(Ok);
         }
         self.primitive
             .map(|primitive| primitive.property(name))
@@ -10925,9 +10989,18 @@ fn append_scoped_content_models<'a>(
     objects: &mut Vec<ModelObjectRef<'a>>,
     max_objects: usize,
 ) -> Result<()> {
+    if model.language_view == language::StreamView::CharacterProcedure
+        && summary.operators_seen > graph.limits.max_type3_charproc_ops
+    {
+        return Err(ValidationError::LimitExceeded {
+            limit: "max_type3_charproc_ops",
+        }
+        .into());
+    }
     if language::enabled(graph) && model.page_key.is_some() {
         language::append_content(graph, model, summary, objects, max_objects)?;
     }
+    scoped_pua::append_content(graph, model, summary, objects, max_objects)?;
     if model.object_type.as_str() == language::CONTENT_FAMILY {
         let text = glyphs::text_invocations(model, graph, summary)?;
         return append_content_resources(
@@ -10954,7 +11027,7 @@ fn append_scoped_content_models<'a>(
     };
     let text_states = if graph.needs_glyph_evidence() {
         glyphs::inspect(model, graph, summary, objects, max_objects)?
-    } else if language::enabled(graph) && model.page_key.is_some() {
+    } else if graph.needs_scoped_text_glyph_evidence() && model.page_key.is_some() {
         glyphs::text_invocations(model, graph, summary)?
     } else {
         BTreeMap::new()
@@ -11311,7 +11384,8 @@ fn resource_content_stream<'a>(
         initial_color_state: None,
         initial_text_state: None,
         initial_tag_context: None,
-        retain_glyph_text: (graph.needs_glyph_evidence() || language::enabled(graph))
+        retain_glyph_text: (graph.needs_glyph_evidence()
+            || graph.needs_scoped_text_glyph_evidence())
             && page_key.is_some(),
         resource_context,
         character_resources,

@@ -3210,11 +3210,10 @@ fn map_verapdf_object_type(
         {
             Some(crate::validation::file_spec::FAMILY)
         }
-        "CosTextString"
-        | "CosUnicodeName"
-        | "CosActualText"
-        | "CosAlt"
-        | "CosFileSpecification" => Some("object"),
+        "CosTextString" => Some(crate::validation::scoped_pua::TEXT_STRING),
+        "CosActualText" => Some(crate::validation::scoped_pua::ACTUAL_TEXT),
+        "CosAlt" => Some(crate::validation::scoped_pua::ALT),
+        "CosUnicodeName" | "CosFileSpecification" => Some("object"),
         "GFCosMetadata"
         | "PDMetadata"
         | "Metadata"
