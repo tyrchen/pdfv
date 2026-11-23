@@ -1,5 +1,7 @@
 //! End-to-end validation session and validation model graph.
 
+mod cos;
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::{Read, Seek, SeekFrom},
@@ -9,6 +11,7 @@ use std::{
     time::Instant,
 };
 
+use self::cos::{CosOrigin, CosPrimitive, INTEGER_FAMILY, NAME_FAMILY, REAL_FAMILY, STRING_FAMILY};
 use crate::{
     Assertion, BoundedText, BuiltinProfileRepository, ENGINE_VERSION, ErrorArgument, FeatureObject,
     FeatureReport, FeatureValue, Identifier, IndirectObject, InputKind, InputSummary, ModelValue,
@@ -1787,6 +1790,32 @@ impl ValidationSession {
                 stack.push(linked);
             }
         }
+        if profile.rules.iter().any(|rule| {
+            cos::is_primitive_family(rule.object_type.as_str())
+                && !matches!(rule.test, crate::RuleExpr::Unsupported { .. })
+        }) {
+            let budget = remaining_object_budget(&self.limits, visited.len(), 0)?;
+            cos::walk_primitives(&self.document, budget, |primitive, origin| {
+                if let Some(rules) = index.by_type.get(primitive.family()) {
+                    let object = ModelObjectRef::Generic(GenericModel::new_primitive(
+                        &self.document,
+                        primitive,
+                        origin,
+                    ));
+                    for rule in rules {
+                        if matches!(rule.test, crate::RuleExpr::Unsupported { .. }) {
+                            continue;
+                        }
+                        if rule.deferred {
+                            deferred.push((object.clone(), *rule));
+                        } else {
+                            state.apply_rule(&object, rule, &mut evaluator)?;
+                        }
+                    }
+                }
+                Ok(())
+            })?;
+        }
         for (object, rule) in deferred {
             state.apply_rule(&object, rule, &mut evaluator)?;
         }
@@ -1856,13 +1885,15 @@ fn selected_feature_families(
     registry: &ModelRegistry,
 ) -> Result<BTreeSet<ObjectTypeName>> {
     match selection {
-        FeatureSelection::None | FeatureSelection::All => {
-            Ok(registry.family_names().cloned().collect())
-        }
+        FeatureSelection::None | FeatureSelection::All => Ok(registry
+            .family_names()
+            .filter(|family| !cos::is_primitive_family(family.as_str()))
+            .cloned()
+            .collect()),
         FeatureSelection::Families { families } => {
             let mut selected = BTreeSet::new();
             for family in families {
-                if !registry.has_family(family) {
+                if !registry.has_feature_family(family) {
                     return Err(crate::ConfigError::InvalidValue {
                         field: "extract",
                         reason: BoundedText::unchecked("unknown feature family"),
@@ -1916,7 +1947,7 @@ fn validate_feature_configuration(options: &ValidationOptions) -> Result<()> {
 
 fn validate_policy_schema(policy: &PolicySet, registry: &ModelRegistry) -> Result<()> {
     for rule in &policy.rules {
-        if !registry.has_family(&rule.family) {
+        if !registry.has_feature_family(&rule.family) {
             return Err(policy_invalid("family", "unknown policy feature family"));
         }
         if !registry.has_family_property(&rule.family, &rule.field) {
@@ -2335,6 +2366,28 @@ impl ModelRegistry {
             family("outputIntent", OUTPUT_INTENT_PROPERTIES, EMPTY_LINK_NAMES),
             family("stream", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("object", OBJECT_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                INTEGER_FAMILY,
+                &["intValue", "fitsSigned32"],
+                EMPTY_LINK_NAMES,
+            ),
+            family(REAL_FAMILY, &["realValue"], EMPTY_LINK_NAMES),
+            family(
+                NAME_FAMILY,
+                &["internalRepresentation", "byteLength"],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                STRING_FAMILY,
+                &[
+                    "value",
+                    "byteLength",
+                    "isHex",
+                    "containsOnlyHex",
+                    "hexCount",
+                ],
+                EMPTY_LINK_NAMES,
+            ),
         ];
         let mut by_name: BTreeMap<ObjectTypeName, Arc<dyn ModelFamily + Send + Sync>> =
             BTreeMap::new();
@@ -2366,6 +2419,10 @@ impl ModelRegistry {
     #[must_use]
     pub(crate) fn has_family(&self, family: &ObjectTypeName) -> bool {
         self.families.contains_key(family)
+    }
+
+    fn has_feature_family(&self, family: &ObjectTypeName) -> bool {
+        !cos::is_primitive_family(family.as_str()) && self.has_family(family)
     }
 
     /// Returns true when a property is present on a specific registered family schema.
@@ -2492,7 +2549,8 @@ impl ModelRegistry {
 }
 
 fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvidence {
-    if direct_properties_for_family(family).contains(&property) {
+    if cos::is_primitive_family(family) || direct_properties_for_family(family).contains(&property)
+    {
         return PropertySourceEvidence::DirectCos;
     }
     if family == "page" && PAGE_INHERITED_PROPERTIES.contains(&property) {
@@ -3110,12 +3168,7 @@ impl<'a> ModelObjectRef<'a> {
             ),
             Self::Accessibility(model) => model.identity_key(),
             Self::Stream(model) => format!("stream:{}:{}", model.key.number, model.key.generation),
-            Self::Generic(model) => generic_identity_key(
-                model.object_type.as_str(),
-                model.key,
-                model.ordinal,
-                model.context.as_str(),
-            ),
+            Self::Generic(model) => model.identity_key(),
         }
     }
 
@@ -3279,33 +3332,34 @@ impl<'a> ModelGraph<'a> {
 
     fn materializes_generic_roots(&self) -> bool {
         self.materialized_families.iter().any(|family| {
-            !matches!(
-                family.as_str(),
-                "document"
-                    | "catalog"
-                    | "metadata"
-                    | "page"
-                    | "font"
-                    | "annotation"
-                    | "outputIntent"
-                    | "contentStream"
-                    | "operator"
-                    | "markedContent"
-                    | "inlineImage"
-                    | "resourceUse"
-                    | "accessibilityDocument"
-                    | "structureElement"
-                    | "textChunk"
-                    | "imageChunk"
-                    | "accessibilityAnnotation"
-                    | "artifact"
-                    | "table"
-                    | "list"
-                    | "heading"
-                    | "link"
-                    | "stream"
-                    | "object"
-            )
+            !cos::is_primitive_family(family.as_str())
+                && !matches!(
+                    family.as_str(),
+                    "document"
+                        | "catalog"
+                        | "metadata"
+                        | "page"
+                        | "font"
+                        | "annotation"
+                        | "outputIntent"
+                        | "contentStream"
+                        | "operator"
+                        | "markedContent"
+                        | "inlineImage"
+                        | "resourceUse"
+                        | "accessibilityDocument"
+                        | "structureElement"
+                        | "textChunk"
+                        | "imageChunk"
+                        | "accessibilityAnnotation"
+                        | "artifact"
+                        | "table"
+                        | "list"
+                        | "heading"
+                        | "link"
+                        | "stream"
+                        | "object"
+                )
         })
     }
 
@@ -3396,9 +3450,7 @@ impl<'a> ModelGraph<'a> {
             else {
                 continue;
             };
-            if Some(stream.key) != self.document.catalog {
-                push_linked(objects, ModelObjectRef::Stream(stream), max_objects)?;
-            }
+            push_linked(objects, ModelObjectRef::Stream(stream), max_objects)?;
         }
         Ok(())
     }
@@ -9335,6 +9387,7 @@ pub struct GenericModel<'a> {
     links: Vec<LinkName>,
     allowed_properties: &'static [&'static str],
     direct_value: Option<ModelValue>,
+    primitive: Option<CosPrimitive<'a>>,
     context: String,
     ordinal: usize,
 }
@@ -9362,6 +9415,7 @@ impl<'a> GenericModel<'a> {
                 .collect(),
             allowed_properties: family_direct_properties(family),
             direct_value: None,
+            primitive: None,
             context: context.into(),
             ordinal,
         }
@@ -9387,9 +9441,44 @@ impl<'a> GenericModel<'a> {
                 .collect(),
             allowed_properties: family_direct_properties(family),
             direct_value: Some(value),
+            primitive: None,
             context: context.into(),
             ordinal,
         }
+    }
+
+    fn new_primitive(
+        document: &'a ParsedDocument,
+        primitive: CosPrimitive<'a>,
+        origin: CosOrigin,
+    ) -> Self {
+        let family = primitive.family();
+        Self {
+            document,
+            key: origin.owner,
+            offset: Some(origin.offset),
+            dictionary: crate::Dictionary::default(),
+            object_type: ObjectTypeName::unchecked(family),
+            supertypes: Vec::new(),
+            links: Vec::new(),
+            allowed_properties: &[],
+            direct_value: None,
+            primitive: Some(primitive),
+            context: format!("root/{family}[{}]", origin.ordinal),
+            ordinal: origin.ordinal,
+        }
+    }
+
+    fn identity_key(&self) -> String {
+        if self.primitive.is_some() {
+            return self.context.clone();
+        }
+        generic_identity_key(
+            self.object_type.as_str(),
+            self.key,
+            self.ordinal,
+            self.context.as_str(),
+        )
     }
 
     fn acro_action_destination_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
@@ -9729,12 +9818,7 @@ impl<'a> GenericModel<'a> {
 impl ModelObject for GenericModel<'_> {
     fn id(&self) -> Option<ObjectIdentity> {
         Some(ObjectIdentity {
-            key: generic_identity_key(
-                self.object_type.as_str(),
-                self.key,
-                self.ordinal,
-                self.context.as_str(),
-            ),
+            key: self.identity_key(),
         })
     }
 
@@ -9751,6 +9835,9 @@ impl ModelObject for GenericModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        if let Some(primitive) = self.primitive {
+            return primitive.property(name);
+        }
         if let Some(value) = self.acro_action_destination_property(name) {
             return value;
         }
@@ -10472,24 +10559,12 @@ impl<'a> RuleIndex<'a> {
             .get(object.object_type().as_str())
             .cloned()
             .unwrap_or_default();
-        let supertypes = match object {
-            ModelObjectRef::Document(model) => model.super_types(),
-            ModelObjectRef::Catalog(model) => model.super_types(),
-            ModelObjectRef::Metadata(model) => model.super_types(),
-            ModelObjectRef::Page(model) => model.super_types(),
-            ModelObjectRef::Font(model) => model.super_types(),
-            ModelObjectRef::Annotation(model) => model.super_types(),
-            ModelObjectRef::OutputIntent(model) => model.super_types(),
-            ModelObjectRef::ContentStream(model) => model.super_types(),
-            ModelObjectRef::Operator(model) => model.super_types(),
-            ModelObjectRef::MarkedContent(model) => model.super_types(),
-            ModelObjectRef::InlineImage(model) => model.super_types(),
-            ModelObjectRef::ResourceUse(model) => model.super_types(),
-            ModelObjectRef::Accessibility(model) => model.super_types(),
-            ModelObjectRef::Stream(model) => model.super_types(),
-            ModelObjectRef::Generic(model) => model.super_types(),
-        };
-        for supertype in supertypes {
+        for supertype in object.super_types() {
+            // The document root visits every physical COS stream once. Metadata
+            // and page content can add further views of the same indirect object.
+            if supertype.as_str() == "stream" {
+                continue;
+            }
             if let Some(super_rules) = self.by_type.get(supertype.as_str()) {
                 rules.extend(super_rules.iter().copied());
             }
@@ -11516,6 +11591,47 @@ mod tests {
                 "{id}"
             );
         }
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(m1_model_pdf().to_vec(), 2)]
+    #[case(phase22_xmp_metadata_pdf(), 1)]
+    fn test_should_check_each_physical_stream_once(
+        #[case] bytes: Vec<u8>,
+        #[case] streams: usize,
+    ) -> crate::Result<()> {
+        let validator = Validator::new(
+            ValidationOptions::builder()
+                .flavour(FlavourSelection::Explicit {
+                    flavour: ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?,
+                })
+                .record_passed_assertions(true)
+                .build(),
+        )?;
+        let report = validator.validate_reader(Cursor::new(bytes), InputName::memory())?;
+        let profile =
+            report
+                .profile_reports
+                .first()
+                .ok_or(crate::ValidationError::SubsystemUnavailable {
+                    subsystem: "testProfile",
+                })?;
+        let rule = RuleId(Identifier::new("iso-19005-1-6-1-7-3")?);
+        assert_eq!(
+            profile
+                .passed_assertions
+                .iter()
+                .filter(|assertion| assertion.rule_id == rule)
+                .count(),
+            streams,
+        );
+        assert!(
+            profile
+                .unsupported_rules
+                .iter()
+                .all(|unsupported| unsupported.rule_id != rule)
+        );
         Ok(())
     }
 

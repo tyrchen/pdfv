@@ -194,7 +194,7 @@ fn generated_corpus_rows() -> Result<Vec<CorpusAgreementRow>> {
             source: CorpusFixtureSource::Generated,
             bytes: minimal_pdf(),
             options: explicit_profile_options("pdfa", 1, "b")?,
-            expected: CorpusOutcome::Incomplete,
+            expected: CorpusOutcome::Invalid,
             profile: "pdfa-1b",
             semantic_families: &["profile"],
             required_feature_families: &[],
@@ -874,7 +874,7 @@ mod tests {
         }));
         assert!(report.rows.iter().any(|row| {
             row.fixture.as_str() == "generated:profile-official-pdfa-1b"
-                && row.pdfv_outcome == CorpusOutcome::Incomplete
+                && row.pdfv_outcome == CorpusOutcome::Invalid
         }));
         assert!(report.rows.iter().any(|row| {
             row.fixture.as_str() == "generated:font-cmap-subset-incomplete"

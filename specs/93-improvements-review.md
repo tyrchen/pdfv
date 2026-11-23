@@ -13,8 +13,7 @@ of the current implementation phase.
   library, repair, and corpus expectations. See
   [profile selection](../crates/core/src/profile.rs) and the
   [live conformance review](../docs/reviews/m9-live-conformance-review.md).
-- **P1.** Official rule object types are broader after import. `CosInteger`,
-  `CosReal`, `CosString`, and `CosName` share the `object` target, causing
-  numeric and string expressions to run on unrelated model instances.
-  Preserve source-type applicability and exercise it on the public corpus.
-  See [the type mapping](../crates/core/src/profile.rs).
+- **P1.** Context-dependent targets such as `CosRenderingIntent` and
+  `CosTextString` still map to the generic `object` target. Preserve their
+  actual use-site semantics and compare each assertion on passing and failing
+  fixtures. See [the type mapping](../crates/core/src/profile.rs).

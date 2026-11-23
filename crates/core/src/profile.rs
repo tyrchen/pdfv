@@ -22,6 +22,7 @@ const MAX_PROFILE_XML_DEPTH: u32 = 32;
 const MAX_PROFILE_XML_ATTRIBUTES: usize = 16;
 const MAX_PROFILE_RULES: usize = 10_000;
 const MAX_PROFILE_STRING_BYTES: usize = 4096;
+pub(crate) const MAX_SAFE_RULE_INTEGER: u64 = (1_u64 << 53) - 1;
 const UNSUPPORTED_REASON_CATEGORIES: &[&str] = &[
     "missingLink",
     "missingObjectType",
@@ -2808,7 +2809,7 @@ impl XmlRuleBuilder {
         let source_test = self.test.ok_or(ProfileError::InvalidXml {
             reason: BoundedText::unchecked("rule test is missing"),
         })?;
-        let test = if let Some(reason) = self.unsupported_reason {
+        let mut test = if let Some(reason) = self.unsupported_reason {
             RuleExpr::Unsupported {
                 fragment: source_test.clone(),
                 reason,
@@ -2821,6 +2822,14 @@ impl XmlRuleBuilder {
                 }
             })
         };
+        match object_type.as_str() {
+            "cosInteger" if test == signed_32_bit_range()? => {
+                test = property_expr("fitsSigned32")?;
+            }
+            "cosName" => lower_cos_byte_lengths(&mut test, "internalRepresentation")?,
+            "cosString" => lower_cos_byte_lengths(&mut test, "value")?,
+            _ => {}
+        }
         let message = self.message.unwrap_or_else(|| description.clone());
         Ok(Rule {
             id,
@@ -3110,12 +3119,12 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
             Some("document")
         }
         "CosStream" => Some("stream"),
+        "CosInteger" => Some("cosInteger"),
+        "CosReal" => Some("cosReal"),
+        "CosName" => Some("cosName"),
+        "CosString" => Some("cosString"),
         "CosArray"
         | "CosDict"
-        | "CosInteger"
-        | "CosName"
-        | "CosReal"
-        | "CosString"
         | "CosTextString"
         | "CosUnicodeName"
         | "CosLang"
@@ -3291,6 +3300,56 @@ fn parse_imported_expr(input: &str) -> std::result::Result<RuleExpr, BoundedText
     }
 }
 
+fn lower_cos_byte_lengths(expr: &mut RuleExpr, property: &str) -> Result<()> {
+    match expr {
+        RuleExpr::Call { function, args } => {
+            if *function == BuiltinFunction::Size
+                && let [RuleExpr::Property { path }] = args.as_slice()
+                && let [name] = path.parts()
+                && name.as_str() == property
+            {
+                *expr = property_expr("byteLength")?;
+            } else {
+                for arg in args {
+                    lower_cos_byte_lengths(arg, property)?;
+                }
+            }
+        }
+        RuleExpr::Unary { expr, .. } => lower_cos_byte_lengths(expr, property)?,
+        RuleExpr::Binary { left, right, .. } => {
+            lower_cos_byte_lengths(left, property)?;
+            lower_cos_byte_lengths(right, property)?;
+        }
+        RuleExpr::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            lower_cos_byte_lengths(condition, property)?;
+            lower_cos_byte_lengths(when_true, property)?;
+            lower_cos_byte_lengths(when_false, property)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn signed_32_bit_range() -> Result<RuleExpr> {
+    let comparison = |op, bound: i32| -> Result<RuleExpr> {
+        Ok(RuleExpr::Binary {
+            op,
+            left: Box::new(property_expr("intValue")?),
+            right: Box::new(RuleExpr::Number {
+                value: f64::from(bound),
+            }),
+        })
+    };
+    Ok(RuleExpr::Binary {
+        op: BinaryOp::And,
+        left: Box::new(comparison(BinaryOp::Le, i32::MAX)?),
+        right: Box::new(comparison(BinaryOp::Ge, i32::MIN)?),
+    })
+}
 #[derive(Debug)]
 struct ExprParser<'a> {
     input: &'a str,
@@ -3626,9 +3685,22 @@ impl<'a> ExprParser<'a> {
                 return Err(BoundedText::unchecked("invalid exponent literal"));
             }
         }
-        let value = self.input[start..self.offset]
+        let token = &self.input[start..self.offset];
+        let value = token
             .parse::<f64>()
-            .map_err(|_| BoundedText::unchecked("invalid number literal"))?;
+            .ok()
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| BoundedText::unchecked("invalid number literal"))?;
+        if !token.contains(['.', 'e', 'E'])
+            && token
+                .parse::<i64>()
+                .ok()
+                .is_none_or(|integer| integer.unsigned_abs() > MAX_SAFE_RULE_INTEGER)
+        {
+            return Err(BoundedText::unchecked(
+                "integer literal exceeds the rule engine's exact numeric range",
+            ));
+        }
         Ok(RuleExpr::Number { value })
     }
 
@@ -4508,7 +4580,7 @@ trailer
             crate::ValidationStatus::Valid,
             "{profile:#?}"
         );
-        assert_eq!(profile.rules_executed, 12);
+        assert_eq!(profile.rules_executed, 11);
         Ok(())
     }
 
@@ -4819,11 +4891,18 @@ trailer
 
         assert_eq!(import.supported_rules, 1);
         assert_eq!(import.unsupported_rules, 0);
-        assert!(matches!(
+        assert_eq!(
             import.profile.rules.first().map(|rule| &rule.test),
-            Some(super::RuleExpr::Binary { .. })
-        ));
+            Some(&super::property_expr("fitsSigned32")?)
+        );
         Ok(())
+    }
+
+    #[test]
+    fn test_should_reject_inexact_integer_literals() {
+        assert!(super::parse_imported_expr("intValue == 9007199254740991").is_ok());
+        assert!(super::parse_imported_expr("intValue == 9007199254740992").is_err());
+        assert!(super::parse_imported_expr("intValue == -9007199254740993").is_err());
     }
 
     #[test]

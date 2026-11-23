@@ -58,6 +58,14 @@ Rules:
 - Semantic properties are named after veraPDF model properties when compatible.
 - Unsupported properties are build-time coverage findings for built-ins and runtime `UnsupportedRule` data for custom profiles.
 - Context paths are deterministic and stable enough for snapshots.
+- The physical COS stream model executes stream syntax rules once per indirect
+  stream. Metadata and page content views execute rules for their own families.
+- Imported `CosInteger`, `CosReal`, `CosString`, and `CosName` rules use
+  distinct primitive families. A bounded, iterative walk checks physical direct
+  and indirect objects, dictionary keys, and trailer entries. Logical xref
+  trailers share the physical stream visit. Names and strings use decoded byte
+  lengths and hexadecimal string rules use lexical digit counts. Signed 32-bit
+  bounds use an exact integer predicate. These families are used for validation.
 
 ## 5. Lazy Materialization and Caches
 

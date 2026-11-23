@@ -5,7 +5,7 @@ mod encryption;
 
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map},
     fmt,
     io::{Read, Seek, SeekFrom, Write},
     num::NonZeroU32,
@@ -648,6 +648,10 @@ impl Dictionary {
 
     /// Iterates over dictionary entries in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&PdfName, &CosObject)> {
+        self.entries()
+    }
+
+    pub(crate) fn entries(&self) -> btree_map::Iter<'_, PdfName, CosObject> {
         self.0.iter()
     }
 
@@ -720,9 +724,65 @@ impl From<PdfName> for String {
 }
 
 /// PDF string bytes.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "Vec<u8>", into = "Vec<u8>")]
-pub struct PdfString(Vec<u8>);
+///
+/// JSON deserialization accepts legacy byte arrays. When the parser records
+/// the lexical form, serialization includes the bytes and syntax together.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(from = "PdfStringWire", into = "PdfStringWire")]
+pub struct PdfString {
+    bytes: Vec<u8>,
+    syntax: PdfStringSyntax,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PdfStringSyntax {
+    Unknown,
+    Literal,
+    Hex { digits: usize },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum PdfStringWire {
+    Bytes(Vec<u8>),
+    Parsed {
+        bytes: Vec<u8>,
+        syntax: PdfStringSyntax,
+    },
+}
+
+impl PartialEq for PdfString {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for PdfString {}
+
+impl From<PdfStringWire> for PdfString {
+    fn from(value: PdfStringWire) -> Self {
+        match value {
+            PdfStringWire::Bytes(bytes) => Self {
+                bytes,
+                syntax: PdfStringSyntax::Unknown,
+            },
+            PdfStringWire::Parsed { bytes, syntax } => Self { bytes, syntax },
+        }
+    }
+}
+
+impl From<PdfString> for PdfStringWire {
+    fn from(value: PdfString) -> Self {
+        match value.syntax {
+            PdfStringSyntax::Unknown => Self::Bytes(value.bytes),
+            syntax => Self::Parsed {
+                bytes: value.bytes,
+                syntax,
+            },
+        }
+    }
+}
 
 impl PdfString {
     /// Creates a bounded PDF string.
@@ -736,13 +796,25 @@ impl PdfString {
                 limit: "max_string_bytes",
             });
         }
-        Ok(Self(bytes))
+        Ok(Self {
+            bytes,
+            syntax: PdfStringSyntax::Unknown,
+        })
     }
 
     /// Returns raw string bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+        &self.bytes
+    }
+
+    pub(crate) fn syntax(&self) -> PdfStringSyntax {
+        self.syntax
+    }
+
+    fn with_syntax(mut self, syntax: PdfStringSyntax) -> Self {
+        self.syntax = syntax;
+        self
     }
 }
 
@@ -750,13 +822,16 @@ impl TryFrom<Vec<u8>> for PdfString {
     type Error = ConfigError;
 
     fn try_from(value: Vec<u8>) -> std::result::Result<Self, Self::Error> {
-        Ok(Self(value))
+        Ok(Self {
+            bytes: value,
+            syntax: PdfStringSyntax::Unknown,
+        })
     }
 }
 
 impl From<PdfString> for Vec<u8> {
     fn from(value: PdfString) -> Self {
-        value.0
+        value.bytes
     }
 }
 
@@ -1576,19 +1651,9 @@ impl<'a> ByteParser<'a> {
         while let Some(byte) = self.next_byte() {
             match byte {
                 b'\\' => {
-                    let Some(escaped) = self.next_byte() else {
-                        return Err(ParseError::Malformed {
-                            message: bounded("truncated string escape"),
-                        });
-                    };
-                    bytes.push(match escaped {
-                        b'n' => b'\n',
-                        b'r' => b'\r',
-                        b't' => b'\t',
-                        b'b' => 0x08,
-                        b'f' => 0x0c,
-                        other => other,
-                    });
+                    if let Some(decoded) = self.parse_literal_string_escape()? {
+                        bytes.push(decoded);
+                    }
                 }
                 b'(' => {
                     depth = depth.checked_add(1).ok_or(ParseError::ArithmeticOverflow {
@@ -1599,9 +1664,14 @@ impl<'a> ByteParser<'a> {
                 b')' => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
-                        return PdfString::new(bytes, &self.limits);
+                        return PdfString::new(bytes, &self.limits)
+                            .map(|value| value.with_syntax(PdfStringSyntax::Literal));
                     }
                     bytes.push(byte);
+                }
+                b'\r' => {
+                    self.skip_optional_lf();
+                    bytes.push(b'\n');
                 }
                 other => bytes.push(other),
             }
@@ -1616,69 +1686,137 @@ impl<'a> ByteParser<'a> {
         })
     }
 
+    fn parse_literal_string_escape(&mut self) -> std::result::Result<Option<u8>, ParseError> {
+        let escaped = self.next_byte().ok_or(ParseError::Malformed {
+            message: bounded("truncated string escape"),
+        })?;
+        let decoded = match escaped {
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'b' => 0x08,
+            b'f' => 0x0c,
+            b'\r' => {
+                self.skip_optional_lf();
+                return Ok(None);
+            }
+            b'\n' => return Ok(None),
+            b'0'..=b'7' => {
+                let mut value = escaped.saturating_sub(b'0');
+                for _ in 0..2 {
+                    let Some(digit @ b'0'..=b'7') = self.peek_byte() else {
+                        break;
+                    };
+                    self.pos = self.pos.saturating_add(1);
+                    value = value
+                        .wrapping_mul(8)
+                        .wrapping_add(digit.saturating_sub(b'0'));
+                }
+                value
+            }
+            other => other,
+        };
+        Ok(Some(decoded))
+    }
+
+    fn skip_optional_lf(&mut self) {
+        if self.peek_byte() == Some(b'\n') {
+            self.pos = self.pos.saturating_add(1);
+        }
+    }
+
     fn parse_hex_string(&mut self) -> std::result::Result<PdfString, ParseError> {
         self.consume_bytes(b"<")?;
-        let mut nibbles = Vec::new();
-        while let Some(byte) = self.peek_byte() {
+        let mut bytes = Vec::new();
+        let mut high = None;
+        let mut digits = 0_usize;
+        loop {
+            let byte = self.next_byte().ok_or(ParseError::Malformed {
+                message: bounded("unterminated hex string"),
+            })?;
             if byte == b'>' {
-                self.pos = self.pos.saturating_add(1);
                 break;
             }
-            self.pos = self.pos.saturating_add(1);
-            if !is_ws(byte) {
-                nibbles.push(byte);
+            if is_ws(byte) {
+                continue;
+            }
+            let nibble = decode_hex_digit(byte).ok_or(ParseError::Malformed {
+                message: bounded("invalid hex string"),
+            })?;
+            digits = digits.saturating_add(1);
+            if let Some(first) = high.take() {
+                bytes.push((first << 4) | nibble);
+            } else {
+                if bytes.len() >= self.limits.max_string_bytes {
+                    return Err(ParseError::LimitExceeded {
+                        limit: "max_string_bytes",
+                    });
+                }
+                high = Some(nibble);
             }
         }
-        if nibbles.len() % 2 != 0 {
-            nibbles.push(b'0');
-        }
-        let mut bytes = Vec::with_capacity(nibbles.len() / 2);
-        for pair in nibbles.chunks(2) {
-            let high = pair.first().copied().ok_or(ParseError::Malformed {
-                message: bounded("invalid hex string"),
-            })?;
-            let low = pair.get(1).copied().ok_or(ParseError::Malformed {
-                message: bounded("invalid hex string"),
-            })?;
-            let decoded = decode_hex_pair(high, low).ok_or(ParseError::Malformed {
-                message: bounded("invalid hex string"),
-            })?;
-            bytes.push(decoded);
+        if let Some(first) = high {
+            bytes.push(first << 4);
         }
         PdfString::new(bytes, &self.limits)
+            .map(|value| value.with_syntax(PdfStringSyntax::Hex { digits }))
     }
 
     fn parse_number_or_reference(&mut self) -> std::result::Result<CosObject, ParseError> {
-        let first_start = self.pos;
-        let first = self.parse_number_token()?;
-        if let NumberToken::Integer(first_integer) = first {
-            let after_first = self.pos;
-            if self.skip_required_ws().is_ok() {
-                let second_start = self.pos;
-                if let Some(generation) = self.parse_unsigned_u16()?
-                    && self.skip_required_ws().is_ok()
-                    && self.starts_with(b"R")
-                {
-                    self.consume_bytes(b"R")?;
-                    if let Some(number) =
-                        NonZeroU32::new(u32::try_from(first_integer).map_err(|_| {
-                            ParseError::Malformed {
-                                message: bounded("reference object number out of range"),
-                            }
-                        })?)
-                    {
-                        return Ok(CosObject::Reference(ObjectKey { number, generation }));
-                    }
-                }
-                self.pos = second_start;
-            }
-            self.pos = after_first;
-        }
-        self.pos = first_start;
         match self.parse_number_token()? {
-            NumberToken::Integer(value) => Ok(CosObject::Integer(value)),
+            NumberToken::Integer(value) => {
+                let after_number = self.pos;
+                if let Some(key) = self.parse_reference_suffix(value)? {
+                    return Ok(CosObject::Reference(key));
+                }
+                self.pos = after_number;
+                Ok(CosObject::Integer(value))
+            }
             NumberToken::Real(value) => Ok(CosObject::Real(value)),
         }
+    }
+
+    fn parse_reference_suffix(
+        &mut self,
+        number: i64,
+    ) -> std::result::Result<Option<ObjectKey>, ParseError> {
+        let start = self.pos;
+        self.skip_ws_and_comments();
+        let generation_start = self.pos;
+        if generation_start == start {
+            return Ok(None);
+        }
+        self.skip_ascii_digits();
+        let generation_end = self.pos;
+        if generation_start == generation_end {
+            return Ok(None);
+        }
+        self.skip_ws_and_comments();
+        if self.pos == generation_end
+            || !self.starts_with(b"R")
+            || self
+                .source
+                .byte(self.pos.saturating_add(1))
+                .is_some_and(|byte| !is_ws(byte) && !is_delimiter(byte))
+        {
+            return Ok(None);
+        }
+        let token = self.slice(generation_start, generation_end)?;
+        let generation = std::str::from_utf8(token.as_ref())
+            .ok()
+            .and_then(|digits| digits.parse::<u16>().ok())
+            .ok_or(ParseError::Malformed {
+                message: bounded("reference generation out of range"),
+            })?;
+        let number =
+            u32::try_from(number)
+                .ok()
+                .and_then(NonZeroU32::new)
+                .ok_or(ParseError::Malformed {
+                    message: bounded("reference object number out of range"),
+                })?;
+        self.consume_bytes(b"R")?;
+        Ok(Some(ObjectKey { number, generation }))
     }
 
     fn parse_number_token(&mut self) -> std::result::Result<NumberToken, ParseError> {
@@ -2009,13 +2147,7 @@ impl<'a> ByteParser<'a> {
     {
         self.skip_ws_and_comments();
         let start = self.pos;
-        while let Some(byte) = self.peek_byte() {
-            if byte.is_ascii_digit() {
-                self.pos = self.pos.saturating_add(1);
-            } else {
-                break;
-            }
-        }
+        self.skip_ascii_digits();
         if start == self.pos {
             return Ok(None);
         }
@@ -2028,6 +2160,12 @@ impl<'a> ByteParser<'a> {
             .map_err(|_| ParseError::Malformed {
                 message: bounded("unsigned integer out of range"),
             })
+    }
+
+    fn skip_ascii_digits(&mut self) {
+        while self.peek_byte().is_some_and(|byte| byte.is_ascii_digit()) {
+            self.pos = self.pos.saturating_add(1);
+        }
     }
 
     fn skip_ws_and_comments(&mut self) {
@@ -3329,6 +3467,31 @@ trailer
                 if message.as_str() == "malformed PDF header version recovered as 1.4"
         )));
         assert_eq!(document.version, crate::PdfVersion { major: 1, minor: 4 });
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_round_trip_lexical_string_evidence_and_read_legacy_bytes()
+    -> Result<(), Box<dyn Error>> {
+        let document = Parser::default().parse(Cursor::new(
+            b"%PDF-1.7\n1 0 obj\n<ACE>\nendobj\ntrailer\n<<>>\n%%EOF\n",
+        ))?;
+        let value = document.objects.values().next().ok_or("missing object")?;
+        let CosObject::String(value) = &value.object else {
+            return Err("expected PDF string".into());
+        };
+        let encoded = serde_json::to_string(value)?;
+        let decoded: super::PdfString = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded.as_bytes(), &[0xac, 0xe0]);
+        assert!(matches!(
+            decoded.syntax(),
+            super::PdfStringSyntax::Hex { digits: 3 }
+        ));
+
+        let legacy: super::PdfString = serde_json::from_str("[172,224]")?;
+        assert_eq!(legacy, decoded);
+        assert!(matches!(legacy.syntax(), super::PdfStringSyntax::Unknown));
+        assert_eq!(serde_json::to_string(&legacy)?, "[172,224]");
         Ok(())
     }
 

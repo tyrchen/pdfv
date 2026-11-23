@@ -810,6 +810,7 @@ fn decrypt_object(
                     return Err(DecryptionError::LimitExceeded("max_decrypted_string_bytes"));
                 }
                 *string = PdfString::new(decrypted, limits)
+                    .map(|value| value.with_syntax(string.syntax()))
                     .map_err(|error| parse_to_decryption(&error))?;
             }
         }

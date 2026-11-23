@@ -76,9 +76,10 @@ Use `make oracle-t3-manifest` with `PDFV_ORACLE_T3_CORPUS_ROOT` to generate a
 private `t3RealWorld` manifest; do not commit that manifest or the private PDFs.
 
 An additional public run covered PDF/A-1b, PDF/A-4, PDF/UA-1, and PDF/UA-2.
-All eight samples returned `Incomplete` from pdfv. See the
+After the physical COS rule fixes, all four PDF/A samples completed and the
+four PDF/UA samples returned `Incomplete`. See the
 [live conformance review](reviews/m9-live-conformance-review.md) for the sample
-manifest, measured gaps, and the auto-fallback behavior.
+manifest, outcome agreement, and the auto-fallback behavior.
 
 ## Out Of Scope For The First Claim
 

@@ -26,9 +26,9 @@ The manifest records the exact source paths.
 | PDF/UA-1 | 1 | 1 | 2 |
 | PDF/UA-2 | 1 | 1 | 2 |
 
-All eight supplemental rows have runtime unsupported-rule observations and
-remain untriaged. The oracle exits with a failure and writes the artifacts for
-review. The run found zero comparable false-compliant rows.
+The initial run found runtime unsupported-rule observations on all eight
+supplemental rows and zero comparable false-compliant rows. The oracle exits
+with a failure and writes the artifacts for review.
 
 Run the supplemental manifest against a checkout of the pinned corpus.
 
@@ -39,6 +39,33 @@ PDFV_VERAPDF_BIN=/path/to/verapdf \
   PDFV_ORACLE_OUTPUT_DIR=target/parity/t2-upstream \
   make oracle-corpus
 ```
+
+## Stream Dispatch Follow-up
+
+Metadata and content wrappers can refer to a stream already visited by the
+physical COS stream model. The validator now runs stream syntax rules on that
+physical model once. This removed the stream property errors on both PDF/A-4
+samples. The negative sample now agrees with veraPDF at `Invalid`. The
+positive sample returns `Invalid` with 28 failed checks, so its remaining
+assertions need rule-level comparison. The two PDF/A-1b rows each dropped from
+30 unsupported evaluations to 26.
+
+## Physical COS Primitive Follow-up
+
+Integer, real, string, and name checks now execute on their respective parsed
+types. The walk includes dictionary keys and compressed indirect objects.
+Array positions and dictionary entries receive distinct report locations.
+String length uses decoded bytes. Hexadecimal syntax rules use the original
+digit count, including an odd final digit before padding. Serialized parsed
+strings with syntax evidence use a `bytes` and `syntax` object. Legacy byte
+arrays remain readable.
+
+The checked-in T2 set reports one matching invalid decision and two incomplete
+decisions. Unsupported evaluations on the two PDF/A-1b positive files fell
+from 37 and 42 to 1 and 2. The remaining errors require font-program width and
+CIDSet evidence. On the eight supplemental rows, the four PDF/A cases now
+complete. Both negative cases agree with veraPDF, and both positive cases give
+incorrect `Invalid` decisions. The four PDF/UA cases remain `Incomplete`.
 
 ## Release Blockers
 
