@@ -68,14 +68,7 @@ impl BuiltinProfileRepository {
     ///
     /// Returns [`crate::PdfvError`] when built-in generated profile data is invalid.
     pub fn list_profiles(&self) -> Result<Vec<ProfileCatalogEntry>> {
-        let mut entries = Vec::with_capacity(GENERATED_PROFILE_SOURCES.len().saturating_add(1));
-        let m4 = m4_profile(pdfa_1b_flavour()?)?;
-        entries.push(ProfileCatalogEntry::from_profile(
-            &m4,
-            "pdfv-internal",
-            "built-in smoke profile",
-            "pdfa-1b",
-        )?);
+        let mut entries = Vec::with_capacity(GENERATED_PROFILE_SOURCES.len());
         for source in GENERATED_PROFILE_SOURCES {
             let import = import_generated_profile(source)?;
             entries.push(ProfileCatalogEntry::from_import(source, &import)?);
@@ -87,14 +80,11 @@ impl BuiltinProfileRepository {
 impl ProfileRepository for BuiltinProfileRepository {
     fn profiles_for(&self, selection: &FlavourSelection) -> Result<Vec<ValidationProfile>> {
         match selection {
-            FlavourSelection::Auto { default } => {
-                let Some(flavour) = default else {
-                    return Ok(Vec::new());
-                };
-                ensure_builtin_flavour(flavour)?;
-                Ok(vec![m4_profile(flavour.clone())?])
+            FlavourSelection::Auto { default: None } => Ok(Vec::new()),
+            FlavourSelection::Auto {
+                default: Some(flavour),
             }
-            FlavourSelection::Explicit { flavour } => {
+            | FlavourSelection::Explicit { flavour } => {
                 let source = builtin_source_for_flavour(flavour)?;
                 Ok(vec![import_generated_profile(source)?.profile])
             }
@@ -2083,12 +2073,9 @@ fn has_parse_fact(facts: &[ParseFact], name: &str) -> bool {
     })
 }
 
+#[cfg(test)]
 fn pdfa_1b_flavour() -> Result<ValidationFlavour> {
     Ok(ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)
-}
-
-fn ensure_builtin_flavour(flavour: &ValidationFlavour) -> Result<()> {
-    builtin_source_for_flavour(flavour).map(|_| ())
 }
 
 fn import_generated_profile(source: &GeneratedProfileSource) -> Result<ProfileImportSummary> {
@@ -2334,6 +2321,7 @@ fn parse_display_pdfua_flavour(rest: &str) -> Result<ValidationFlavour> {
     }
 }
 
+#[cfg(test)]
 fn m4_profile(flavour: ValidationFlavour) -> Result<ValidationProfile> {
     Ok(ValidationProfile {
         identity: ProfileIdentity {
@@ -2427,6 +2415,7 @@ fn m4_profile(flavour: ValidationFlavour) -> Result<ValidationProfile> {
     })
 }
 
+#[cfg(test)]
 fn rule(
     id: &str,
     object_type: &str,
@@ -3173,10 +3162,10 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "CosBM" => Some("cosBlendMode"),
         "CosArray" => Some("cosArray"),
         "CosDict" => Some("cosDictionary"),
+        "CosBBox" => Some("pageBox"),
         "CosTextString"
         | "CosUnicodeName"
         | "CosLang"
-        | "CosBBox"
         | "CosActualText"
         | "CosAlt"
         | "CosFileSpecification" => Some("object"),
@@ -4211,12 +4200,8 @@ trailer
 
         assert_eq!(profiles.len(), 1);
         assert_eq!(
-            profiles.first().map(|profile| profile.rules.len()),
-            Some(10)
-        );
-        assert_eq!(
             profiles.first().map(|profile| profile.identity.id.as_str()),
-            Some("pdfv-m4")
+            Some("verapdf-pdfa-1b")
         );
         Ok(())
     }
@@ -4283,7 +4268,7 @@ trailer
 
         assert_eq!(
             profiles.len(),
-            crate::generated_profiles::GENERATED_PROFILE_SOURCES.len() + 1
+            crate::generated_profiles::GENERATED_PROFILE_SOURCES.len()
         );
         assert!(profiles.iter().any(|profile| {
             profile.identity.id.as_str() == "verapdf-pdfua-2-iso32005"
@@ -4512,9 +4497,7 @@ trailer
         let document = Parser::default().parse(Cursor::new(bytes))?;
         let model = crate::validation::DocumentModel::new(&document);
         let object = crate::ModelObjectRef::Document(model);
-        let profile = BuiltinProfileRepository::new()
-            .profiles_for(&FlavourSelection::default())?
-            .remove(0);
+        let profile = super::m4_profile(super::pdfa_1b_flavour()?)?;
         let mut evaluator = DefaultRuleEvaluator::new(crate::ResourceLimits::default());
 
         for rule in profile
@@ -4541,36 +4524,65 @@ trailer
         let report = Validator::new(crate::ValidationOptions::default())?
             .validate_reader(Cursor::new(bytes), crate::InputName::memory())?;
 
-        assert_eq!(report.status, crate::ValidationStatus::Valid);
+        assert_eq!(report.status, crate::ValidationStatus::Invalid);
+        assert!(report.profile_reports.iter().any(|profile| {
+            profile.profile.id.as_str() == "verapdf-pdfa-1b"
+                && profile
+                    .failed_assertions
+                    .iter()
+                    .any(|assertion| assertion.rule_id.0.as_str() == "iso-19005-1-6-7-2-1")
+        }));
         Ok(())
     }
 
     #[test]
-    fn test_should_validate_stream_with_declared_length_and_eol() -> crate::Result<()> {
-        let bytes = br"%PDF-1.7
+    fn test_should_accept_lf_and_crlf_after_stream_keyword() -> crate::Result<()> {
+        for (separator, expected) in [
+            ("\n", crate::AssertionStatus::Passed),
+            ("\r\n", crate::AssertionStatus::Passed),
+            ("\r", crate::AssertionStatus::Failed),
+        ] {
+            let bytes = format!(
+                "%PDF-1.7
 1 0 obj
 << /Type /Catalog >>
 endobj
 2 0 obj
 << /Length 4 >>
-stream
-abc
+stream{separator}abc
 endstream
 endobj
 trailer
 << /Root 1 0 R >>
 %%EOF
-";
-        let report = Validator::new(crate::ValidationOptions::default())?
-            .validate_reader(Cursor::new(bytes), crate::InputName::memory())?;
-
-        assert_eq!(report.status, crate::ValidationStatus::Valid);
+"
+            );
+            let options = crate::ValidationOptions::builder()
+                .record_passed_assertions(true)
+                .build();
+            let report = Validator::new(options)?
+                .validate_reader(Cursor::new(bytes.into_bytes()), crate::InputName::memory())?;
+            assert!(
+                report.profile_reports.iter().any(|profile| {
+                    profile
+                        .passed_assertions
+                        .iter()
+                        .chain(&profile.failed_assertions)
+                        .any(|assertion| {
+                            assertion.rule_id.0.as_str() == "iso-19005-1-6-1-7-2"
+                                && assertion.status == expected
+                        })
+                }),
+                "expected {expected:?} for {separator:?}"
+            );
+        }
         Ok(())
     }
 
     #[test]
     fn test_should_apply_m4_feature_fact_rules_to_linked_objects() -> crate::Result<()> {
-        let report = Validator::new(crate::ValidationOptions::default())?
+        let repository = Arc::new(StaticRepo(super::m4_profile(super::pdfa_1b_flavour()?)?));
+        let report = Validator::with_profiles(crate::ValidationOptions::default(), repository)?
             .validate_reader(Cursor::new(m4_feature_pdf()), crate::InputName::memory())?;
         let profile =
             report
@@ -4660,7 +4672,8 @@ trailer
 << /Root 1 0 R >>
 %%EOF
 ";
-        let report = Validator::new(crate::ValidationOptions::default())?
+        let repository = Arc::new(StaticRepo(super::m4_profile(super::pdfa_1b_flavour()?)?));
+        let report = Validator::with_profiles(crate::ValidationOptions::default(), repository)?
             .validate_reader(Cursor::new(bytes), crate::InputName::memory())?;
         let profile =
             report

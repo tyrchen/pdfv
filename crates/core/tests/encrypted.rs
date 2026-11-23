@@ -45,7 +45,7 @@ fn test_should_validate_rc4_encrypted_fixture_with_user_password() -> Result<(),
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
     assert!(report.parse_facts.iter().any(|fact| {
         matches!(
             fact,
@@ -71,7 +71,7 @@ fn test_should_validate_aesv2_encrypted_fixture_with_owner_password() -> Result<
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
     assert!(report.parse_facts.iter().any(|fact| {
         matches!(
             fact,
@@ -97,7 +97,7 @@ fn test_should_validate_r5_aesv3_fixture_with_user_password() -> Result<(), Box<
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
     assert!(report.parse_facts.iter().any(|fact| {
         matches!(
             fact,
@@ -123,7 +123,14 @@ fn test_should_validate_r5_aesv3_fixture_with_owner_password() -> Result<(), Box
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Encryption {
+            decrypted: true,
+            ..
+        }
+    )));
     Ok(())
 }
 
@@ -138,7 +145,7 @@ fn test_should_validate_r6_aesv3_fixture_with_user_password() -> Result<(), Box<
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
     assert!(report.parse_facts.iter().any(|fact| {
         matches!(
             fact,
@@ -164,7 +171,14 @@ fn test_should_validate_r6_aesv3_fixture_with_owner_password() -> Result<(), Box
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Encryption {
+            decrypted: true,
+            ..
+        }
+    )));
     Ok(())
 }
 
@@ -687,7 +701,7 @@ fn test_should_validate_rc4_revision_three_fixture() -> Result<(), Box<dyn Error
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
     assert!(report.parse_facts.iter().any(|fact| {
         matches!(
             fact,
@@ -712,7 +726,7 @@ fn test_should_validate_rc4_crypt_filter_revision_four_fixture() -> Result<(), B
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
     assert!(report.parse_facts.iter().any(|fact| {
         matches!(
             fact,
@@ -763,7 +777,14 @@ fn test_should_leave_metadata_stream_unencrypted_when_encrypt_metadata_false()
     let report =
         Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Encryption {
+            decrypted: true,
+            ..
+        }
+    )));
     Ok(())
 }
 

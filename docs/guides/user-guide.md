@@ -49,8 +49,8 @@ pdfv validate ./incoming --recursive --non-pdf-extension --format json
 ## Select Profiles
 
 Let pdfv detect the flavour from XMP metadata. If detection finds no supported
-claim, it currently runs the basic `pdfv-m4` profile and labels the fallback
-flavour PDF/A-1b.
+claim, pdfv runs the generated profile for `--default-flavour`. The default is
+PDF/A-1b, with the same conformance rules as an explicit `--flavour pdfa-1b`.
 
 ```bash
 pdfv validate document.pdf --flavour auto --default-flavour pdfa-1b

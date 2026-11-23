@@ -11,9 +11,9 @@ use quick_xml::{Reader, events::Event};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BoundedText, CosObject, Identifier, ObjectKey, ParseError, ParseFact, PdfvError,
-    ProfileRepository, ResourceLimits, Result, ValidationFlavour, ValidationProfile,
-    ValidationWarning, XmpFact, display_flavour,
+    BoundedText, CosObject, Identifier, ObjectKey, ParseError, ParseFact, ParsedDocument,
+    PdfvError, ProfileRepository, ResourceLimits, Result, StreamObject, ValidationFlavour,
+    ValidationProfile, ValidationWarning, XmpFact, display_flavour,
 };
 
 const PDF_A_ID_NS: &str = "http://www.aiim.org/pdfa/ns/id/";
@@ -180,13 +180,14 @@ impl FlavourDetector {
     ) -> Result<DetectedFlavours> {
         let parsed_xmp = parse_document_xmp(document, limits, true)?;
         let Some(packet) = parsed_xmp.packet else {
-            let mut fallback = self.fallback(default, "catalog metadata stream is missing")?;
-            fallback.parse_facts = parsed_xmp.parse_facts;
-            fallback.warnings = parsed_xmp.warnings;
-            return Ok(fallback);
+            return Ok(DetectedFlavours {
+                packet: None,
+                profiles: self.fallback_profiles(default)?,
+                parse_facts: parsed_xmp.parse_facts,
+                warnings: parsed_xmp.warnings,
+            });
         };
 
-        let mut parse_facts = parsed_xmp.parse_facts;
         let mut warnings = parsed_xmp.warnings;
         let mut profiles = Vec::new();
         for claim in &packet.identification {
@@ -203,52 +204,27 @@ impl FlavourDetector {
             }
         }
         if profiles.is_empty() {
-            let mut fallback =
-                self.fallback(default, "XMP metadata contains no supported claims")?;
-            fallback.parse_facts.append(&mut parse_facts);
-            fallback.warnings.extend(warnings);
-            fallback.packet = Some(packet);
-            return Ok(fallback);
+            warnings.push(ValidationWarning::AutoDetection {
+                message: BoundedText::unchecked("XMP metadata contains no supported claims"),
+            });
+            profiles = self.fallback_profiles(default)?;
+        } else {
+            profiles = select_compatible_profiles(profiles, &mut warnings)?;
         }
-        let compatible_profiles = select_compatible_profiles(profiles, &mut warnings)?;
         Ok(DetectedFlavours {
             packet: Some(packet),
-            profiles: compatible_profiles,
-            parse_facts,
+            profiles,
+            parse_facts: parsed_xmp.parse_facts,
             warnings,
         })
     }
 
-    fn fallback(
+    fn fallback_profiles(
         &self,
         default: Option<&ValidationFlavour>,
-        reason: &'static str,
-    ) -> Result<DetectedFlavours> {
-        let warning = ValidationWarning::AutoDetection {
-            message: BoundedText::unchecked(reason),
-        };
-        self.fallback_with_warning(default, warning)
-    }
-
-    fn fallback_with_warning(
-        &self,
-        default: Option<&ValidationFlavour>,
-        warning: ValidationWarning,
-    ) -> Result<DetectedFlavours> {
-        let warnings = vec![warning];
-        let profiles = if let Some(flavour) = default {
-            self.profiles.profiles_for(&crate::FlavourSelection::Auto {
-                default: Some(flavour.clone()),
-            })?
-        } else {
-            self.profiles
-                .profiles_for(&crate::FlavourSelection::Auto { default: None })?
-        };
-        Ok(DetectedFlavours {
-            packet: None,
-            profiles,
-            parse_facts: Vec::new(),
-            warnings,
+    ) -> Result<Vec<ValidationProfile>> {
+        self.profiles.profiles_for(&crate::FlavourSelection::Auto {
+            default: default.cloned(),
         })
     }
 }
@@ -1057,37 +1033,23 @@ struct XmpProperty {
     extension_scope: Option<u64>,
 }
 
-fn catalog_xmp_bytes(
-    document: &crate::ParsedDocument,
-    limits: &ResourceLimits,
+fn catalog_xmp_stream<'a>(
+    document: &'a ParsedDocument,
     warnings: &mut Vec<ValidationWarning>,
-) -> Result<Option<(ObjectKey, Vec<u8>)>> {
-    let Some(catalog_key) = document.catalog else {
-        return Ok(None);
-    };
-    let Some(catalog) = document.objects.get(&catalog_key) else {
-        return Ok(None);
-    };
-    let Some(dictionary) = catalog.object.as_dictionary() else {
-        return Ok(None);
-    };
+) -> Option<(ObjectKey, &'a StreamObject)> {
+    let catalog = document.objects.get(&document.catalog?)?;
+    let dictionary = catalog.object.as_dictionary()?;
     let Some(CosObject::Reference(metadata_key)) = dictionary.get("Metadata") else {
-        return Ok(None);
+        return None;
     };
-    let Some(metadata) = document.objects.get(metadata_key) else {
-        return Ok(None);
-    };
+    let metadata = document.objects.get(metadata_key)?;
     let CosObject::Stream(stream) = &metadata.object else {
         warnings.push(ValidationWarning::AutoDetection {
             message: BoundedText::unchecked("catalog metadata is not a stream"),
         });
-        return Ok(None);
+        return None;
     };
-    let mut xmp_limits = limits.clone();
-    xmp_limits.max_stream_decode_bytes = limits.max_stream_decode_bytes.min(limits.max_xmp_bytes);
-    let bytes = stream.decoded_bytes(&xmp_limits)?;
-    enforce_xmp_len(bytes.len(), limits.max_xmp_bytes)?;
-    Ok(Some((*metadata_key, bytes)))
+    Some((*metadata_key, stream))
 }
 
 /// Parses catalog XMP metadata without deciding validation profiles.
@@ -1101,8 +1063,8 @@ pub(crate) fn parse_document_xmp(
     report_absent_metadata: bool,
 ) -> Result<XmpParseResult> {
     let mut warnings = Vec::new();
-    let Some((object, bytes)) = catalog_xmp_bytes(document, limits, &mut warnings)? else {
-        if report_absent_metadata {
+    let Some((object, stream)) = catalog_xmp_stream(document, &mut warnings) else {
+        if report_absent_metadata && warnings.is_empty() {
             warnings.push(ValidationWarning::AutoDetection {
                 message: BoundedText::unchecked("catalog metadata stream is missing"),
             });
@@ -1112,6 +1074,30 @@ pub(crate) fn parse_document_xmp(
             parse_facts: Vec::new(),
             warnings,
         });
+    };
+    let mut xmp_limits = limits.clone();
+    xmp_limits.max_stream_decode_bytes = limits.max_stream_decode_bytes.min(limits.max_xmp_bytes);
+    let bytes = match stream.decoded_bytes(&xmp_limits) {
+        Ok(bytes) => bytes,
+        Err(error @ (ParseError::StreamDecode { .. } | ParseError::UnsupportedFilter { .. })) => {
+            let reason = BoundedText::new(error.to_string(), 512)
+                .unwrap_or_else(|_| BoundedText::unchecked("XMP stream decoding failed"));
+            warnings.push(ValidationWarning::AutoDetection {
+                message: reason.clone(),
+            });
+            let parse_facts = xmp_parse_facts(
+                object,
+                &[XmpFact::Malformed { reason }],
+                limits.max_parse_facts,
+                &mut warnings,
+            );
+            return Ok(XmpParseResult {
+                packet: None,
+                parse_facts,
+                warnings,
+            });
+        }
+        Err(error) => return Err(error.into()),
     };
     if document.is_encrypted() && !looks_like_xml(&bytes) {
         return Ok(XmpParseResult {
@@ -1124,7 +1110,12 @@ pub(crate) fn parse_document_xmp(
     match parser.parse_packet(object, &bytes, limits) {
         Ok(packet) => {
             warnings.extend(packet_warnings(&packet)?);
-            let parse_facts = xmp_parse_facts(&packet, limits.max_parse_facts, &mut warnings)?;
+            let parse_facts = xmp_parse_facts(
+                packet.source_object,
+                &packet.facts,
+                limits.max_parse_facts,
+                &mut warnings,
+            );
             Ok(XmpParseResult {
                 packet: Some(packet),
                 parse_facts,
@@ -1137,9 +1128,15 @@ pub(crate) fn parse_document_xmp(
         Err(error) => {
             let reason = BoundedText::new(error.to_string(), 512)
                 .unwrap_or_else(|_| BoundedText::unchecked("XMP parse failed"));
-            let fact = malformed_fact(reason.clone());
-            let parse_facts = vec![ParseFact::Xmp { object, fact }];
-            warnings.push(ValidationWarning::AutoDetection { message: reason });
+            warnings.push(ValidationWarning::AutoDetection {
+                message: reason.clone(),
+            });
+            let parse_facts = xmp_parse_facts(
+                object,
+                &[malformed_fact(reason)],
+                limits.max_parse_facts,
+                &mut warnings,
+            );
             Ok(XmpParseResult {
                 packet: None,
                 parse_facts,
@@ -1204,27 +1201,21 @@ fn compatibility_group(flavour: &ValidationFlavour) -> &'static str {
 }
 
 fn xmp_parse_facts(
-    packet: &XmpPacket,
+    object: ObjectKey,
+    facts: &[XmpFact],
     max_parse_facts: usize,
     warnings: &mut Vec<ValidationWarning>,
-) -> Result<Vec<ParseFact>> {
-    let retained = packet.facts.len().min(max_parse_facts);
-    if packet.facts.len() > retained {
+) -> Vec<ParseFact> {
+    if facts.len() > max_parse_facts {
         warnings.push(ValidationWarning::ParseFactCapReached {
             cap: max_parse_facts,
         });
     }
-    packet
-        .facts
+    facts
         .iter()
-        .take(retained)
+        .take(max_parse_facts)
         .cloned()
-        .map(|fact| {
-            Ok(ParseFact::Xmp {
-                object: packet.source_object,
-                fact,
-            })
-        })
+        .map(|fact| ParseFact::Xmp { object, fact })
         .collect()
 }
 

@@ -8,11 +8,11 @@ The JSON report uses camelCase fields and includes source summary, status, selec
 
 ```json
 {
-  "engineVersion": "0.1.0",
+  "engineVersion": "0.1.3",
   "source": {
     "kind": "file",
-    "path": "tests/fixtures/minimal-valid.pdf",
-    "bytes": 80
+    "path": "apps/cli/tests/fixtures/minimal-pdfa-1b.pdf",
+    "bytes": 1001
   },
   "status": "valid",
   "flavours": [
@@ -25,13 +25,13 @@ The JSON report uses camelCase fields and includes source summary, status, selec
   "profileReports": [
     {
       "profile": {
-        "id": "pdfv-m4",
-        "name": "pdfv M4 built-in profile",
-        "version": "0.1.0"
+        "id": "verapdf-pdfa-1b",
+        "name": "PDF/A-1b validation profile",
+        "version": "verapdf-generated"
       },
       "isCompliant": true,
-      "checksExecuted": 3,
-      "rulesExecuted": 3,
+      "checksExecuted": 92,
+      "rulesExecuted": 92,
       "failedRules": 0,
       "failedAssertions": [],
       "passedAssertions": [],

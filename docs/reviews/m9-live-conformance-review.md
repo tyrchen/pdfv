@@ -183,11 +183,24 @@ Adobe-Japan1 even though the font dictionary omits ToUnicode. Both Unicode
 rules now pass for all eight codes. The document still has incomplete
 assertions outside those rules.
 
+## Automatic Fallback Follow-up
+
+Automatic validation uses the generated profile for the configured fallback
+flavour when XMP is absent, unreadable, or contains no supported claim. XMP
+diagnostics remain in the report. The PDF/A-1b, PDF/A-2, and PDF/A-3 stream
+syntax checks accept both LF and CRLF after the `stream` keyword.
+
+The missing XMP and unsupported PDF/A identification controls return `Invalid` with
+the generated PDF/A-1b profile in both engines. The LF stream sample has a
+supported PDF/A-1b claim and passes in both engines.
+
+The PDF/A-2 and PDF/A-3 size rule applies to the five named page boundaries.
+`MediaBox` and `CropBox` can be inherited. `BleedBox`, `TrimBox`, and `ArtBox`
+are read from the page. The T2 PDF/A-2b controls exercise a 100-unit
+`MediaBox` that passes and a 2-unit `MediaBox` that fails `6.1.13-11`.
+
 ## Release Blockers
 
-- The automatic fallback still selects the ten-rule `pdfv-m4` profile. veraPDF
-  selects the full fallback profile. The live comparison marks the two
-  executions as incompatible.
 - The four supplemental PDF/UA documents remain incomplete. Open work includes
   inherited and predefined non-Identity font encodings, symbolic TrueType
   font evidence, and rules scoped to language strings and file specifications.

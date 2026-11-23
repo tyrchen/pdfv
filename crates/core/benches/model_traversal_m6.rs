@@ -223,7 +223,7 @@ endobj
 fn bench_structure_tree_10k_nodes(c: &mut Criterion) {
     let fixture = structure_tree_pdf(10_000);
     let mut limits = ResourceLimits::default();
-    limits.max_objects = 40_000;
+    limits.max_objects = 200_000;
     limits.max_structure_nodes = 20_000;
     let options = ValidationOptions::builder()
         .resource_limits(limits)

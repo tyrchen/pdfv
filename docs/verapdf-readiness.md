@@ -37,15 +37,17 @@ Current release-hardening evidence is stored in
 | Release-blocking unsupported clusters | 0 |
 | Java-free parity corpus rows | 13 |
 | Java-free parity corpus unexpected drift | 0 |
-| Live T2 public oracle rows | 3 |
+| Live T2 public oracle rows | 8 |
 | Live T2 unexpected drift | 0 |
 | Live T2 false-compliant rows | 0 |
 | Live T3 release-lab rows | 0 |
 
 ## Known Drift
 
-The three rows in the checked-in public T2 manifest agree with veraPDF.
-Both PDF/A-1b positives are valid and the negative remains invalid.
+All eight rows in the checked-in public T2 manifest agree with veraPDF. Five
+use automatic profile selection. The two files with absent or unsupported
+XMP identification select the PDF/A-1b fallback and return `Invalid`. The
+other three exercise a PDF/A-1b claim and two PDF/A-2b page boundary controls.
 The supplemental public PDF/UA fixtures and some font formats still exercise
 runtime evidence gaps. See the [live conformance review](reviews/m9-live-conformance-review.md).
 

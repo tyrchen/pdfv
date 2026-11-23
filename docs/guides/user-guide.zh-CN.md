@@ -49,7 +49,8 @@ pdfv validate ./incoming --recursive --non-pdf-extension --format json
 ## 选择 Profile
 
 让 `pdfv` 根据 XMP 元数据自动判断 flavour。没有识别到受支持的声明时，
-当前会运行基础检查 `pdfv-m4`，并把回退 flavour 标记为 PDF/A-1b。
+pdfv 会执行 `--default-flavour` 对应的完整规则。默认回退到 PDF/A-1b，
+与显式传入 `--flavour pdfa-1b` 使用同一套规则。
 
 ```bash
 pdfv validate document.pdf --flavour auto --default-flavour pdfa-1b

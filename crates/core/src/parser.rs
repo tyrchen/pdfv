@@ -858,7 +858,7 @@ pub struct StreamObject {
     /// Shared source bytes used for lazy stream decoding.
     #[serde(skip, default = "empty_source")]
     pub raw_source: Arc<[u8]>,
-    /// Whether the `stream` keyword is followed by CRLF.
+    /// Whether the `stream` keyword is followed by LF or CRLF.
     pub stream_keyword_crlf_compliant: bool,
     /// Whether `endstream` is preceded by an EOL marker.
     pub endstream_keyword_eol_compliant: bool,
@@ -1984,7 +1984,7 @@ impl<'a> ByteParser<'a> {
     ) -> std::result::Result<StreamObject, ParseError> {
         self.skip_ws_and_comments();
         self.consume_bytes(STREAM_MARKER)?;
-        let stream_keyword_crlf_compliant = self.starts_with(b"\r\n");
+        let stream_keyword_crlf_compliant = self.starts_with(b"\r\n") || self.starts_with(b"\n");
         if self.starts_with(b"\r\n") {
             self.consume_bytes(b"\r\n")?;
         } else if self.starts_with(b"\n") || self.starts_with(b"\r") {

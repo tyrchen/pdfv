@@ -1,7 +1,8 @@
-use std::{error::Error, io::Cursor};
+use std::{collections::BTreeSet, error::Error, io::Cursor, num::NonZeroU32};
 
 use pdfv_core::{
-    FlavourSelection, InputName, ParseFact, ValidationOptions, ValidationStatus, Validator, XmpFact,
+    Assertion, FlavourSelection, InputName, ParseFact, ResourceLimits, ValidationFlavour,
+    ValidationOptions, ValidationStatus, ValidationWarning, Validator, XmpFact,
 };
 
 const MINIMAL_VALID: &[u8] = include_bytes!("fixtures/minimal-valid.pdf");
@@ -9,13 +10,20 @@ const LEADING_BYTES_INVALID: &[u8] = include_bytes!("fixtures/leading-bytes-inva
 const NOT_A_PDF: &[u8] = include_bytes!("fixtures/not-a-pdf.pdf");
 const XREF_STREAM_OBJECT_STREAM_VALID: &[u8] =
     include_bytes!("fixtures/xref-stream-object-stream-valid.pdf");
+const UNSUPPORTED_XMP_PART: &[u8] = include_bytes!("fixtures/unknown-xmp-part.pdf");
 
 #[test]
-fn test_should_validate_shared_valid_fixture() -> Result<(), Box<dyn Error>> {
+fn test_should_reject_minimal_pdf_without_pdfa_metadata() -> Result<(), Box<dyn Error>> {
     let report = Validator::new(pdfv_core::ValidationOptions::default())?
         .validate_reader(Cursor::new(MINIMAL_VALID), InputName::memory())?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
+    assert!(report.profile_reports.iter().any(|profile| {
+        profile
+            .failed_assertions
+            .iter()
+            .any(|assertion| assertion.rule_id.0.as_str() == "iso-19005-1-6-7-2-1")
+    }));
     Ok(())
 }
 
@@ -44,13 +52,93 @@ fn test_should_report_shared_parse_failure_fixture() -> Result<(), Box<dyn Error
 }
 
 #[test]
-fn test_should_validate_shared_m1_xref_and_object_stream_fixture() -> Result<(), Box<dyn Error>> {
+fn test_should_reject_xref_and_object_stream_fixture_under_pdfa_1b() -> Result<(), Box<dyn Error>> {
     let report = Validator::new(pdfv_core::ValidationOptions::default())?.validate_reader(
         Cursor::new(XREF_STREAM_OBJECT_STREAM_VALID),
         InputName::memory(),
     )?;
 
-    assert_eq!(report.status, ValidationStatus::Valid);
+    assert_eq!(report.status, ValidationStatus::Invalid);
+    Ok(())
+}
+
+#[test]
+fn test_should_scope_pdfa_page_boundary_rules_to_effective_page_boxes() -> Result<(), Box<dyn Error>>
+{
+    let bytes = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OtherNumbers [0 0 1 1] >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids 6 0 R /Count 2 /MediaBox 5 0 R /CropBox [0 0 3 14400]
+   /TrimBox [0 0 1 1] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /BleedBox [100 100 0 0] >>
+endobj
+4 0 obj
+<< /Type 7 0 R /Parent 2 0 R /CropBox [0 0 2.5 100] >>
+endobj
+5 0 obj
+[0 0 100 100]
+endobj
+6 0 obj
+[3 0 R 4 0 R]
+endobj
+7 0 obj
+/Page
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+";
+    let options = ValidationOptions::builder()
+        .flavour(FlavourSelection::Explicit {
+            flavour: ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(2).ok_or("invalid part")?,
+                "b",
+            )?,
+        })
+        .record_passed_assertions(true)
+        .build();
+    let report =
+        Validator::new(options)?.validate_reader(Cursor::new(bytes), InputName::memory())?;
+    let profile = report
+        .profile_reports
+        .first()
+        .ok_or("missing PDF/A-2b report")?;
+    let rule = "iso-19005-2-6-1-13-11";
+    assert!(
+        !profile
+            .unsupported_rules
+            .iter()
+            .any(|result| result.rule_id.0.as_str() == rule)
+    );
+    let contexts = |assertions: &[Assertion]| {
+        assertions
+            .iter()
+            .filter(|assertion| assertion.rule_id.0.as_str() == rule)
+            .filter_map(|assertion| assertion.object_context.as_ref())
+            .map(|context| context.as_str().to_owned())
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(
+        contexts(&profile.passed_assertions),
+        [
+            "root/page[0]/BleedBox[0]",
+            "root/page[0]/CropBox[0]",
+            "root/page[0]/MediaBox[0]",
+            "root/page[1]/MediaBox[0]"
+        ]
+        .map(str::to_owned)
+        .into_iter()
+        .collect()
+    );
+    assert_eq!(
+        contexts(&profile.failed_assertions),
+        ["root/page[1]/CropBox[0]".to_owned()].into_iter().collect()
+    );
     Ok(())
 }
 
@@ -291,6 +379,77 @@ fn test_should_warn_for_incompatible_xmp_claim() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_should_validate_default_pdfa_profile_when_xmp_claim_is_unsupported()
+-> Result<(), Box<dyn Error>> {
+    let report = Validator::new(ValidationOptions::default())?
+        .validate_reader(Cursor::new(UNSUPPORTED_XMP_PART), InputName::memory())?;
+
+    assert_eq!(report.status, ValidationStatus::Invalid);
+    assert!(report.profile_reports.iter().any(|profile| {
+        profile.profile.id.as_str() == "verapdf-pdfa-1b"
+            && profile
+                .failed_assertions
+                .iter()
+                .any(|assertion| assertion.rule_id.0.as_str() == "iso-19005-1-6-7-11-2")
+    }));
+    assert!(report.warnings.iter().any(|warning| matches!(
+        warning,
+        pdfv_core::ValidationWarning::IncompatibleProfile { profile_id, .. }
+            if profile_id.as_str() == "pdfa-9b"
+    )));
+    Ok(())
+}
+
+#[test]
+fn test_should_validate_default_profile_when_metadata_stream_cannot_decode()
+-> Result<(), Box<dyn Error>> {
+    let bytes = pdf_with_metadata_stream_entries(
+        "corrupt deflate stream",
+        "/Type /Metadata /Subtype /XML /Filter /FlateDecode",
+    );
+    let report = Validator::new(ValidationOptions::default())?
+        .validate_reader(Cursor::new(bytes), InputName::memory())?;
+
+    assert_eq!(report.status, ValidationStatus::Invalid);
+    assert_eq!(
+        report
+            .profile_reports
+            .first()
+            .map(|profile| profile.profile.id.as_str()),
+        Some("verapdf-pdfa-1b")
+    );
+    assert!(report.profile_reports.iter().any(|profile| {
+        profile
+            .failed_assertions
+            .iter()
+            .any(|assertion| assertion.rule_id.0.as_str() == "iso-19005-1-6-7-2-2")
+    }));
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Xmp { fact: XmpFact::Malformed { reason }, .. }
+            if reason.as_str().contains("stream decode failed")
+    )));
+    Ok(())
+}
+
+#[test]
+fn test_should_keep_decode_warning_when_parse_facts_are_capped() -> Result<(), Box<dyn Error>> {
+    let mut limits = ResourceLimits::default();
+    limits.max_parse_facts = 0;
+    let options = ValidationOptions::builder().resource_limits(limits).build();
+    let bytes = pdf_with_metadata_stream_entries("corrupt deflate stream", "/Filter /FlateDecode");
+    let report =
+        Validator::new(options)?.validate_reader(Cursor::new(bytes), InputName::memory())?;
+
+    assert_eq!(report.parse_facts, [] as [ParseFact; 0]);
+    assert!(report.warnings.iter().any(|warning| matches!(
+        warning,
+        ValidationWarning::AutoDetection { message } if message.as_str().contains("stream decode failed")
+    )));
+    Ok(())
+}
+
+#[test]
 fn test_should_skip_incompatible_xmp_profile_groups() -> Result<(), Box<dyn Error>> {
     let report = Validator::new(
         ValidationOptions::builder()
@@ -400,7 +559,10 @@ fn pdfa_xmp(part: &str, conformance: &str) -> String {
 }
 
 fn pdf_with_metadata(xmp: impl AsRef<str>) -> Vec<u8> {
-    let xmp = xmp.as_ref();
+    pdf_with_metadata_stream_entries(xmp.as_ref(), "")
+}
+
+fn pdf_with_metadata_stream_entries(xmp: &str, entries: &str) -> Vec<u8> {
     let mut bytes = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     push_object(
@@ -409,7 +571,7 @@ fn pdf_with_metadata(xmp: impl AsRef<str>) -> Vec<u8> {
         1,
         "<< /Type /Catalog /Metadata 2 0 R /Pages 3 0 R >>",
     );
-    push_stream_object(&mut bytes, &mut offsets, 2, xmp.as_bytes());
+    push_stream_object(&mut bytes, &mut offsets, 2, xmp.as_bytes(), entries);
     push_object(
         &mut bytes,
         &mut offsets,
@@ -439,10 +601,20 @@ fn push_object(bytes: &mut Vec<u8>, offsets: &mut Vec<usize>, number: usize, bod
     bytes.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
 }
 
-fn push_stream_object(bytes: &mut Vec<u8>, offsets: &mut Vec<usize>, number: usize, stream: &[u8]) {
+fn push_stream_object(
+    bytes: &mut Vec<u8>,
+    offsets: &mut Vec<usize>,
+    number: usize,
+    stream: &[u8],
+    entries: &str,
+) {
     offsets.push(bytes.len());
     bytes.extend_from_slice(
-        format!("{number} 0 obj\n<< /Length {} >>\nstream\n", stream.len()).as_bytes(),
+        format!(
+            "{number} 0 obj\n<< /Length {} {entries} >>\nstream\n",
+            stream.len()
+        )
+        .as_bytes(),
     );
     bytes.extend_from_slice(stream);
     bytes.extend_from_slice(b"\nendstream\nendobj\n");

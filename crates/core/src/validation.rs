@@ -65,6 +65,7 @@ const PAGE_INHERITED_PROPERTIES: &[&str] = &[
     "ArtBox",
     "Rotate",
 ];
+const PAGE_BOX_COORDINATES: &[&str] = &["left", "bottom", "right", "top"];
 const PAGE_DIRECT_PROPERTIES: &[&str] = &[
     "Type",
     "Parent",
@@ -2353,6 +2354,7 @@ impl ModelRegistry {
             ),
             family("page", PAGE_PROPERTIES, PAGE_LINKS),
             family("pageTree", PAGE_TREE_PROPERTIES, EMPTY_LINK_NAMES),
+            family("pageBox", PAGE_BOX_COORDINATES, EMPTY_LINK_NAMES),
             family("resource", RESOURCE_PROPERTIES, EMPTY_LINK_NAMES),
             family("names", NAMES_PROPERTIES, NAMES_LINKS),
             family("outline", OUTLINE_PROPERTIES, OUTLINE_LINKS),
@@ -2592,7 +2594,7 @@ impl ModelRegistry {
             && structure_roles::rule_family(family.as_str()).is_none()
             && !matches!(
                 family.as_str(),
-                glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY | glyphs::UNICODE_FAMILY
+                "pageBox" | glyphs::WIDTH_FAMILY | glyphs::CID_SET_FAMILY | glyphs::UNICODE_FAMILY
             )
             && self.has_family(family)
     }
@@ -3568,6 +3570,7 @@ impl<'a> ModelGraph<'a> {
                         | "catalog"
                         | "metadata"
                         | "page"
+                        | "pageBox"
                         | "font"
                         | "annotation"
                         | "outputIntent"
@@ -5033,9 +5036,19 @@ impl<'a> PageModel<'a> {
         let mut stack = vec![pages_root];
         let mut pages = Vec::new();
         let mut visited = HashSet::new();
+        let mut expanded_kids = HashSet::new();
         while let Some(key) = stack.pop() {
             if !visited.insert(key) {
                 continue;
+            }
+            if u64::try_from(visited.len()).map_err(|_| ValidationError::LimitExceeded {
+                limit: "max_objects",
+            })? > limits.max_objects
+            {
+                return Err(ValidationError::LimitExceeded {
+                    limit: "max_objects",
+                }
+                .into());
             }
             let Some(object) = document.objects.get(&key) else {
                 continue;
@@ -5043,8 +5056,8 @@ impl<'a> PageModel<'a> {
             let Some(dictionary) = object.object.as_dictionary() else {
                 continue;
             };
-            match dictionary.get("Type") {
-                Some(crate::CosObject::Name(name)) if name.matches("Page") => {
+            match semantic_names::name(document, dictionary.get("Type")) {
+                Some(name) if name.matches("Page") => {
                     if pages.len() >= max_objects {
                         return Err(ValidationError::LimitExceeded {
                             limit: "max_objects",
@@ -5067,22 +5080,21 @@ impl<'a> PageModel<'a> {
                     });
                 }
                 _ => {
-                    for kid in object_refs_from_array(dictionary.get("Kids"))
-                        .into_iter()
-                        .rev()
+                    let kids = dictionary.get("Kids");
+                    if let Some(crate::CosObject::Reference(key)) = kids
+                        && !expanded_kids.insert(*key)
                     {
-                        stack.push(kid);
+                        continue;
+                    }
+                    if let Some(crate::CosObject::Array(kids)) =
+                        semantic_names::resolve(document, kids)
+                    {
+                        stack.extend(kids.iter().rev().filter_map(|kid| match kid {
+                            crate::CosObject::Reference(key) => Some(*key),
+                            _ => None,
+                        }));
                     }
                 }
-            }
-            if u64::try_from(visited.len()).map_err(|_| ValidationError::LimitExceeded {
-                limit: "max_objects",
-            })? > limits.max_objects
-            {
-                return Err(ValidationError::LimitExceeded {
-                    limit: "max_objects",
-                }
-                .into());
             }
         }
         Ok(pages)
@@ -5159,6 +5171,9 @@ fn page_linked_objects<'a>(
     max_objects: usize,
 ) -> Result<Vec<ModelObjectRef<'a>>> {
     let mut objects = Vec::new();
+    if graph.materializes("pageBox") {
+        append_page_boxes(page, graph.document, &mut objects, max_objects)?;
+    }
     let mut content_streams = graph.content_streams(page, max_objects)?;
     content_streams.reverse();
     for content_stream in content_streams {
@@ -5195,6 +5210,61 @@ fn page_linked_objects<'a>(
         push_linked(&mut objects, ModelObjectRef::Generic(action), max_objects)?;
     }
     Ok(objects)
+}
+
+fn append_page_boxes<'a>(
+    page: &PageModel<'a>,
+    document: &'a ParsedDocument,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max_objects: usize,
+) -> Result<()> {
+    for (ordinal, (name, inherited)) in [
+        ("MediaBox", true),
+        ("CropBox", true),
+        ("BleedBox", false),
+        ("TrimBox", false),
+        ("ArtBox", false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let value = if inherited {
+            inherited_page_value(document, page.key, name, page.limits)?
+        } else {
+            page.dictionary.get(name)
+        };
+        let Some(crate::CosObject::Array(coordinates)) = semantic_names::resolve(document, value)
+        else {
+            continue;
+        };
+        let values = (0..PAGE_BOX_COORDINATES.len())
+            .map(|index| ModelValue::Number(page_box_coordinate(coordinates.get(index))))
+            .collect();
+        let mut model = GenericModel::new_value(
+            document,
+            "pageBox",
+            ModelValue::List(values),
+            ordinal,
+            format!("root/page[{}]/{name}[0]", page.ordinal),
+        );
+        model.supertypes.clear();
+        push_linked(objects, ModelObjectRef::Generic(model), max_objects)?;
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "veraPDF converts each PDF page box coordinate to a double before subtraction"
+)]
+fn page_box_coordinate(value: Option<&crate::CosObject>) -> f64 {
+    match value {
+        Some(crate::CosObject::Integer(value)) => *value as f64,
+        Some(crate::CosObject::Real(value)) => *value,
+        // The upstream box model returns null for missing and non-number entries.
+        // Its rule engine coerces null to zero in the dimension subtraction.
+        _ => 0.0,
+    }
 }
 
 /// Font dictionary model wrapper.
@@ -10521,6 +10591,15 @@ impl ModelObject for GenericModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        if self.object_type.as_str() == "pageBox"
+            && let Some(ModelValue::List(values)) = &self.direct_value
+            && let Some(index) = PAGE_BOX_COORDINATES
+                .iter()
+                .position(|coordinate| *coordinate == name.as_str())
+            && let Some(value) = values.get(index)
+        {
+            return Ok(value.clone());
+        }
         if self.object_type.as_str() == "documentInfo" {
             if name.as_str() == "size" {
                 return usize_to_f64(self.dictionary.len()).map(ModelValue::Number);

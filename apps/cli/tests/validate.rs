@@ -21,6 +21,7 @@ use rc4::{Rc4, StreamCipher};
 use sha2::{Sha256, Sha384, Sha512};
 use tempfile::tempdir;
 
+const VALID_PDFA_1B: &[u8] = include_bytes!("fixtures/minimal-pdfa-1b.pdf");
 const MINIMAL_VALID: &[u8] = include_bytes!("fixtures/minimal-valid.pdf");
 const NOT_A_PDF: &[u8] = b"not a pdf\n";
 const PASSWORD_PADDING: [u8; 32] = [
@@ -46,7 +47,7 @@ fn leading_bytes_invalid() -> Vec<u8> {
 fn test_should_validate_pdf_and_emit_text_report() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "text"])
@@ -56,7 +57,7 @@ fn test_should_validate_pdf_and_emit_text_report() -> Result<(), Box<dyn Error>>
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(contains("valid.pdf: valid").eval(&stdout));
-    assert!(contains("profiles: pdfv-m4").eval(&stdout));
+    assert!(contains("profiles: verapdf-pdfa-1b").eval(&stdout));
     Ok(())
 }
 
@@ -74,7 +75,7 @@ fn test_should_exit_invalid_for_failed_validation() -> Result<(), Box<dyn Error>
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout)?;
     assert!(contains(r#""status": "invalid""#).eval(&stdout));
-    assert!(contains("m0-header-offset-zero").eval(&stdout));
+    assert!(contains("iso-19005-1-6-1-2-1").eval(&stdout));
     Ok(())
 }
 
@@ -100,7 +101,7 @@ fn test_should_emit_batch_report_for_multiple_inputs() -> Result<(), Box<dyn Err
     let temp = tempdir()?;
     let valid = temp.path().join("valid.pdf");
     let invalid = temp.path().join("invalid.pdf");
-    write_fixture(&valid, MINIMAL_VALID)?;
+    write_fixture(&valid, VALID_PDFA_1B)?;
     write_fixture(&invalid, &leading_bytes_invalid())?;
 
     let output = Command::cargo_bin("pdfv")?
@@ -121,7 +122,7 @@ fn test_should_emit_batch_report_for_multiple_inputs() -> Result<(), Box<dyn Err
 fn test_should_validate_pdf_and_emit_xml_report() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "xml"])
@@ -141,7 +142,7 @@ fn test_should_validate_pdf_and_emit_xml_report() -> Result<(), Box<dyn Error>> 
 fn test_should_accept_mrr_as_deprecated_xml_alias() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "mrr"])
@@ -159,7 +160,7 @@ fn test_should_accept_mrr_as_deprecated_xml_alias() -> Result<(), Box<dyn Error>
 fn test_should_validate_pdf_and_emit_raw_xml_report() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "raw"])
@@ -179,7 +180,7 @@ fn test_should_accept_raw_format_from_config() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
     let config = temp.path().join("pdfv.yaml");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
     write_fixture(&config, b"output:\n  format: raw\n")?;
 
     let output = Command::cargo_bin("pdfv")?
@@ -199,7 +200,7 @@ fn test_should_accept_raw_format_from_config() -> Result<(), Box<dyn Error>> {
 fn test_should_validate_pdf_and_emit_html_report() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "html"])
@@ -218,7 +219,7 @@ fn test_should_validate_pdf_and_emit_html_report() -> Result<(), Box<dyn Error>>
 fn test_should_extract_feature_report_to_json() -> Result<(), Box<dyn Error>> {
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "json", "--extract", "catalog,page"])
@@ -240,7 +241,7 @@ fn test_should_repair_metadata_to_prefixed_output_without_modifying_input()
     let input = temp.path().join("valid.pdf");
     let output_dir = temp.path().join("out");
     std::fs::create_dir(&output_dir)?;
-    write_fixture(&input, MINIMAL_VALID)?;
+    write_fixture(&input, VALID_PDFA_1B)?;
     let before = std::fs::read(&input)?;
 
     let output = Command::cargo_bin("pdfv")?
@@ -349,10 +350,10 @@ fn test_should_merge_feature_and_policy_reports_to_xml() -> Result<(), Box<dyn E
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
     let policy = temp.path().join("policy.yaml");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
     write_fixture(
         &policy,
-        b"name: catalog-policy\nrules:\n  - id: catalog-has-no-metadata\n    description: Catalog metadata is absent\n    family: catalog\n    field: hasMetadata\n    operator: equals\n    value:\n      type: bool\n      value: false\n",
+        b"name: catalog-policy\nrules:\n  - id: catalog-has-metadata\n    description: Catalog metadata is present\n    family: catalog\n    field: hasMetadata\n    operator: equals\n    value:\n      type: bool\n      value: true\n",
     )?;
 
     let output = Command::cargo_bin("pdfv")?
@@ -365,7 +366,7 @@ fn test_should_merge_feature_and_policy_reports_to_xml() -> Result<(), Box<dyn E
     let stdout = String::from_utf8(output.stdout)?;
     assert!(contains("<featureReport").eval(&stdout));
     assert!(contains(r#"<policyReport name="catalog-policy" isCompliant="true">"#).eval(&stdout));
-    assert!(contains(r#"<rule id="catalog-has-no-metadata" passed="true""#).eval(&stdout));
+    assert!(contains(r#"<rule id="catalog-has-metadata" passed="true""#).eval(&stdout));
     Ok(())
 }
 
@@ -374,10 +375,10 @@ fn test_should_return_invalid_when_policy_fails() -> Result<(), Box<dyn Error>> 
     let temp = tempdir()?;
     let path = temp.path().join("valid.pdf");
     let policy = temp.path().join("policy.yaml");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
     write_fixture(
         &policy,
-        b"name: failing-catalog-policy\nrules:\n  - id: catalog-requires-metadata\n    description: Catalog metadata is required\n    family: catalog\n    field: hasMetadata\n    operator: equals\n    value:\n      type: bool\n      value: true\n",
+        b"name: failing-catalog-policy\nrules:\n  - id: catalog-forbids-metadata\n    description: Catalog metadata must be absent\n    family: catalog\n    field: hasMetadata\n    operator: equals\n    value:\n      type: bool\n      value: false\n",
     )?;
 
     let output = Command::cargo_bin("pdfv")?
@@ -461,7 +462,7 @@ fn test_should_discover_recursive_inputs_with_bounded_jobs() -> Result<(), Box<d
     let nested = temp.path().join("nested");
     std::fs::create_dir(&nested)?;
     let valid = nested.join("valid.pdf");
-    write_fixture(&valid, MINIMAL_VALID)?;
+    write_fixture(&valid, VALID_PDFA_1B)?;
     write_fixture(&nested.join("notes.txt"), b"not a pdf")?;
 
     let output = Command::cargo_bin("pdfv")?
@@ -496,8 +497,10 @@ fn test_should_use_default_flavour_when_auto_detection_has_no_claims() -> Result
         .arg(&path)
         .output()?;
 
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout)?;
+    assert!(contains(r#""id":"verapdf-pdfa-2b""#).eval(&stdout));
+    assert!(contains(r#""status":"invalid""#).eval(&stdout));
     assert!(contains(r#""family":"pdfa""#).eval(&stdout));
     assert!(contains(r#""part":2"#).eval(&stdout));
     assert!(contains(r#""conformance":"b""#).eval(&stdout));
@@ -510,7 +513,7 @@ fn test_should_discover_non_pdf_extension_inputs_when_requested() -> Result<(), 
     let nested = temp.path().join("nested");
     std::fs::create_dir(&nested)?;
     let valid = nested.join("valid.dat");
-    write_fixture(&valid, MINIMAL_VALID)?;
+    write_fixture(&valid, VALID_PDFA_1B)?;
 
     let output = Command::cargo_bin("pdfv")?
         .args([
@@ -536,7 +539,7 @@ fn test_should_write_output_file_and_redact_paths_from_config() -> Result<(), Bo
     let path = temp.path().join("valid.pdf");
     let config = temp.path().join("pdfv.yaml");
     let report = temp.path().join("report.json");
-    write_fixture(&path, MINIMAL_VALID)?;
+    write_fixture(&path, VALID_PDFA_1B)?;
     write_fixture(
         &config,
         format!(
@@ -618,7 +621,7 @@ fn test_should_continue_batch_after_internal_file_error() -> Result<(), Box<dyn 
     let temp = tempdir()?;
     let valid = temp.path().join("valid.pdf");
     let missing = temp.path().join("missing.pdf");
-    write_fixture(&valid, MINIMAL_VALID)?;
+    write_fixture(&valid, VALID_PDFA_1B)?;
 
     let output = Command::cargo_bin("pdfv")?
         .args(["validate", "--format", "json"])
@@ -648,9 +651,10 @@ fn test_should_validate_encrypted_pdf_with_password_file() -> Result<(), Box<dyn
         .arg(&path)
         .output()?;
 
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout)?;
-    assert!(contains(r#""status":"valid""#).eval(&stdout));
+    assert!(contains(r#""status":"invalid""#).eval(&stdout));
+    assert!(contains(r#""decrypted":true"#).eval(&stdout));
     assert!(!contains("user").eval(&stdout));
     Ok(())
 }
@@ -719,9 +723,10 @@ fn test_should_validate_encrypted_pdf_with_password_stdin() -> Result<(), Box<dy
         .write_stdin("user\n")
         .output()?;
 
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout)?;
-    assert!(contains(r#""status":"valid""#).eval(&stdout));
+    assert!(contains(r#""status":"invalid""#).eval(&stdout));
+    assert!(contains(r#""decrypted":true"#).eval(&stdout));
     assert!(!contains("user").eval(&stdout));
     Ok(())
 }
@@ -1100,12 +1105,11 @@ fn test_should_list_profiles() -> Result<(), Box<dyn Error>> {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout)?;
-    assert!(contains("pdfv-m4").eval(&stdout));
     assert!(contains("verapdf-pdfa-1b").eval(&stdout));
     assert!(contains("verapdf-pdfua-2-iso32005").eval(&stdout));
     assert!(contains("acfcc419a5df444e3e8b2a18266d01e249299957").eval(&stdout));
     let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 16);
+    assert_eq!(lines.len(), 15);
     for line in lines {
         let columns = line.split('\t').collect::<Vec<_>>();
         assert_eq!(columns.len(), 8);

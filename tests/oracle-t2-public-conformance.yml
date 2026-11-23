@@ -20,6 +20,44 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+  - id: t2-no-xmp-auto-default-pdfa-1b
+    path: vendors/veraPDF-validation/feature-reporting/src/test/resources/objects/pdf/ICC_RGB.pdf
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: autoDefaultPdfa1b
+    expectedFeatures:
+      - profile
+      - metadata
+    producer: veraPDF-feature-fixture
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: t2-unsupported-xmp-auto-default-pdfa-1b
+    path: crates/core/tests/fixtures/unknown-xmp-part.pdf
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: autoDefaultPdfa1b
+    expectedFeatures:
+      - profile
+      - xmp
+    sizeBucket: tiny
+    encryption: unencrypted
+    tagging: untagged
+    license: projectFixture
+  - id: t2-lf-stream-pdfa-1b
+    path: apps/cli/tests/fixtures/minimal-pdfa-1b.pdf
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: autoDefaultPdfa1b
+    expectedFeatures:
+      - profile
+      - xmp
+      - stream
+    sizeBucket: tiny
+    encryption: unencrypted
+    tagging: untagged
+    license: projectFixture
   - id: t2-verapdf-parser-valid-document-pdfa-1b
     path: vendors/veraPDF-parser/src/test/resources/org/verapdf/cos/filters/validDocument.pdf
     tier: t2PublicConformance
@@ -56,3 +94,27 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+  - id: t2-pdfa-2b-page-box-pass
+    path: crates/core/tests/fixtures/pdfa-2b-page-box-pass.pdf
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: autoDefaultPdfa1b
+    expectedFeatures:
+      - profile
+      - page
+    sizeBucket: tiny
+    encryption: unencrypted
+    tagging: untagged
+    license: projectFixture
+  - id: t2-pdfa-2b-page-box-fail
+    path: crates/core/tests/fixtures/pdfa-2b-page-box-fail.pdf
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: autoDefaultPdfa1b
+    expectedFeatures:
+      - profile
+      - page
+    sizeBucket: tiny
+    encryption: unencrypted
+    tagging: untagged
+    license: projectFixture
