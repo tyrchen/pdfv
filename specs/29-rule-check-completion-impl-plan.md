@@ -97,12 +97,13 @@ whole-document decisions agree and seven differ, with zero false-compliant
 decisions. The checked-in 8-row and supplemental 13-row release checks
 continue to agree.
 
-The dedicated 575-file XMP audit has 165 false-compliant decisions linked
-to existing packet-level value-type checks. Bind each XMP property to its
-declared or predefined qualified schema, preserve RDF value shape, and
-apply primitive, structured, and closed-choice constraints. Verify
-metadata attached to reachable objects alongside the catalog packet.
-[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#xmp-extension-resources-and-annotation-appearances)
+The dedicated XMP audit now agrees on all 575 PDF/A-2b document decisions.
+Property rules use individual qualified RDF properties, predefined or
+declared types, and scalar, array, or structure evidence. The three
+schema rules match in 1,717 of 1,725 comparisons. The remaining eight
+comparisons involve object-level XMP packets. Focused controls still need
+XPath function validation and original PDF/A identification values.
+[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation)
 
 ## Implementation constraints
 

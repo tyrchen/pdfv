@@ -3229,8 +3229,8 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         | "PDFUAIdentification"
         | "XMPPackage"
         | "MainXMPPackage"
-        | "XMPProperty"
         | "XMPLangAlt" => Some("metadata"),
+        "XMPProperty" => Some(crate::xmp::property::FAMILY),
         "ExtensionSchemaObject" => Some(crate::validation::xmp_extension::OBJECT_FAMILY),
         "ExtensionSchemaValueType" => Some("extensionSchemaValueType"),
         "ExtensionSchemaDefinition" => Some("extensionSchemaDefinition"),

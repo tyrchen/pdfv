@@ -394,13 +394,41 @@ linked to the applicable predefined or declared types and lexical,
 structural, and closed-choice validation.
 [Pinned PDF/A-2b corpus](https://github.com/veraPDF/veraPDF-corpus/tree/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_A-2b)
 
+## Qualified XMP Property Validation
+
+The XMP property rules evaluate qualified RDF properties individually. The
+validator checks the scalar, array, or structure against the applicable
+PDF/A predefined or packet-declared type. Scalar checks preserve lexical
+whitespace and resolve XML character references under the packet limits.
+XMP thumbnails retain their type evidence without retaining image payloads.
+XPath values receive bounded XPath 1.0 syntax compilation. The comparison
+uses Greenfield's default schema settings. Independent review verified
+449 profile-expanded property
+definitions and 165 structure entries against Greenfield 1.30.4.
+
+All 575 PDF/A-2b XMP fixtures now match at document level, up from 302.
+The prior 165 false-compliant and 108 false-invalid decisions are gone
+in this corpus. All 12 upstream PDF/A-3b attachment fixtures also agree,
+including all 36 comparisons of their three XMP schema rules. The
+specialized corpora show zero unsupported evaluations. The PDF/A-2b XMP
+rules match in 1,717 of 1,725 comparisons. The eight differences across
+three fixtures come from object-level metadata packets.
+
+Focused controls retain differences outside these corpora. pdfv requires a
+language qualifier on each language-alternative item. XPath function
+resolution and arity checks remain open. The PDF/A identification rule
+still uses the normalized conformance claim. These
+differences affect, respectively, mixed language arrays, syntactically
+correct XPath with invalid function calls, and whitespace around
+`pdfaid:conformance`.
+
 ## Release Blockers
 
 - The audit of the 15 profiles still has seven whole-document differences
   in its 30 controls. See
   [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
-- The XMP property-name and value-type rules still produce false-compliant
-  outcomes on the expanded PDF/A-2b corpus.
+- Object-level XMP packets and the focused XPath and identification cases
+  still need rule-level evidence.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

@@ -32,9 +32,14 @@ pub(super) struct ExtensionResource<'a> {
     prefix: &'a Identifier,
     fields: Vec<XmpRdfPropertyView<'a>>,
     defined_types: Arc<BTreeSet<String>>,
+    part: u32,
 }
 
-pub(super) fn resources(document: &ParsedDocument, key: ObjectKey) -> Vec<ExtensionResource<'_>> {
+pub(super) fn resources(
+    document: &ParsedDocument,
+    key: ObjectKey,
+    part: u32,
+) -> Vec<ExtensionResource<'_>> {
     let properties = xmp_rdf_properties(document, Some(key)).collect::<Vec<_>>();
     let scopes = document
         .parse_facts
@@ -89,6 +94,7 @@ pub(super) fn resources(document: &ParsedDocument, key: ObjectKey) -> Vec<Extens
             prefix,
             fields,
             defined_types: Arc::clone(schema.and_then(|id| type_names.get(&id)).unwrap_or(&empty)),
+            part,
         })
         .collect()
 }
@@ -97,7 +103,7 @@ pub(super) fn declared_value_types_valid(
     document: &ParsedDocument,
     key: ObjectKey,
 ) -> Option<bool> {
-    let resources = resources(document, key);
+    let resources = resources(document, key, 2);
     (!resources.is_empty()).then(|| {
         resources.iter().all(|resource| {
             let namespace = match resource.role {
@@ -107,18 +113,16 @@ pub(super) fn declared_value_types_valid(
             };
             let (field, duplicate) = select_field(&resource.fields, namespace, "valueType");
             !duplicate
-                && field
-                    .and_then(|field| field.value)
-                    .is_some_and(|value| resource.value_type_defined(value.as_str()))
+                && field.and_then(|field| field.value).is_some_and(|value| {
+                    resource.value_type_defined(value.as_str()).unwrap_or(false)
+                })
         })
     })
 }
 
 impl ExtensionResource<'_> {
-    fn value_type_defined(&self, value: &str) -> bool {
-        let name = base_value_type(value.trim());
-        super::is_predefined_xmp_value_type(name)
-            || self.defined_types.contains(&name.to_ascii_lowercase())
+    fn value_type_defined(&self, value: &str) -> Result<bool> {
+        crate::xmp::property::extension_value_type_defined(self.part, value, &self.defined_types)
     }
 
     pub(super) fn family(&self) -> &'static str {
@@ -212,9 +216,10 @@ impl ExtensionResource<'_> {
                 .map_or(ModelValue::Null, ModelValue::String),
             "isDescriptionValidText" => ModelValue::Bool(has_text("description")),
             "descriptionPrefix" => prefix("description"),
-            "isValueTypeDefined" => ModelValue::Bool(
-                text("valueType").is_some_and(|value| self.value_type_defined(value.as_str())),
-            ),
+            "isValueTypeDefined" => ModelValue::Bool(match text("valueType") {
+                Some(value) => self.value_type_defined(value.as_str())?,
+                None => false,
+            }),
             _ => return unknown_property(name),
         };
         Ok(value)
@@ -256,18 +261,4 @@ fn select_field<'a, 'data>(
     } else {
         (first, false)
     }
-}
-
-fn base_value_type(mut value: &str) -> &str {
-    while let Some((head, tail)) = value.split_once(' ') {
-        if ["Seq", "Bag", "Alt"]
-            .iter()
-            .any(|kind| head.eq_ignore_ascii_case(kind))
-        {
-            value = tail.trim_start();
-        } else {
-            break;
-        }
-    }
-    value
 }

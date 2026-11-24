@@ -1,0 +1,114 @@
+# Names and value types from the PDF/A predefined XMP schemas.
+# Source cross-check: veraPDF-library acfcc419a5df444e3e8b2a18266d01e249299957 (MPL-2.0).
+# PDF/A parts	type name	field namespace URI	field name	field type
+23	beatsplicestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+23	beatsplicestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/	riseInDecibel	real
+23	beatsplicestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/	riseInTimeDuration	time
+23	beatsplicestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/	useFileBeatsMarker	boolean
+23	colorant	http://ns.adobe.com/xap/1.0/g/
+23	colorant	http://ns.adobe.com/xap/1.0/g/	A	integer
+23	colorant	http://ns.adobe.com/xap/1.0/g/	B	integer
+23	colorant	http://ns.adobe.com/xap/1.0/g/	L	real
+23	colorant	http://ns.adobe.com/xap/1.0/g/	black	real
+23	colorant	http://ns.adobe.com/xap/1.0/g/	blue	integer
+23	colorant	http://ns.adobe.com/xap/1.0/g/	cyan	real
+23	colorant	http://ns.adobe.com/xap/1.0/g/	green	integer
+23	colorant	http://ns.adobe.com/xap/1.0/g/	magenta	real
+23	colorant	http://ns.adobe.com/xap/1.0/g/	mode	text
+23	colorant	http://ns.adobe.com/xap/1.0/g/	red	integer
+23	colorant	http://ns.adobe.com/xap/1.0/g/	swatchName	text
+23	colorant	http://ns.adobe.com/xap/1.0/g/	type	text
+23	colorant	http://ns.adobe.com/xap/1.0/g/	yellow	real
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#	childFontFiles	seq text
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#	composite	boolean
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#	fontFace	text
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#	fontFamily	text
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#	fontFileName	text
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#	fontName	text
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#	fontType	text
+23	font	http://ns.adobe.com/xap/1.0/sType/Font#	versionString	text
+23	marker	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+23	marker	http://ns.adobe.com/xmp/1.0/DynamicMedia/	comment	text
+23	marker	http://ns.adobe.com/xmp/1.0/DynamicMedia/	duration	any
+23	marker	http://ns.adobe.com/xmp/1.0/DynamicMedia/	location	uri
+23	marker	http://ns.adobe.com/xmp/1.0/DynamicMedia/	name	text
+23	marker	http://ns.adobe.com/xmp/1.0/DynamicMedia/	startTime	any
+23	marker	http://ns.adobe.com/xmp/1.0/DynamicMedia/	target	text
+23	marker	http://ns.adobe.com/xmp/1.0/DynamicMedia/	type	text
+23	media	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+23	media	http://ns.adobe.com/xmp/1.0/DynamicMedia/	duration	time
+23	media	http://ns.adobe.com/xmp/1.0/DynamicMedia/	managed	boolean
+23	media	http://ns.adobe.com/xmp/1.0/DynamicMedia/	path	uri
+23	media	http://ns.adobe.com/xmp/1.0/DynamicMedia/	startTime	time
+23	media	http://ns.adobe.com/xmp/1.0/DynamicMedia/	track	text
+23	media	http://ns.adobe.com/xmp/1.0/DynamicMedia/	webStatement	uri
+23	projectlink	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+23	projectlink	http://ns.adobe.com/xmp/1.0/DynamicMedia/	path	uri
+23	projectlink	http://ns.adobe.com/xmp/1.0/DynamicMedia/	type	text
+23	resamplestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+23	resamplestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/	quality	text
+23	time	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+23	time	http://ns.adobe.com/xmp/1.0/DynamicMedia/	scale	rational
+23	time	http://ns.adobe.com/xmp/1.0/DynamicMedia/	value	integer
+23	timecode	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+23	timecode	http://ns.adobe.com/xmp/1.0/DynamicMedia/	timeFormat	text
+23	timecode	http://ns.adobe.com/xmp/1.0/DynamicMedia/	timeValue	text
+23	timescalestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/
+23	timescalestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/	frameOverlappingPercentage	real
+23	timescalestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/	frameSize	real
+23	timescalestretch	http://ns.adobe.com/xmp/1.0/DynamicMedia/	quality	text
+common	cfapattern	http://ns.adobe.com/exif/1.0/
+common	cfapattern	http://ns.adobe.com/exif/1.0/	Columns	integer
+common	cfapattern	http://ns.adobe.com/exif/1.0/	Rows	integer
+common	cfapattern	http://ns.adobe.com/exif/1.0/	Values	seq integer
+common	devicesettings	http://ns.adobe.com/exif/1.0/
+common	devicesettings	http://ns.adobe.com/exif/1.0/	Columns	integer
+common	devicesettings	http://ns.adobe.com/exif/1.0/	Rows	integer
+common	devicesettings	http://ns.adobe.com/exif/1.0/	Settings	seq text
+common	dimensions	http://ns.adobe.com/xap/1.0/sType/Dimensions#
+common	dimensions	http://ns.adobe.com/xap/1.0/sType/Dimensions#	h	real
+common	dimensions	http://ns.adobe.com/xap/1.0/sType/Dimensions#	unit	text
+common	dimensions	http://ns.adobe.com/xap/1.0/sType/Dimensions#	w	real
+common	flash	http://ns.adobe.com/exif/1.0/
+common	flash	http://ns.adobe.com/exif/1.0/	Fired	boolean
+common	flash	http://ns.adobe.com/exif/1.0/	Function	boolean
+common	flash	http://ns.adobe.com/exif/1.0/	Mode	text
+common	flash	http://ns.adobe.com/exif/1.0/	RedEyeMode	boolean
+common	flash	http://ns.adobe.com/exif/1.0/	Return	text
+common	job	http://ns.adobe.com/xap/1.0/sType/Job#
+common	job	http://ns.adobe.com/xap/1.0/sType/Job#	id	text
+common	job	http://ns.adobe.com/xap/1.0/sType/Job#	name	text
+common	job	http://ns.adobe.com/xap/1.0/sType/Job#	url	url
+common	oecf/sfr	http://ns.adobe.com/exif/1.0/
+common	oecf/sfr	http://ns.adobe.com/exif/1.0/	Columns	integer
+common	oecf/sfr	http://ns.adobe.com/exif/1.0/	Names	seq text
+common	oecf/sfr	http://ns.adobe.com/exif/1.0/	Rows	integer
+common	oecf/sfr	http://ns.adobe.com/exif/1.0/	Values	seq rational
+common	resourceevent	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#
+common	resourceevent	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	action	text
+common	resourceevent	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	instanceID	uri
+common	resourceevent	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	parameters	text
+common	resourceevent	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	softwareAgent	agentname
+common	resourceevent	http://ns.adobe.com/xap/1.0/sType/ResourceEvent#	when	date
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	documentID	uri
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	instanceID	uri
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	manageTo	uri
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	manageUI	uri
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	manager	agentname
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	managerVariant	text
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	renditionClass	renditionclass
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	renditionParams	text
+common	resourceref	http://ns.adobe.com/xap/1.0/sType/ResourceRef#	versionID	text
+common	thumbnail	http://ns.adobe.com/xap/1.0/g/img/
+common	thumbnail	http://ns.adobe.com/xap/1.0/g/img/	format	text
+common	thumbnail	http://ns.adobe.com/xap/1.0/g/img/	height	integer
+common	thumbnail	http://ns.adobe.com/xap/1.0/g/img/	image	text
+common	thumbnail	http://ns.adobe.com/xap/1.0/g/img/	width	integer
+common	version	http://ns.adobe.com/xap/1.0/sType/Version#
+common	version	http://ns.adobe.com/xap/1.0/sType/Version#	comments	text
+common	version	http://ns.adobe.com/xap/1.0/sType/Version#	event	resourceevent
+common	version	http://ns.adobe.com/xap/1.0/sType/Version#	modifier	propername
+common	version	http://ns.adobe.com/xap/1.0/sType/Version#	modifyDate	date
+common	version	http://ns.adobe.com/xap/1.0/sType/Version#	version	text

@@ -1,0 +1,288 @@
+# Names and value types from the PDF/A predefined XMP schemas.
+# Source cross-check: veraPDF-library acfcc419a5df444e3e8b2a18266d01e249299957 (MPL-2.0).
+# PDF/A parts	namespace URI	property name	value type
+23	http://ns.adobe.com/camera-raw-settings/1.0/	AutoBrightness	boolean
+23	http://ns.adobe.com/camera-raw-settings/1.0/	AutoContrast	boolean
+23	http://ns.adobe.com/camera-raw-settings/1.0/	AutoExposure	boolean
+23	http://ns.adobe.com/camera-raw-settings/1.0/	AutoShadows	boolean
+23	http://ns.adobe.com/camera-raw-settings/1.0/	BlueHue	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	BlueSaturation	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Brightness	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CameraProfile	text
+23	http://ns.adobe.com/camera-raw-settings/1.0/	ChromaticAberrationB	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	ChromaticAberrationR	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	ColorNoiseReduction	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Contrast	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CropAngle	real
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CropBottom	real
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CropHeight	real
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CropLeft	real
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CropRight	real
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CropTop	real
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CropUnits	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	CropWidth	real
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Exposure	real
+23	http://ns.adobe.com/camera-raw-settings/1.0/	GreenHue	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	GreenSaturation	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	HasCrop	boolean
+23	http://ns.adobe.com/camera-raw-settings/1.0/	HasSettings	boolean
+23	http://ns.adobe.com/camera-raw-settings/1.0/	LuminanceSmoothing	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	RawFileName	text
+23	http://ns.adobe.com/camera-raw-settings/1.0/	RedHue	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	RedSaturation	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Saturation	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	ShadowTint	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Shadows	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Sharpness	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Temperature	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Tint	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	ToneCurve	seq text
+23	http://ns.adobe.com/camera-raw-settings/1.0/	ToneCurveName	text
+23	http://ns.adobe.com/camera-raw-settings/1.0/	Version	text
+23	http://ns.adobe.com/camera-raw-settings/1.0/	VignetteAmount	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	VignetteMidpoint	integer
+23	http://ns.adobe.com/camera-raw-settings/1.0/	WhiteBalance	text
+common	http://ns.adobe.com/exif/1.0/	ApertureValue	rational
+common	http://ns.adobe.com/exif/1.0/	BrightnessValue	rational
+common	http://ns.adobe.com/exif/1.0/	CFAPattern	cfapattern
+1	http://ns.adobe.com/exif/1.0/	ColorSpace	integer
+23	http://ns.adobe.com/exif/1.0/	ColorSpace	integer
+common	http://ns.adobe.com/exif/1.0/	ComponentsConfiguration	seq integer
+common	http://ns.adobe.com/exif/1.0/	CompressedBitsPerPixel	rational
+common	http://ns.adobe.com/exif/1.0/	Contrast	integer
+common	http://ns.adobe.com/exif/1.0/	CustomRendered	integer
+common	http://ns.adobe.com/exif/1.0/	DateTimeDigitized	date
+common	http://ns.adobe.com/exif/1.0/	DateTimeOriginal	date
+common	http://ns.adobe.com/exif/1.0/	DeviceSettingDescription	devicesettings
+common	http://ns.adobe.com/exif/1.0/	DigitalZoomRatio	rational
+1	http://ns.adobe.com/exif/1.0/	ExifVersion	text
+23	http://ns.adobe.com/exif/1.0/	ExifVersion	text
+common	http://ns.adobe.com/exif/1.0/	ExposureBiasValue	rational
+common	http://ns.adobe.com/exif/1.0/	ExposureIndex	rational
+common	http://ns.adobe.com/exif/1.0/	ExposureMode	integer
+common	http://ns.adobe.com/exif/1.0/	ExposureProgram	integer
+common	http://ns.adobe.com/exif/1.0/	ExposureTime	rational
+common	http://ns.adobe.com/exif/1.0/	FNumber	rational
+common	http://ns.adobe.com/exif/1.0/	FileSource	integer
+common	http://ns.adobe.com/exif/1.0/	Flash	flash
+common	http://ns.adobe.com/exif/1.0/	FlashEnergy	rational
+1	http://ns.adobe.com/exif/1.0/	FlashpixVersion	text
+23	http://ns.adobe.com/exif/1.0/	FlashpixVersion	text
+common	http://ns.adobe.com/exif/1.0/	FocalLength	rational
+common	http://ns.adobe.com/exif/1.0/	FocalLengthIn35mmFilm	integer
+common	http://ns.adobe.com/exif/1.0/	FocalPlaneResolutionUnit	integer
+common	http://ns.adobe.com/exif/1.0/	FocalPlaneXResolution	rational
+common	http://ns.adobe.com/exif/1.0/	FocalPlaneYResolution	rational
+common	http://ns.adobe.com/exif/1.0/	GPSAltitude	rational
+common	http://ns.adobe.com/exif/1.0/	GPSAltitudeRef	integer
+common	http://ns.adobe.com/exif/1.0/	GPSAreaInformation	text
+common	http://ns.adobe.com/exif/1.0/	GPSDOP	rational
+common	http://ns.adobe.com/exif/1.0/	GPSDestBearing	rational
+common	http://ns.adobe.com/exif/1.0/	GPSDestBearingRef	text
+common	http://ns.adobe.com/exif/1.0/	GPSDestDistance	rational
+common	http://ns.adobe.com/exif/1.0/	GPSDestDistanceRef	text
+common	http://ns.adobe.com/exif/1.0/	GPSDestLatitude	gpscoordinate
+common	http://ns.adobe.com/exif/1.0/	GPSDestLongitude	gpscoordinate
+common	http://ns.adobe.com/exif/1.0/	GPSDifferential	integer
+common	http://ns.adobe.com/exif/1.0/	GPSImgDirection	rational
+common	http://ns.adobe.com/exif/1.0/	GPSImgDirectionRef	text
+common	http://ns.adobe.com/exif/1.0/	GPSLatitude	gpscoordinate
+common	http://ns.adobe.com/exif/1.0/	GPSLongitude	gpscoordinate
+common	http://ns.adobe.com/exif/1.0/	GPSMapDatum	text
+1	http://ns.adobe.com/exif/1.0/	GPSMeasureMode	integer
+23	http://ns.adobe.com/exif/1.0/	GPSMeasureMode	text
+common	http://ns.adobe.com/exif/1.0/	GPSProcessingMethod	text
+common	http://ns.adobe.com/exif/1.0/	GPSSatellites	text
+common	http://ns.adobe.com/exif/1.0/	GPSSpeed	rational
+common	http://ns.adobe.com/exif/1.0/	GPSSpeedRef	text
+common	http://ns.adobe.com/exif/1.0/	GPSStatus	text
+common	http://ns.adobe.com/exif/1.0/	GPSTimeStamp	date
+common	http://ns.adobe.com/exif/1.0/	GPSTrack	rational
+common	http://ns.adobe.com/exif/1.0/	GPSTrackRef	text
+common	http://ns.adobe.com/exif/1.0/	GPSVersionID	text
+common	http://ns.adobe.com/exif/1.0/	GainControl	integer
+common	http://ns.adobe.com/exif/1.0/	ISOSpeedRatings	seq integer
+common	http://ns.adobe.com/exif/1.0/	ImageUniqueID	text
+1	http://ns.adobe.com/exif/1.0/	LightSource	integer
+23	http://ns.adobe.com/exif/1.0/	LightSource	integer
+1	http://ns.adobe.com/exif/1.0/	MakerNote	text
+common	http://ns.adobe.com/exif/1.0/	MaxApertureValue	rational
+common	http://ns.adobe.com/exif/1.0/	MeteringMode	integer
+common	http://ns.adobe.com/exif/1.0/	OECF	oecf/sfr
+common	http://ns.adobe.com/exif/1.0/	PixelXDimension	integer
+common	http://ns.adobe.com/exif/1.0/	PixelYDimension	integer
+common	http://ns.adobe.com/exif/1.0/	RelatedSoundFile	text
+common	http://ns.adobe.com/exif/1.0/	Saturation	integer
+common	http://ns.adobe.com/exif/1.0/	SceneCaptureType	integer
+common	http://ns.adobe.com/exif/1.0/	SceneType	integer
+common	http://ns.adobe.com/exif/1.0/	SensingMethod	integer
+common	http://ns.adobe.com/exif/1.0/	Sharpness	integer
+common	http://ns.adobe.com/exif/1.0/	ShutterSpeedValue	rational
+common	http://ns.adobe.com/exif/1.0/	SpatialFrequencyResponse	oecf/sfr
+common	http://ns.adobe.com/exif/1.0/	SpectralSensitivity	text
+common	http://ns.adobe.com/exif/1.0/	SubjectArea	seq integer
+common	http://ns.adobe.com/exif/1.0/	SubjectDistance	rational
+common	http://ns.adobe.com/exif/1.0/	SubjectDistanceRange	integer
+common	http://ns.adobe.com/exif/1.0/	SubjectLocation	seq integer
+common	http://ns.adobe.com/exif/1.0/	UserComment	lang alt
+common	http://ns.adobe.com/exif/1.0/	WhiteBalance	integer
+23	http://ns.adobe.com/exif/1.0/aux/	Lens	text
+23	http://ns.adobe.com/exif/1.0/aux/	SerialNumber	text
+common	http://ns.adobe.com/pdf/1.3/	Keywords	text
+common	http://ns.adobe.com/pdf/1.3/	PDFVersion	text
+common	http://ns.adobe.com/pdf/1.3/	Producer	agentname
+common	http://ns.adobe.com/photoshop/1.0/	AuthorsPosition	text
+common	http://ns.adobe.com/photoshop/1.0/	CaptionWriter	propername
+common	http://ns.adobe.com/photoshop/1.0/	Category	text
+common	http://ns.adobe.com/photoshop/1.0/	City	text
+common	http://ns.adobe.com/photoshop/1.0/	Country	text
+common	http://ns.adobe.com/photoshop/1.0/	Credit	text
+common	http://ns.adobe.com/photoshop/1.0/	DateCreated	date
+common	http://ns.adobe.com/photoshop/1.0/	Headline	text
+common	http://ns.adobe.com/photoshop/1.0/	Instructions	text
+common	http://ns.adobe.com/photoshop/1.0/	Source	text
+common	http://ns.adobe.com/photoshop/1.0/	State	text
+1	http://ns.adobe.com/photoshop/1.0/	SupplementalCategories	text
+23	http://ns.adobe.com/photoshop/1.0/	SupplementalCategories	bag text
+common	http://ns.adobe.com/photoshop/1.0/	TransmissionReference	text
+common	http://ns.adobe.com/photoshop/1.0/	Urgency	integer
+common	http://ns.adobe.com/tiff/1.0/	Artist	propername
+common	http://ns.adobe.com/tiff/1.0/	BitsPerSample	seq integer
+common	http://ns.adobe.com/tiff/1.0/	Compression	integer
+common	http://ns.adobe.com/tiff/1.0/	Copyright	lang alt
+common	http://ns.adobe.com/tiff/1.0/	DateTime	date
+common	http://ns.adobe.com/tiff/1.0/	ImageDescription	lang alt
+common	http://ns.adobe.com/tiff/1.0/	ImageLength	integer
+common	http://ns.adobe.com/tiff/1.0/	ImageWidth	integer
+common	http://ns.adobe.com/tiff/1.0/	Make	propername
+common	http://ns.adobe.com/tiff/1.0/	Model	propername
+common	http://ns.adobe.com/tiff/1.0/	Orientation	integer
+common	http://ns.adobe.com/tiff/1.0/	PhotometricInterpretation	integer
+common	http://ns.adobe.com/tiff/1.0/	PlanarConfiguration	integer
+common	http://ns.adobe.com/tiff/1.0/	PrimaryChromaticities	seq rational
+common	http://ns.adobe.com/tiff/1.0/	ReferenceBlackWhite	seq rational
+common	http://ns.adobe.com/tiff/1.0/	ResolutionUnit	integer
+common	http://ns.adobe.com/tiff/1.0/	SamplesPerPixel	integer
+common	http://ns.adobe.com/tiff/1.0/	Software	agentname
+common	http://ns.adobe.com/tiff/1.0/	TransferFunction	seq integer
+common	http://ns.adobe.com/tiff/1.0/	WhitePoint	seq rational
+common	http://ns.adobe.com/tiff/1.0/	XResolution	rational
+common	http://ns.adobe.com/tiff/1.0/	YCbCrCoefficients	seq rational
+common	http://ns.adobe.com/tiff/1.0/	YCbCrPositioning	integer
+common	http://ns.adobe.com/tiff/1.0/	YCbCrSubSampling	seq integer
+common	http://ns.adobe.com/tiff/1.0/	YResolution	rational
+common	http://ns.adobe.com/xap/1.0/	Advisory	bag text
+common	http://ns.adobe.com/xap/1.0/	BaseURL	url
+common	http://ns.adobe.com/xap/1.0/	CreateDate	date
+common	http://ns.adobe.com/xap/1.0/	CreatorTool	agentname
+common	http://ns.adobe.com/xap/1.0/	Identifier	bag text
+23	http://ns.adobe.com/xap/1.0/	Label	text
+common	http://ns.adobe.com/xap/1.0/	MetadataDate	date
+common	http://ns.adobe.com/xap/1.0/	ModifyDate	date
+common	http://ns.adobe.com/xap/1.0/	Nickname	text
+23	http://ns.adobe.com/xap/1.0/	Rating	real
+common	http://ns.adobe.com/xap/1.0/	Thumbnails	alt thumbnail
+common	http://ns.adobe.com/xap/1.0/bj/	JobRef	bag job
+common	http://ns.adobe.com/xap/1.0/mm/	DerivedFrom	resourceref
+common	http://ns.adobe.com/xap/1.0/mm/	DocumentID	uri
+common	http://ns.adobe.com/xap/1.0/mm/	History	seq resourceevent
+common	http://ns.adobe.com/xap/1.0/mm/	InstanceID	uri
+common	http://ns.adobe.com/xap/1.0/mm/	LastURL	url
+common	http://ns.adobe.com/xap/1.0/mm/	ManageTo	uri
+common	http://ns.adobe.com/xap/1.0/mm/	ManageUI	uri
+common	http://ns.adobe.com/xap/1.0/mm/	ManagedFrom	resourceref
+common	http://ns.adobe.com/xap/1.0/mm/	Manager	agentname
+common	http://ns.adobe.com/xap/1.0/mm/	ManagerVariant	text
+common	http://ns.adobe.com/xap/1.0/mm/	RenditionClass	renditionclass
+common	http://ns.adobe.com/xap/1.0/mm/	RenditionOf	resourceref
+common	http://ns.adobe.com/xap/1.0/mm/	RenditionParams	text
+common	http://ns.adobe.com/xap/1.0/mm/	SaveID	integer
+common	http://ns.adobe.com/xap/1.0/mm/	VersionID	text
+common	http://ns.adobe.com/xap/1.0/mm/	Versions	seq version
+common	http://ns.adobe.com/xap/1.0/rights/	Certificate	url
+common	http://ns.adobe.com/xap/1.0/rights/	Marked	boolean
+common	http://ns.adobe.com/xap/1.0/rights/	Owner	bag propername
+common	http://ns.adobe.com/xap/1.0/rights/	UsageTerms	lang alt
+common	http://ns.adobe.com/xap/1.0/rights/	WebStatement	url
+23	http://ns.adobe.com/xap/1.0/t/pg/	Colorants	seq colorant
+23	http://ns.adobe.com/xap/1.0/t/pg/	Fonts	bag font
+common	http://ns.adobe.com/xap/1.0/t/pg/	MaxPageSize	dimensions
+common	http://ns.adobe.com/xap/1.0/t/pg/	NPages	integer
+23	http://ns.adobe.com/xap/1.0/t/pg/	PlateNames	seq text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	absPeakAudioFilePath	uri
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	album	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	altTapeName	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	altTimecode	timecode
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	artist	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	audioChannelType	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	audioCompressor	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	audioModDate	date
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	audioSampleRate	integer
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	audioSampleType	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	beatSpliceParams	beatsplicestretch
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	composer	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	contributedMedia	bag media
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	copyright	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	duration	time
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	engineer	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	fileDataRate	rational
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	genre	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	instrument	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	introTime	time
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	key	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	logComment	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	loop	boolean
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	markers	seq marker
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	metadataModDate	date
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	numberOfBeats	real
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	outCue	time
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	projectRef	projectlink
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	pullDown	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	relativePeakAudioFilePath	uri
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	relativeTimestamp	time
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	releaseDate	date
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	resampleParams	resamplestretch
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	scaleType	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	scene	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	shotDate	date
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	shotLocation	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	shotName	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	speakerPlacement	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	startTimecode	timecode
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	stretchMode	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	tapeName	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	tempo	real
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	timeScaleParams	timescalestretch
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	timeSignature	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	trackNumber	integer
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoAlphaMode	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoAlphaPremultipleColor	colorant
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoAlphaUnityIsTransparent	boolean
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoColorSpace	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoCompressor	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoFieldOrder	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoFrameRate	text
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoFrameSize	dimensions
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoModDate	date
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoPixelAspectRatio	rational
+23	http://ns.adobe.com/xmp/1.0/DynamicMedia/	videoPixelDepth	text
+common	http://purl.org/dc/elements/1.1/	contributor	bag propername
+common	http://purl.org/dc/elements/1.1/	coverage	text
+common	http://purl.org/dc/elements/1.1/	creator	seq propername
+common	http://purl.org/dc/elements/1.1/	date	seq date
+common	http://purl.org/dc/elements/1.1/	description	lang alt
+common	http://purl.org/dc/elements/1.1/	format	mimetype
+common	http://purl.org/dc/elements/1.1/	identifier	text
+common	http://purl.org/dc/elements/1.1/	language	bag locale
+common	http://purl.org/dc/elements/1.1/	publisher	bag propername
+common	http://purl.org/dc/elements/1.1/	relation	bag text
+common	http://purl.org/dc/elements/1.1/	rights	lang alt
+common	http://purl.org/dc/elements/1.1/	source	text
+common	http://purl.org/dc/elements/1.1/	subject	bag text
+common	http://purl.org/dc/elements/1.1/	title	lang alt
+common	http://purl.org/dc/elements/1.1/	type	bag text
+common	http://www.aiim.org/pdfa/ns/id/	amd	text
+1	http://www.aiim.org/pdfa/ns/id/	conformance	text
+23	http://www.aiim.org/pdfa/ns/id/	conformance	text
+23	http://www.aiim.org/pdfa/ns/id/	corr	text
+common	http://www.aiim.org/pdfa/ns/id/	part	integer

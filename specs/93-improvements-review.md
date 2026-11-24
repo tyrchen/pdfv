@@ -15,17 +15,16 @@ of the current implementation phase.
   the embedded-font rules. See
   [the glyph measurement](../crates/core/src/validation/glyphs.rs) and
   [the live comparisons](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
-- **P1.** The 575-fixture XMP audit includes 165 false-compliant decisions
-  involving property type rule `6.6.2.3.1-2`. Bind property rules to individual
-  qualified RDF properties, and validate normalized scalar, array, and
-  structured values against predefined and declared types, including
-  closed choices. See
-  [the audit](../docs/reviews/m9-live-conformance-review.md#xmp-extension-resources-and-annotation-appearances).
-- **P2.** Two PDF/A-2b extension-schema fixtures have additional assertions
-  from an object-level `/Metadata` stream. Extend bounded XMP parsing to
+- **P2.** Three PDF/A-2b fixtures have additional XMP property assertions
+  and two also have additional schema assertions from object-level
+  `/Metadata` streams. Extend bounded XMP parsing to
   reachable metadata streams needed by each profile, preserving packet
   identity and main-package declarations. See
   [XMP design](./18-xmp-metadata-flavour-design.md).
+- **P2.** Resolve XPath 1.0 core function names and arity at validation time
+  within the existing syntax budget. Feed the exact RDF value to PDF/A
+  `conformance` checks alongside the normalized claim used for detection.
+  See [the XMP audit](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation).
 - **P1.** The 15-profile audit found six incomplete decisions and
   one false-invalid decision. Scope the transparency rules to actual groups
   and their use. Resolve the
@@ -76,3 +75,7 @@ of the current implementation phase.
   rules use the resolved appearance dictionary and field type. All 12
   upstream PDF/A-3b attachment documents match veraPDF. See
   [the XMP and appearance review](../docs/reviews/m9-live-conformance-review.md#xmp-extension-resources-and-annotation-appearances).
+- **P1.** Scoped XMP property rules evaluate qualified RDF names and values.
+  The 575-fixture audit now has zero false-compliant or false-invalid
+  document decisions. See
+  [the final property comparison](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation).

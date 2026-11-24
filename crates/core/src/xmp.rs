@@ -1,5 +1,8 @@
 //! Bounded XMP packet extraction, identification parsing, and flavour detection.
 
+pub(crate) mod property;
+mod rdf;
+
 use std::{
     char,
     collections::{BTreeMap, BTreeSet},
@@ -7,7 +10,11 @@ use std::{
     sync::Arc,
 };
 
-use quick_xml::{Reader, events::Event};
+use quick_xml::{
+    Reader,
+    escape::{resolve_xml_entity, unescape_with},
+    events::{BytesRef, Event},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -21,6 +28,9 @@ const PDF_UA_ID_NS: &str = "http://www.aiim.org/pdfua/ns/id/";
 const PDF_D_NS: &str = "http://pdfa.org/declarations/";
 const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
+const XMP_BASIC_NS: &str = "http://ns.adobe.com/xap/1.0/";
+const XMP_THUMBNAIL_NS: &str = "http://ns.adobe.com/xap/1.0/g/img/";
+const MAX_RDF_NESTING: u32 = 128;
 pub(crate) const PDFA_EXTENSION_NS: &str = "http://www.aiim.org/pdfa/ns/extension/";
 pub(crate) const PDFA_SCHEMA_NS: &str = "http://www.aiim.org/pdfa/ns/schema#";
 pub(crate) const PDFA_TYPE_NS: &str = "http://www.aiim.org/pdfa/ns/type#";
@@ -349,6 +359,8 @@ struct PacketBuilder<'a> {
     namespaces: BTreeMap<String, BoundedText>,
     current_namespaces: BTreeMap<String, BoundedText>,
     properties: Vec<XmpProperty>,
+    rdf_properties: Vec<rdf::Node>,
+    rdf_property_count: usize,
     stack: Vec<ElementFrame>,
     facts: Vec<XmpFact>,
     saw_rdf_root: bool,
@@ -375,7 +387,9 @@ impl<'a> PacketBuilder<'a> {
             namespaces: BTreeMap::new(),
             current_namespaces: BTreeMap::new(),
             properties: Vec::new(),
-            stack: Vec::with_capacity(usize::try_from(limits.max_xmp_depth).unwrap_or(0)),
+            rdf_properties: Vec::new(),
+            rdf_property_count: 0,
+            stack: Vec::new(),
             facts: Vec::new(),
             saw_rdf_root: false,
             saw_packet_wrapper: false,
@@ -386,7 +400,6 @@ impl<'a> PacketBuilder<'a> {
 
     fn parse(mut self, text: &str) -> Result<XmpPacket> {
         let mut reader = Reader::from_str(text);
-        reader.config_mut().trim_text(true);
         loop {
             match reader.read_event().map_err(|error| xmp_xml_error(&error))? {
                 Event::Start(element) => self.start(&element)?,
@@ -412,8 +425,9 @@ impl<'a> PacketBuilder<'a> {
                             })?;
                     self.text(decoded.as_ref())?;
                 }
+                Event::GeneralRef(reference) => self.character_reference(&reference)?,
                 Event::Decl(_) | Event::Comment(_) => {}
-                Event::DocType(_) | Event::GeneralRef(_) => {
+                Event::DocType(_) => {
                     return Err(crate::ProfileError::InvalidXml {
                         reason: BoundedText::unchecked(
                             "XMP DTD and entity processing are forbidden",
@@ -424,14 +438,45 @@ impl<'a> PacketBuilder<'a> {
                 Event::Eof => break,
             }
         }
+        if !self.stack.is_empty() {
+            return Err(rdf::invalid(
+                "XMP XML ended before all elements were closed",
+            ));
+        }
         self.finish()
+    }
+
+    fn character_reference(&mut self, reference: &BytesRef<'_>) -> Result<()> {
+        if let Some(character) = reference
+            .resolve_char_ref()
+            .map_err(|error| xmp_xml_error(&error))?
+        {
+            if !matches!(character, '\u{9}' | '\u{a}' | '\u{d}' | '\u{20}'..='\u{d7ff}'
+                | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
+            {
+                return Err(crate::ProfileError::InvalidXml {
+                    reason: BoundedText::unchecked("Invalid XMP character reference"),
+                }
+                .into());
+            }
+            return self.text(character.encode_utf8(&mut [0_u8; 4]));
+        }
+        let name = reference
+            .decode()
+            .map_err(|error| crate::ProfileError::InvalidXml {
+                reason: bounded_reason(error.to_string()),
+            })?;
+        let value = resolve_xml_entity(&name).ok_or_else(|| crate::ProfileError::InvalidXml {
+            reason: BoundedText::unchecked("XMP custom entity references are forbidden"),
+        })?;
+        self.text(value)
     }
 
     fn start(&mut self, element: &quick_xml::events::BytesStart<'_>) -> Result<()> {
         self.depth = self.depth.checked_add(1).ok_or(ParseError::LimitExceeded {
             limit: "max_xmp_depth",
         })?;
-        if self.depth > self.limits.max_xmp_depth {
+        if self.depth > self.limits.max_xmp_depth.min(MAX_RDF_NESTING) {
             return Err(ParseError::LimitExceeded {
                 limit: "max_xmp_depth",
             }
@@ -459,6 +504,21 @@ impl<'a> PacketBuilder<'a> {
         self.saw_rdf_root |= first_root;
         let in_rdf = first_root || self.stack.last().is_some_and(|parent| parent.in_rdf);
         let resource_node = self.extension_resource_node()?;
+        let rdf = match rdf::Frame::new(
+            first_root,
+            self.stack.last().and_then(|parent| parent.rdf.as_ref()),
+            &namespace,
+            &local,
+        ) {
+            Ok(frame) => frame,
+            Err(PdfvError::Profile(crate::ProfileError::InvalidXml { reason }))
+                if namespace.as_str().is_empty() =>
+            {
+                self.facts.push(XmpFact::Malformed { reason });
+                None
+            }
+            Err(error) => return Err(error),
+        };
         let mut frame = ElementFrame {
             namespace,
             prefix,
@@ -471,6 +531,7 @@ impl<'a> PacketBuilder<'a> {
             in_rdf,
             extension_scope: self.direct_extension_scope(),
             extension_role: resource_node,
+            rdf,
             resource_syntax: if resource_node.is_some() {
                 ResourceSyntax::Node
             } else {
@@ -502,20 +563,8 @@ impl<'a> PacketBuilder<'a> {
                 property_indices: Vec::new(),
             });
         }
-        let attribute_scope = if frame.extension_role.is_some()
-            || (frame.namespace.as_str() == RDF_NS && frame.local.as_str() == "Description")
-        {
-            frame.extension_scope
-        } else {
-            None
-        };
         if in_rdf {
-            let top_description = frame.namespace.as_str() == RDF_NS
-                && frame.local.as_str() == "Description"
-                && self.stack.last().is_some_and(ElementFrame::is_rdf_root);
-            self.capture_attr_properties(element, attribute_scope, top_description)?;
-        }
-        if in_rdf {
+            self.capture_attr_properties(element, &mut frame)?;
             self.capture_array(&frame)?;
         }
         self.stack.push(frame);
@@ -541,6 +590,7 @@ impl<'a> PacketBuilder<'a> {
                 in_rdf: property.in_rdf,
                 extension_scope: property.extension_scope,
                 extension_role: None,
+                rdf: None,
                 resource_syntax: ResourceSyntax::None,
                 saw_array: false,
             };
@@ -653,8 +703,10 @@ impl<'a> PacketBuilder<'a> {
             }
             .into());
         };
-        let value = frame.text.trim().to_owned();
+        let value = frame.text.trim();
+        let opaque_text = is_thumbnail_payload(&frame, &self.stack);
         if frame.in_rdf
+            && !opaque_text
             && frame.resource_syntax != ResourceSyntax::Node
             && (!value.is_empty()
                 || (frame.extension_scope.is_some()
@@ -662,9 +714,27 @@ impl<'a> PacketBuilder<'a> {
                     && is_rdf_property(&frame.namespace)))
         {
             if let Some(array_property) = self.array_item_property(&frame) {
-                self.insert_property(&array_property, &value)?;
+                self.insert_property(&array_property, value)?;
             } else if is_rdf_property(&frame.namespace) {
-                self.insert_property(&frame, &value)?;
+                self.insert_property(&frame, value)?;
+            }
+        }
+        if let Some(rdf) = frame.rdf {
+            let element = rdf::ElementName {
+                namespace: frame.namespace,
+                name: frame.local,
+                lang: frame.xml_lang,
+                opaque_text,
+            };
+            let parent = self.stack.last_mut().and_then(|parent| parent.rdf.as_mut());
+            if rdf.close(
+                element,
+                frame.text,
+                parent,
+                &mut self.rdf_properties,
+                self.limits.max_xmp_text_bytes,
+            )? {
+                rdf::charge(&mut self.rdf_property_count, self.limits.max_xmp_properties)?;
             }
         }
         self.current_namespaces = frame.previous_namespaces;
@@ -682,9 +752,17 @@ impl<'a> PacketBuilder<'a> {
     }
 
     fn text(&mut self, value: &str) -> Result<()> {
-        let Some(frame) = self.stack.last_mut() else {
+        let Some((frame, parents)) = self.stack.split_last_mut() else {
             return Ok(());
         };
+        if is_thumbnail_payload(frame, parents) {
+            // The thumbnail is opaque XMP Text. Retain only evidence of text when checking
+            // mixed content, and let the packet byte limit bound the encoded payload.
+            if frame.text.is_empty() && !value.trim().is_empty() {
+                frame.text.push('?');
+            }
+            return Ok(());
+        }
         let next_len =
             frame
                 .text
@@ -732,6 +810,22 @@ impl<'a> PacketBuilder<'a> {
             });
         }
         self.record_extension_properties();
+        if rdf::has_duplicates(&self.rdf_properties) {
+            self.facts.push(XmpFact::Malformed {
+                reason: BoundedText::unchecked("Duplicate property in XMP RDF packet"),
+            });
+        }
+        let checks = if self
+            .facts
+            .iter()
+            .any(|fact| matches!(fact, XmpFact::Malformed { .. }))
+        {
+            Vec::new()
+        } else {
+            property::check(&self.rdf_properties)?
+        };
+        self.facts
+            .push(XmpFact::CheckedProperties { properties: checks });
         for property in &self.properties {
             self.facts.push(XmpFact::RdfProperty {
                 namespace_uri: property.namespace.clone(),
@@ -818,9 +912,18 @@ impl<'a> PacketBuilder<'a> {
     fn capture_attr_properties(
         &mut self,
         element: &quick_xml::events::BytesStart<'_>,
-        extension_scope: Option<u64>,
-        top_description: bool,
+        owner: &mut ElementFrame,
     ) -> Result<()> {
+        let top_description = owner.namespace.as_str() == RDF_NS
+            && owner.local.as_str() == "Description"
+            && self.stack.last().is_some_and(ElementFrame::is_rdf_root);
+        let extension_scope = if owner.extension_role.is_some()
+            || (owner.namespace.as_str() == RDF_NS && owner.local.as_str() == "Description")
+        {
+            owner.extension_scope
+        } else {
+            None
+        };
         for attr in element.attributes().with_checks(true) {
             let attr = attr.map_err(|error| crate::ProfileError::InvalidXml {
                 reason: bounded_reason(error.to_string()),
@@ -833,9 +936,32 @@ impl<'a> PacketBuilder<'a> {
             if prefix.as_str() == "xml" {
                 continue;
             }
+            if prefix.as_str().is_empty()
+                && !(owner.namespace.as_str() == RDF_NS
+                    && owner.local.as_str() == "Description"
+                    && matches!(local.as_str(), "about" | "ID" | "nodeID"))
+            {
+                return Err(rdf::invalid("XMP RDF attribute has no namespace"));
+            }
             let namespace = self.resolve_prefix(&prefix)?;
+            let raw = String::from_utf8_lossy(attr.value.as_ref());
+            let value = unescape_with(&raw, resolve_xml_entity).map_err(|error| {
+                crate::ProfileError::InvalidXml {
+                    reason: bounded_reason(error.to_string()),
+                }
+            })?;
+            if !prefix.as_str().is_empty()
+                && let Some(rdf) = owner.rdf.as_mut()
+                && rdf.attribute(
+                    &namespace,
+                    &local,
+                    value.as_ref(),
+                    self.limits.max_xmp_text_bytes,
+                )?
+            {
+                rdf::charge(&mut self.rdf_property_count, self.limits.max_xmp_properties)?;
+            }
             if is_rdf_property(&namespace) {
-                let value = String::from_utf8_lossy(attr.value.as_ref()).into_owned();
                 let scope = if namespace.as_str() == PDFA_EXTENSION_NS
                     && local.as_str() == "schemas"
                     && top_description
@@ -867,6 +993,7 @@ impl<'a> PacketBuilder<'a> {
                     in_rdf: true,
                     extension_scope: scope,
                     extension_role: None,
+                    rdf: None,
                     resource_syntax: ResourceSyntax::None,
                     saw_array: false,
                 };
@@ -988,6 +1115,7 @@ impl<'a> PacketBuilder<'a> {
             in_rdf: property.in_rdf,
             extension_scope: None,
             extension_role: None,
+            rdf: None,
             resource_syntax: ResourceSyntax::None,
             saw_array: false,
         })
@@ -1101,7 +1229,7 @@ impl<'a> PacketBuilder<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ElementFrame {
     namespace: BoundedText,
     prefix: Identifier,
@@ -1114,6 +1242,7 @@ struct ElementFrame {
     in_rdf: bool,
     extension_scope: Option<u64>,
     extension_role: Option<XmpExtensionRole>,
+    rdf: Option<rdf::Frame>,
     resource_syntax: ResourceSyntax,
     saw_array: bool,
 }
@@ -1130,6 +1259,15 @@ impl ElementFrame {
     fn is_rdf_root(&self) -> bool {
         self.in_rdf && self.namespace.as_str() == RDF_NS && self.local.as_str() == "RDF"
     }
+}
+
+fn is_thumbnail_payload(frame: &ElementFrame, parents: &[ElementFrame]) -> bool {
+    frame.in_rdf
+        && frame.namespace.as_str() == XMP_THUMBNAIL_NS
+        && frame.local.as_str() == "image"
+        && parents.iter().rev().take(4).any(|parent| {
+            parent.namespace.as_str() == XMP_BASIC_NS && parent.local.as_str() == "Thumbnails"
+        })
 }
 
 #[derive(Clone, Debug)]
@@ -1346,6 +1484,7 @@ fn packet_warnings(packet: &XmpPacket) -> Result<Vec<ValidationWarning>> {
             | XmpFact::FlavourClaim { .. }
             | XmpFact::PacketHeader { .. }
             | XmpFact::RdfProperty { .. }
+            | XmpFact::CheckedProperties { .. }
             | XmpFact::ExtensionScope { .. } => None,
         })
         .map(|message| {
@@ -1513,6 +1652,8 @@ fn bounded_reason(value: String) -> BoundedText {
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
+
+    use rstest::rstest;
 
     use super::XmpParser;
     use crate::{ObjectKey, ResourceLimits, XmpFact};
@@ -1697,6 +1838,94 @@ mod tests {
             claim.display_flavour.as_str() == "pdfa-2"
                 && claim.kind == super::XmpIdentificationKind::PdfA
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_check_each_qualified_xmp_property_value() -> crate::Result<()> {
+        let xml = br#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:m="http://ns.adobe.com/xap/1.0/"
+      xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:qual="urn:qualifier">
+    <m:Rating rdf:value="1" qual:source="test"/>
+    <m:CreateDate> 2026-01-01 </m:CreateDate>
+    <m:ModifyDate>2026-0&#49;-01</m:ModifyDate>
+    <m:NotARegisteredProperty>text</m:NotARegisteredProperty>
+    <dc:creator>not an array</dc:creator>
+    <dc:publisher><rdf:Bag><rdf:li>A &amp; B</rdf:li></rdf:Bag></dc:publisher>
+  </rdf:Description>
+</rdf:RDF>"#;
+        let packet = XmpParser.parse_packet(key(), xml, &ResourceLimits::default())?;
+        let checks = packet
+            .facts
+            .iter()
+            .find_map(|fact| match fact {
+                XmpFact::CheckedProperties { properties } => Some(properties.as_slice()),
+                _ => None,
+            })
+            .ok_or(crate::ProfileError::UnsupportedSelection)?;
+        assert_eq!(
+            checks
+                .iter()
+                .map(|check| (
+                    check.name.as_str(),
+                    check.pdfa23.predefined,
+                    check.pdfa23.valid
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("Rating", true, true),
+                ("CreateDate", true, false),
+                ("ModifyDate", true, true),
+                ("NotARegisteredProperty", false, false),
+                ("creator", true, false),
+                ("publisher", true, true),
+            ]
+        );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("<xmp:Rating rdf:parseType=\"Literal\">1</xmp:Rating>")]
+    #[case(
+        "<xmp:Rating \
+         rdf:parseType=\"Resource\"><rdf:value>1</rdf:value><rdf:value>2</rdf:value></xmp:Rating>"
+    )]
+    #[case("<xmp:Rating rdf:resource=\"1\" rdf:value=\"2\"/>")]
+    #[case("<xmp:Rating><rdf:value>1</rdf:value></xmp:Rating>")]
+    #[case("<xmp:Advisory><rdf:bag><rdf:li>text</rdf:li></rdf:bag></xmp:Advisory>")]
+    fn test_should_reject_malformed_rdf_value_forms(#[case] property: &str) {
+        let xml = format!(
+            r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:xmp="http://ns.adobe.com/xap/1.0/">{property}</rdf:Description>
+</rdf:RDF>"#
+        );
+        assert!(matches!(
+            XmpParser.parse_packet(key(), xml.as_bytes(), &ResourceLimits::default()),
+            Err(crate::PdfvError::Profile(
+                crate::ProfileError::InvalidXml { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_should_check_thumbnail_text_without_retaining_the_payload() -> crate::Result<()> {
+        let encoded = "YWJj&#xA;".repeat(800);
+        let xml = format!(
+            r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:img="http://ns.adobe.com/xap/1.0/g/img/">
+    <xmp:Thumbnails><rdf:Alt><rdf:li rdf:parseType="Resource"><img:image>{encoded}</img:image></rdf:li></rdf:Alt></xmp:Thumbnails>
+  </rdf:Description>
+</rdf:RDF>"#
+        );
+        let packet = XmpParser.parse_packet(key(), xml.as_bytes(), &ResourceLimits::default())?;
+        assert!(packet.facts.iter().any(|fact| matches!(
+            fact,
+            XmpFact::CheckedProperties { properties }
+                if properties.iter().any(|check| check.name.as_str() == "Thumbnails" && check.pdfa23.valid)
+        )));
+        assert!(!packet.facts.iter().any(|fact| matches!(
+            fact, XmpFact::RdfProperty { name, .. } if name.as_str() == "image"
+        )));
         Ok(())
     }
 

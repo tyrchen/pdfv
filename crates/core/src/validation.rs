@@ -2335,6 +2335,11 @@ impl ModelRegistry {
             family("catalog", CATALOG_PROPERTIES, CATALOG_LINKS),
             family("metadata", METADATA_PROPERTIES, EMPTY_LINK_NAMES),
             family(
+                crate::xmp::property::FAMILY,
+                crate::xmp::property::PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 xmp_extension::OBJECT_FAMILY,
                 xmp_extension::OBJECT_PROPERTIES,
                 EMPTY_LINK_NAMES,
@@ -2778,6 +2783,9 @@ impl ModelRegistry {
 }
 
 fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvidence {
+    if family == crate::xmp::property::FAMILY {
+        return PropertySourceEvidence::XmpRdf;
+    }
     if family == "cMapFile" {
         return if property == "dictWMode" {
             PropertySourceEvidence::DirectCos
@@ -3693,6 +3701,7 @@ impl<'a> ModelGraph<'a> {
                 && !scoped_pua::FAMILIES.contains(&family.as_str())
                 && structure_roles::rule_family(family.as_str()).is_none()
                 && !xmp_extension::FAMILIES.contains(&family.as_str())
+                && family.as_str() != crate::xmp::property::FAMILY
                 && !semantic_names::FAMILIES.contains(&family.as_str())
                 && !device_color::FAMILIES.contains(&family.as_str())
                 && family.as_str() != glyphs::TRUE_TYPE_PROGRAM
@@ -4757,6 +4766,7 @@ pub struct MetadataModel<'a> {
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
     extension: Option<ExtensionResource<'a>>,
+    property_check: Option<(usize, &'a crate::XmpCheckedProperty, u32)>,
 }
 
 impl<'a> MetadataModel<'a> {
@@ -4782,10 +4792,17 @@ impl<'a> MetadataModel<'a> {
             ],
             links: Vec::new(),
             extension: None,
+            property_check: None,
         })
     }
 
     fn identity_key(&self) -> String {
+        if let Some((ordinal, _, _)) = self.property_check {
+            return format!(
+                "xmpProperty:{}:{}:{ordinal}",
+                self.key.number, self.key.generation
+            );
+        }
         self.extension.as_ref().map_or_else(
             || format!("metadata:{}:{}", self.key.number, self.key.generation),
             |extension| {
@@ -4798,6 +4815,12 @@ impl<'a> MetadataModel<'a> {
     }
 
     fn context(&self) -> BoundedText {
+        if let Some((ordinal, property, _)) = self.property_check {
+            return BoundedText::unchecked(format!(
+                "root/catalog[0]/metadata[0]/xmpProperty[{ordinal}]/{}",
+                property.name.as_str(),
+            ));
+        }
         self.extension.as_ref().map_or_else(
             || BoundedText::unchecked("root/catalog[0]/metadata[0]"),
             |extension| {
@@ -5078,6 +5101,9 @@ impl ModelObject for MetadataModel<'_> {
     }
 
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
+        if let Some((_, check, part)) = self.property_check {
+            return xmp_checked_property(check, part, name);
+        }
         if let Some(extension) = &self.extension {
             return extension.property(name);
         }
@@ -5173,12 +5199,23 @@ impl ModelObject for MetadataModel<'_> {
         max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut linked = Vec::new();
-        if self.extension.is_none()
-            && xmp_extension::FAMILIES
-                .iter()
-                .any(|family| graph.materializes(family))
+        if self.property_check.is_some() || self.extension.is_some() {
+            return Ok(linked);
+        }
+        if graph.materializes(crate::xmp::property::FAMILY)
+            && let Some(flavour) = &graph.active_flavour
         {
-            for extension in xmp_extension::resources(graph.document, self.key) {
+            self.append_checked_properties(graph, flavour.part.get(), &mut linked, max_objects)?;
+        }
+        if xmp_extension::FAMILIES
+            .iter()
+            .any(|family| graph.materializes(family))
+        {
+            let part = graph
+                .active_flavour
+                .as_ref()
+                .map_or(2, |flavour| flavour.part.get());
+            for extension in xmp_extension::resources(graph.document, self.key, part) {
                 let family = extension.family();
                 let schema_object = extension.is_schema_object();
                 if graph.materializes(family)
@@ -5196,6 +5233,7 @@ impl ModelObject for MetadataModel<'_> {
                             .collect(),
                         links: Vec::new(),
                         extension: Some(extension),
+                        property_check: None,
                     };
                     push_linked(&mut linked, ModelObjectRef::Metadata(object), max_objects)?;
                 }
@@ -5203,6 +5241,73 @@ impl ModelObject for MetadataModel<'_> {
         }
         Ok(linked)
     }
+}
+
+impl MetadataModel<'_> {
+    fn append_checked_properties<'a>(
+        &self,
+        graph: &ModelGraph<'a>,
+        part: u32,
+        objects: &mut Vec<ModelObjectRef<'a>>,
+        max_objects: usize,
+    ) -> Result<()> {
+        let facts = &graph.document.parse_facts;
+        let checks = facts.iter().find_map(|fact| match fact {
+            crate::ParseFact::Xmp {
+                object,
+                fact: crate::XmpFact::CheckedProperties { properties },
+            } if *object == self.key => Some(properties),
+            _ => None,
+        });
+        let Some(checks) = checks else {
+            if xmp_serialization_valid(graph.document, self.key) {
+                return Err(ValidationError::LimitExceeded {
+                    limit: "xmp_property_evidence",
+                }
+                .into());
+            }
+            return Ok(());
+        };
+        for (ordinal, check) in checks.iter().enumerate() {
+            let model = MetadataModel {
+                document: graph.document,
+                key: self.key,
+                offset: self.offset,
+                active_family: None,
+                object_type: ObjectTypeName::unchecked(crate::xmp::property::FAMILY),
+                supertypes: Vec::new(),
+                links: Vec::new(),
+                extension: None,
+                property_check: Some((ordinal, check, part)),
+            };
+            push_linked(objects, ModelObjectRef::Metadata(model), max_objects)?;
+        }
+        Ok(())
+    }
+}
+
+fn xmp_checked_property(
+    check: &crate::XmpCheckedProperty,
+    part: u32,
+    name: &PropertyName,
+) -> Result<ModelValue> {
+    let selected = if part == 1 {
+        &check.pdfa1
+    } else {
+        &check.pdfa23
+    };
+    Ok(match name.as_str() {
+        "isPredefinedInXMP2004" => ModelValue::Bool(check.pdfa1.predefined),
+        "isPredefinedInXMP2005" => ModelValue::Bool(check.pdfa23.predefined),
+        "isDefinedInCurrentPackage" => ModelValue::Bool(selected.declared),
+        "isDefinedInMainPackage" => ModelValue::Bool(check.pdfa23.declared),
+        "isValueTypeCorrect" => ModelValue::Bool(selected.valid),
+        "predefinedType" => selected
+            .expected_type
+            .clone()
+            .map_or(ModelValue::Null, ModelValue::String),
+        _ => return unknown_property(name),
+    })
 }
 
 /// Page dictionary model wrapper.

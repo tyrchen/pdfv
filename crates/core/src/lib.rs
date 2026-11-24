@@ -77,6 +77,7 @@ pub use validation::{
 pub use xmp::{
     DetectedFlavours, FlavourClaim, FlavourDetector, NamespaceBinding, XmpExtensionRole,
     XmpIdentificationKind, XmpPacket, XmpParser,
+    property::{XmpCheckedProperty, XmpPropertyCheck},
 };
 
 /// Current library version embedded in generated reports.
@@ -2070,6 +2071,11 @@ pub enum XmpFact {
         #[serde(skip_serializing_if = "Option::is_none")]
         xml_lang: Option<BoundedText>,
     },
+    /// Qualified packet properties checked using their actual RDF values.
+    CheckedProperties {
+        /// One entry for each top-level RDF property, excluding extension declarations.
+        properties: Vec<XmpCheckedProperty>,
+    },
     /// A PDF/A extension container or one of its RDF resources.
     ExtensionScope {
         /// Packet-local resource identifier in XML element order.
@@ -3701,6 +3707,9 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
             array_kind.as_ref().map_or("", Identifier::as_str),
             xml_lang.as_ref().map_or("", BoundedText::as_str)
         ),
+        XmpFact::CheckedProperties { properties } => {
+            format!("checkedProperties count={}", properties.len())
+        }
         XmpFact::ExtensionScope {
             id, role, prefix, ..
         } => {
