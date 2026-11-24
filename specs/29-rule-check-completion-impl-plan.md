@@ -86,16 +86,23 @@ unsupported evaluations.
 
 Image bit-depth rules distinguish ordinary invocations, stencils, soft masks,
 and streams reached through `/Mask`. DeviceN limits and colourant checks use
-the colour spaces reached through actual content and group usage. The 12
-upstream attachment fixtures now agree on eight document decisions with
-zero incomplete results. Four valid fixtures still fail XMP extension
-schema rules, one of which also fails the annotation appearance rule.
+the colour spaces reached through actual content and group usage. XMP
+parsing preserves RDF property scope and checks the fields of each
+extension resource. Annotation rules resolve the appearance entries and
+inherited widget type. All 12 upstream attachment fixtures now agree
+at document level with zero incomplete results and zero unsupported checks.
 
-The broader audit sampled all 15 built-in profiles. Twenty-one of its 30
-whole-document decisions agree and nine differ, with zero false-compliant
+The broader audit sampled all 15 built-in profiles. Twenty-three of its 30
+whole-document decisions agree and seven differ, with zero false-compliant
 decisions. The checked-in 8-row and supplemental 13-row release checks
 continue to agree.
-[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#image-component-depth-and-devicen-scope)
+
+The dedicated 575-file XMP audit has 165 false-compliant decisions linked
+to existing packet-level value-type checks. Bind each XMP property to its
+declared or predefined qualified schema, preserve RDF value shape, and
+apply primitive, structured, and closed-choice constraints. Verify
+metadata attached to reachable objects alongside the catalog packet.
+[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#xmp-extension-resources-and-annotation-appearances)
 
 ## Implementation constraints
 

@@ -355,11 +355,52 @@ rule. The attachment checks still agree on all 581 assertions.
 The 30-case audit now has 21 matching outcomes, six incomplete decisions,
 and three false-invalid decisions, with zero false-compliant decisions.
 
+## XMP Extension Resources and Annotation Appearances
+
+XMP property extraction starts at the first RDF root. XML wrapper
+attributes such as `x:xmptk` stay outside RDF validation. The extension
+schema rule checks each declared schema, property, value type, and field
+against its allowed immediate RDF fields. Typed and untyped resource nodes
+retain their declaration scope. The extension schema rule agrees on
+573 of 575 PDF/A-2b fixtures and all eight additional scope controls.
+The other two fixtures include object-level metadata streams beyond the
+catalog packet currently parsed by pdfv.
+
+The annotation rules check the resolved `/AP` dictionary, the `/N` entry
+type, and the inherited widget `/FT`. All 465 appearance-rule comparisons
+agree across 31 fixtures and four PDF/A profiles. On 14 additional controls,
+55 of 56 comparisons agree. pdfv requires four entries in `/Rect` and
+veraPDF tolerates an extra entry in this control. Device colour checks now
+reach the stream linked by a 3D annotation. All 75 comparisons agree across
+25 PDF/A-4e fixtures covering page resources, output, and transparency.
+The representative negative leaves a DeviceRGB violation after its
+appearance passes.
+
+All 12 upstream PDF/A-3b attachment documents now match their expected
+outcomes, including the four previously false-invalid cases. They produce
+zero unsupported evaluations, and the wider attachment corpus still
+matches all 581 assertions. The 30-case audit across 15 profiles now has
+23 matching outcomes, six incomplete decisions, and one false-invalid
+decision, with zero false-compliant decisions. The last false-invalid
+decision is the PDF/A-2b transparency control.
+
+The 575-fixture PDF/A-2b XMP audit still has 302 matching document outcomes,
+165 false-compliant decisions, and 108 false-invalid decisions. A rebuild
+of `7a91f42` yields the same decision for every file in this audit.
+All 165 false-compliant cases involve the XMP property value-type rule
+`6.6.2.3.1-2`. The property rules still aggregate evidence at packet
+level. The remaining work requires individual qualified properties
+linked to the applicable predefined or declared types and lexical,
+structural, and closed-choice validation.
+[Pinned PDF/A-2b corpus](https://github.com/veraPDF/veraPDF-corpus/tree/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_A-2b)
+
 ## Release Blockers
 
-- The audit of the 15 profiles still has nine whole-document differences
+- The audit of the 15 profiles still has seven whole-document differences
   in its 30 controls. See
   [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
+- The XMP property-name and value-type rules still produce false-compliant
+  outcomes on the expanded PDF/A-2b corpus.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

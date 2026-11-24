@@ -1,14 +1,20 @@
 //! Device colour spaces at their points of use in content streams.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    ptr,
+};
 
 use super::{
-    ContentStreamModel, EffectiveResources, GenericModel, ModelGraph, ModelObjectRef, OperatorFact,
-    ResourceFamily, array_values, color_space_component_count, color_space_family,
-    output_intent_icc_header, page_dictionary, push_linked, resolve_dictionary_value,
-    resource_value, scoped_resource_value, semantic_names,
+    AnnotationModel, ContentStreamModel, EffectiveResources, GenericModel, ModelGraph,
+    ModelObjectRef, OperatorFact, ResourceFamily, array_values, color_space_component_count,
+    color_space_family, effective_resources_for_page_key, output_intent_icc_header,
+    page_dictionary, push_linked, resolve_dictionary_value, resource_value, scoped_resource_value,
+    semantic_names,
 };
-use crate::{CosObject, Dictionary, ModelValue, ObjectLocation, ParsedDocument, PdfName, Result};
+use crate::{
+    CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument, PdfName, Result,
+};
 
 pub(super) const FAMILIES: &[&str] = &["deviceGray", "deviceRgb", "deviceCmyk"];
 pub(super) const PROPERTIES: &[&str] = &[
@@ -96,7 +102,7 @@ pub(super) fn append<'a>(
             continue;
         }
         if output.is_none() {
-            output = Some(output_spaces(graph, model, state.transparency)?);
+            output = Some(output_spaces(graph, model.page_key, state.transparency)?);
         }
         let mut model = GenericModel::new_value(
             graph.document,
@@ -114,6 +120,157 @@ pub(super) fn append<'a>(
         push_linked(objects, ModelObjectRef::Generic(model), max_objects)?;
     }
     Ok(uses.invocations)
+}
+
+pub(super) fn append_3d_annotation<'a>(
+    annotation: &AnnotationModel<'_>,
+    graph: &ModelGraph<'a>,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max_objects: usize,
+) -> Result<()> {
+    if !FAMILIES.iter().any(|family| graph.materializes(family))
+        || !annotation
+            .resolved_name(annotation.dictionary.get("Subtype"))?
+            .is_some_and(|name| name.matches("3D"))
+    {
+        return Ok(());
+    }
+    let resolve = |value| {
+        semantic_names::resolve_reference(graph.document, value, graph.limits.max_object_depth)
+    };
+    let mut target = resolve(annotation.dictionary.get("3DD"))?;
+    if let Some((_, CosObject::Dictionary(reference))) = target
+        && annotation
+            .resolved_name(reference.get("Type"))?
+            .is_some_and(|name| name.matches("3DRef"))
+    {
+        target = resolve(reference.get("3DD"))?;
+    }
+    let Some((key, CosObject::Stream(stream))) = target else {
+        return Ok(());
+    };
+    if !annotation
+        .resolved_name(stream.dictionary.get("Type"))?
+        .is_some_and(|name| name.matches("3D"))
+    {
+        return Ok(());
+    }
+    let Some((_, value)) = resolve(stream.dictionary.get("ColorSpace"))? else {
+        return Ok(());
+    };
+    let mut resources =
+        effective_resources_for_page_key(graph.document, annotation.page_key, graph.limits)?;
+    if let Some(nearest) = resources.dictionaries.pop() {
+        resources.dictionaries.clear();
+        resources.dictionaries.push(nearest);
+    }
+    let device = selected_3d_space(graph, &resources, value)?;
+    let Some(device) = device.filter(|device| graph.materializes(device.family())) else {
+        return Ok(());
+    };
+    let mut model = GenericModel::new_value(
+        graph.document,
+        device.family(),
+        ModelValue::Null,
+        0,
+        format!(
+            "root/page[{}]/annotation[{}]/stream3D/colorSpace",
+            annotation.page_ordinal, annotation.ordinal
+        ),
+    );
+    model.key = key;
+    model.offset = key.and_then(|key| graph.document.objects.get(&key).map(|object| object.offset));
+    model.supertypes.clear();
+    let page = page_dictionary(graph.document, annotation.page_key);
+    let transparency = owner_transparency_space(graph, page, false, &resources)?;
+    model.device_output = Some(output_spaces(
+        graph,
+        Some(annotation.page_key),
+        transparency,
+    )?);
+    push_linked(objects, ModelObjectRef::Generic(model), max_objects)
+}
+
+fn selected_3d_space<'a>(
+    graph: &ModelGraph<'a>,
+    resources: &EffectiveResources<'a>,
+    mut value: &'a CosObject,
+) -> Result<Option<Device>> {
+    let mut seen = HashSet::new();
+    let mut scope = ColourLookup::Entry;
+    let resolve = |value| {
+        semantic_names::resolve_reference(graph.document, value, graph.limits.max_object_depth)
+            .map(|resolved| resolved.map(|(_, value)| value))
+    };
+    let lookup =
+        |name: &PdfName| scoped_resource_value(graph, resources, ResourceFamily::ColorSpace, name);
+    for _ in 0..=graph.limits.max_object_depth {
+        let Some(resolved) = resolve(Some(value))? else {
+            return Ok(None);
+        };
+        if !seen.insert((ptr::from_ref(resolved), scope)) {
+            return Ok(None);
+        }
+        match resolved {
+            CosObject::Name(name) => {
+                let device = Device::from_name(name, false);
+                if matches!(scope, ColourLookup::Entry | ColourLookup::Resource)
+                    && let Some(device) = device
+                {
+                    let default_name = PdfName::try_from(device.default_name().to_owned())?;
+                    if let Some(default) = lookup(&default_name)? {
+                        scope = ColourLookup::Default;
+                        value = default;
+                        continue;
+                    }
+                }
+                if scope != ColourLookup::Direct
+                    && let Some(resource) = lookup(name)?
+                {
+                    if scope == ColourLookup::Entry {
+                        scope = ColourLookup::Resource;
+                    }
+                    value = resource;
+                } else {
+                    return Ok(device);
+                }
+            }
+            CosObject::Array(elements) => {
+                if let [entry] = elements.as_slice() {
+                    value = entry;
+                } else {
+                    let Some(CosObject::Name(family)) = resolve(elements.first())? else {
+                        return Ok(None);
+                    };
+                    let alternate = match family.as_bytes() {
+                        b"Indexed" => elements.get(1),
+                        b"Separation" | b"DeviceN" => elements.get(2),
+                        _ => None,
+                    };
+                    let Some(alternate) = alternate else {
+                        return Ok(None);
+                    };
+                    value = alternate;
+                    if scope == ColourLookup::Entry {
+                        scope = ColourLookup::Direct;
+                    }
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+    Err(crate::ValidationError::LimitExceeded {
+        limit: "model_reference_depth",
+    }
+    .into())
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ColourLookup {
+    Entry,
+    Resource,
+    Default,
+    Direct,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -529,11 +686,21 @@ fn transparency_space(
             .page_key
             .and_then(|key| page_dictionary(document, key))
     };
+    owner_transparency_space(graph, owner, stream.is_form, resources)
+}
+
+fn owner_transparency_space(
+    graph: &ModelGraph<'_>,
+    owner: Option<&Dictionary>,
+    is_form: bool,
+    resources: &EffectiveResources<'_>,
+) -> Result<Option<BlendingSpace>> {
+    let document = graph.document;
     let group = owner.and_then(|owner| resolve_dictionary_value(document, owner.get("Group")));
     let Some(group) = group.filter(|group| {
         semantic_names::name(document, group.get("S"))
             .is_some_and(|name| name.matches("Transparency"))
-            && (!stream.is_form
+            && (!is_form
                 || matches!(
                     semantic_names::resolve(document, group.get("I")),
                     Some(CosObject::Boolean(true))
@@ -585,12 +752,10 @@ fn transparency_space(
 
 fn output_spaces(
     graph: &ModelGraph<'_>,
-    stream: &ContentStreamModel<'_>,
+    page: Option<ObjectKey>,
     transparency: Option<BlendingSpace>,
 ) -> Result<OutputSpaces> {
-    let page = stream
-        .page_key
-        .and_then(|key| page_dictionary(graph.document, key));
+    let page = page.and_then(|key| page_dictionary(graph.document, key));
     let doc_space = output_color_space(graph, super::catalog_dictionary(graph.document))?;
     let page_space = output_color_space(graph, page)?;
     Ok(OutputSpaces {

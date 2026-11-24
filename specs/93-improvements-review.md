@@ -15,11 +15,22 @@ of the current implementation phase.
   the embedded-font rules. See
   [the glyph measurement](../crates/core/src/validation/glyphs.rs) and
   [the live comparisons](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
-- **P1.** The expanded profile audit found six incomplete decisions and
-  three incorrectly invalid ones. Scope the transparency, annotation, and
-  XMP extension schema rules to their actual model objects. Resolve the
+- **P1.** The 575-fixture XMP audit includes 165 false-compliant decisions
+  involving property type rule `6.6.2.3.1-2`. Bind property rules to individual
+  qualified RDF properties, and validate normalized scalar, array, and
+  structured values against predefined and declared types, including
+  closed choices. See
+  [the audit](../docs/reviews/m9-live-conformance-review.md#xmp-extension-resources-and-annotation-appearances).
+- **P2.** Two PDF/A-2b extension-schema fixtures have additional assertions
+  from an object-level `/Metadata` stream. Extend bounded XMP parsing to
+  reachable metadata streams needed by each profile, preserving packet
+  identity and main-package declarations. See
+  [XMP design](./18-xmp-metadata-flavour-design.md).
+- **P1.** The 15-profile audit found six incomplete decisions and
+  one false-invalid decision. Scope the transparency rules to actual groups
+  and their use. Resolve the
   remaining object-stream, CIDSet, glyph-width, and Unicode evidence. The
-  [live audit](../docs/reviews/m9-live-conformance-review.md#image-component-depth-and-devicen-scope)
+  [live audit](../docs/reviews/m9-live-conformance-review.md#xmp-extension-resources-and-annotation-appearances)
   records the rule IDs and representative fixtures.
 - **P1.** Embedded PDF conformance checks `isValidPDFA12` and
   `isValidPDFA124` still need evidence from `/EF` stream traversal and
@@ -60,3 +71,8 @@ of the current implementation phase.
   actual image and colour-space use. The 12 upstream PDF/A-3b attachment
   fixtures yield zero incomplete decisions. See
   [the scope review](../docs/reviews/m9-live-conformance-review.md#image-component-depth-and-devicen-scope).
+- **P1.** RDF wrapper syntax stays outside the XMP property inventory,
+  extension rules check immediate declaration fields, and annotation
+  rules use the resolved appearance dictionary and field type. All 12
+  upstream PDF/A-3b attachment documents match veraPDF. See
+  [the XMP and appearance review](../docs/reviews/m9-live-conformance-review.md#xmp-extension-resources-and-annotation-appearances).

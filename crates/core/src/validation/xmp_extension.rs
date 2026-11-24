@@ -14,7 +14,10 @@ use crate::{
     Result, XmpExtensionRole, XmpFact,
 };
 
+pub(crate) const OBJECT_FAMILY: &str = "extensionSchemaObject";
+pub(super) const OBJECT_PROPERTIES: &[&str] = &["containsUndefinedFields", "undefinedFields"];
 pub(super) const FAMILIES: &[&str] = &[
+    OBJECT_FAMILY,
     "extensionSchemasContainer",
     "extensionSchemaDefinition",
     "extensionSchemaProperty",
@@ -128,14 +131,38 @@ impl ExtensionResource<'_> {
         }
     }
 
+    pub(super) fn is_schema_object(&self) -> bool {
+        self.role != XmpExtensionRole::Container
+    }
+
+    fn allowed_fields(&self) -> (&'static str, &'static [&'static str]) {
+        match self.role {
+            XmpExtensionRole::Container => (XMP_NS_PDFA_EXTENSION, &["schemas"]),
+            XmpExtensionRole::Definition => (
+                XMP_NS_PDFA_SCHEMA,
+                &["schema", "namespaceURI", "prefix", "property", "valueType"],
+            ),
+            XmpExtensionRole::Property => (
+                XMP_NS_PDFA_PROPERTY,
+                &["name", "valueType", "category", "description"],
+            ),
+            XmpExtensionRole::ValueType => (
+                XMP_NS_PDFA_TYPE,
+                &["type", "namespaceURI", "prefix", "description", "field"],
+            ),
+            XmpExtensionRole::Field => (XMP_NS_PDFA_FIELD, &["name", "valueType", "description"]),
+        }
+    }
+
+    fn undefined_fields(&self) -> impl Iterator<Item = &XmpRdfPropertyView<'_>> {
+        let (namespace, allowed) = self.allowed_fields();
+        self.fields.iter().filter(move |field| {
+            field.namespace_uri.as_str() != namespace || !allowed.contains(&field.name.as_str())
+        })
+    }
+
     pub(super) fn property(&self, name: &PropertyName) -> Result<ModelValue> {
-        let namespace = match self.role {
-            XmpExtensionRole::Container => XMP_NS_PDFA_EXTENSION,
-            XmpExtensionRole::Definition => XMP_NS_PDFA_SCHEMA,
-            XmpExtensionRole::Property => XMP_NS_PDFA_PROPERTY,
-            XmpExtensionRole::ValueType => XMP_NS_PDFA_TYPE,
-            XmpExtensionRole::Field => XMP_NS_PDFA_FIELD,
-        };
+        let (namespace, _) = self.allowed_fields();
         let field = |local| select_field(&self.fields, namespace, local).0;
         let text = |local| field(local).and_then(|value| value.value);
         let has_text = |local| text(local).is_some_and(|value| !value.as_str().trim().is_empty());
@@ -154,6 +181,8 @@ impl ExtensionResource<'_> {
                 })
         };
         let value = match name.as_str() {
+            "containsUndefinedFields" => ModelValue::Bool(self.undefined_fields().next().is_some()),
+            "undefinedFields" => ModelValue::String(field_names(self.undefined_fields())),
             "prefix" => ModelValue::String(BoundedText::unchecked(self.prefix.as_str())),
             "isValidBag" => ModelValue::Bool(array("schemas", "Bag", false)),
             "isSchemaValidText" => ModelValue::Bool(has_text("schema")),
@@ -190,6 +219,27 @@ impl ExtensionResource<'_> {
         };
         Ok(value)
     }
+}
+
+fn field_names<'a>(fields: impl Iterator<Item = &'a XmpRdfPropertyView<'a>>) -> BoundedText {
+    let mut names = String::new();
+    for field in fields {
+        let name = field.name.as_str();
+        let namespace = field.namespace_uri.as_str();
+        let required = name.len().saturating_add(namespace.len()).saturating_add(3);
+        if names.len().saturating_add(required) > 509 {
+            names.push('…');
+            break;
+        }
+        if !names.is_empty() {
+            names.push(',');
+        }
+        names.push_str(name);
+        names.push('(');
+        names.push_str(namespace);
+        names.push(')');
+    }
+    BoundedText::unchecked(names)
 }
 
 fn select_field<'a, 'data>(

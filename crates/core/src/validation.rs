@@ -13,7 +13,7 @@ pub(crate) mod scoped_pua;
 mod semantic_names;
 pub(crate) mod structure_roles;
 mod tagged_content;
-mod xmp_extension;
+pub(crate) mod xmp_extension;
 
 use std::{
     cell::{Cell, RefCell},
@@ -2335,6 +2335,11 @@ impl ModelRegistry {
             family("catalog", CATALOG_PROPERTIES, CATALOG_LINKS),
             family("metadata", METADATA_PROPERTIES, EMPTY_LINK_NAMES),
             family(
+                xmp_extension::OBJECT_FAMILY,
+                xmp_extension::OBJECT_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 "extensionSchemasContainer",
                 METADATA_PROPERTIES,
                 EMPTY_LINK_NAMES,
@@ -2780,6 +2785,13 @@ fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvide
             PropertySourceEvidence::DecodedStream
         };
     }
+    if family == "annotation" {
+        match property {
+            "FT" => return PropertySourceEvidence::InheritedCos,
+            "AP" | "Subtype" => return PropertySourceEvidence::SemanticGraph,
+            _ => {}
+        }
+    }
     if cos::is_primitive_family(family) || direct_properties_for_family(family).contains(&property)
     {
         return PropertySourceEvidence::DirectCos;
@@ -2787,7 +2799,9 @@ fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvide
     if family == "page" && PAGE_INHERITED_PROPERTIES.contains(&property) {
         return PropertySourceEvidence::InheritedCos;
     }
-    if matches!(family, "metadata" | "document") && is_xmp_rdf_property(property) {
+    if (matches!(family, "metadata" | "document") || xmp_extension::FAMILIES.contains(&family))
+        && is_xmp_rdf_property(property)
+    {
         return PropertySourceEvidence::XmpRdf;
     }
     if matches!(
@@ -5166,14 +5180,20 @@ impl ModelObject for MetadataModel<'_> {
         {
             for extension in xmp_extension::resources(graph.document, self.key) {
                 let family = extension.family();
-                if graph.materializes(family) {
+                let schema_object = extension.is_schema_object();
+                if graph.materializes(family)
+                    || (schema_object && graph.materializes(xmp_extension::OBJECT_FAMILY))
+                {
                     let object = MetadataModel {
                         document: graph.document,
                         key: self.key,
                         offset: self.offset,
                         active_family: None,
                         object_type: ObjectTypeName::unchecked(family),
-                        supertypes: Vec::new(),
+                        supertypes: schema_object
+                            .then(|| ObjectTypeName::unchecked(xmp_extension::OBJECT_FAMILY))
+                            .into_iter()
+                            .collect(),
                         links: Vec::new(),
                         extension: Some(extension),
                     };
@@ -5735,6 +5755,7 @@ impl ModelObject for FontModel<'_> {
 #[derive(Clone, Debug)]
 pub struct AnnotationModel<'a> {
     document: &'a ParsedDocument,
+    limits: &'a ResourceLimits,
     page_key: ObjectKey,
     page_ordinal: usize,
     ordinal: usize,
@@ -5756,13 +5777,21 @@ impl<'a> AnnotationModel<'a> {
         let Some(page_dictionary) = page_dictionary(document, page.key) else {
             return Ok(annotations);
         };
-        for (ordinal, value) in array_values(semantic_names::resolve(
+        let resolved = semantic_names::resolve_reference(
             document,
             page_dictionary.get("Annots"),
-        ))
-        .enumerate()
-        {
-            if let Some((key, offset, dictionary)) = resolve_named_dictionary(document, value) {
+            page.limits.max_object_depth,
+        )?;
+        for (ordinal, value) in array_values(resolved.map(|(_, value)| value)).enumerate() {
+            if let Some((key, crate::CosObject::Dictionary(dictionary))) =
+                semantic_names::resolve_reference(
+                    document,
+                    Some(value),
+                    page.limits.max_object_depth,
+                )?
+            {
+                let offset =
+                    key.and_then(|key| document.objects.get(&key).map(|object| object.offset));
                 if annotations.len() >= max_objects {
                     return Err(ValidationError::LimitExceeded {
                         limit: "max_objects",
@@ -5771,6 +5800,7 @@ impl<'a> AnnotationModel<'a> {
                 }
                 annotations.push(Self {
                     document,
+                    limits: page.limits,
                     page_key: page.key,
                     page_ordinal: page.ordinal,
                     ordinal,
@@ -5787,6 +5817,146 @@ impl<'a> AnnotationModel<'a> {
             }
         }
         Ok(annotations)
+    }
+
+    fn resolve(&self, value: Option<&'a crate::CosObject>) -> Result<Option<&'a crate::CosObject>> {
+        Ok(
+            semantic_names::resolve_reference(self.document, value, self.limits.max_object_depth)?
+                .map(|(_, value)| value),
+        )
+    }
+
+    fn appearances(&self) -> Result<Option<&'a crate::Dictionary>> {
+        match self.resolve(self.dictionary.get("AP"))? {
+            Some(crate::CosObject::Dictionary(dictionary)) => Ok(Some(dictionary)),
+            _ => Ok(None),
+        }
+    }
+
+    fn appearance_keys(&self) -> Result<ModelValue> {
+        let Some(appearances) = self.appearances()? else {
+            return Ok(ModelValue::Null);
+        };
+        let mut keys = String::new();
+        for (index, (key, _)) in appearances
+            .iter()
+            .filter(|(_, value)| !matches!(value, crate::CosObject::Null))
+            .enumerate()
+        {
+            if index > 0 {
+                keys.push('&');
+            }
+            let key = String::from_utf8_lossy(key.as_bytes());
+            if keys.len().saturating_add(key.len()) > 508 {
+                keys.push('…');
+                break;
+            }
+            keys.push_str(&key);
+        }
+        Ok(ModelValue::String(BoundedText::unchecked(keys)))
+    }
+
+    fn normal_appearance_type(&self) -> Result<ModelValue> {
+        let entry = self
+            .appearances()?
+            .and_then(|dictionary| dictionary.get("N"));
+        Ok(match self.resolve(entry)? {
+            Some(crate::CosObject::Stream(_)) => {
+                ModelValue::String(BoundedText::unchecked("Stream"))
+            }
+            Some(crate::CosObject::Dictionary(_)) => {
+                ModelValue::String(BoundedText::unchecked("Dict"))
+            }
+            _ => ModelValue::Null,
+        })
+    }
+
+    fn contains_appearances(&self) -> Result<bool> {
+        let Some(appearances) = self.appearances()? else {
+            return Ok(false);
+        };
+        for key in ["N", "D", "R"] {
+            match self.resolve(appearances.get(key))? {
+                Some(crate::CosObject::Stream(_)) => return Ok(true),
+                Some(crate::CosObject::Dictionary(states)) => {
+                    for (_, stream) in states.iter() {
+                        if matches!(
+                            self.resolve(Some(stream))?,
+                            Some(crate::CosObject::Stream(_))
+                        ) {
+                            return Ok(true);
+                        }
+                    }
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn field_type(&self) -> Result<ModelValue> {
+        let mut current = self.dictionary;
+        let mut seen = HashSet::new();
+        for _ in 0..=self.limits.max_object_depth {
+            if !seen.insert(core::ptr::from_ref(current)) {
+                return Ok(ModelValue::Null);
+            }
+            if let Some(value) = current.get("FT")
+                && !matches!(value, crate::CosObject::Null)
+            {
+                return Ok(self
+                    .resolved_name(Some(value))?
+                    .map_or(ModelValue::Null, cos_name_value));
+            }
+            let Some(parent) = self
+                .resolve(current.get("Parent"))?
+                .and_then(crate::CosObject::as_dictionary)
+            else {
+                return Ok(ModelValue::Null);
+            };
+            current = parent;
+        }
+        Err(ValidationError::LimitExceeded {
+            limit: "max_object_depth",
+        }
+        .into())
+    }
+
+    fn resolved_name(&self, value: Option<&'a crate::CosObject>) -> Result<Option<&'a PdfName>> {
+        Ok(match self.resolve(value)? {
+            Some(crate::CosObject::Name(name)) => Some(name),
+            _ => None,
+        })
+    }
+
+    fn dimension(&self, axis: usize) -> Result<ModelValue> {
+        let Some(crate::CosObject::Array(rect)) = self.resolve(self.dictionary.get("Rect"))? else {
+            return Ok(ModelValue::Null);
+        };
+        let [left, bottom, right, top] = rect.as_slice() else {
+            return Ok(ModelValue::Null);
+        };
+        let Some(left) = self.resolve(Some(left))?.and_then(number_from_cos) else {
+            return Ok(ModelValue::Null);
+        };
+        let Some(bottom) = self.resolve(Some(bottom))?.and_then(number_from_cos) else {
+            return Ok(ModelValue::Null);
+        };
+        let Some(right) = self.resolve(Some(right))?.and_then(number_from_cos) else {
+            return Ok(ModelValue::Null);
+        };
+        let Some(top) = self.resolve(Some(top))?.and_then(number_from_cos) else {
+            return Ok(ModelValue::Null);
+        };
+        let dimension = if axis == 0 {
+            right - left
+        } else {
+            top - bottom
+        };
+        Ok(optional_f64_model_value(
+            dimension.is_finite().then_some(dimension),
+        ))
     }
 }
 
@@ -5812,7 +5982,12 @@ impl ModelObject for AnnotationModel<'_> {
     fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match name.as_str() {
             "hasSubtype" => Ok(ModelValue::Bool(self.dictionary.get("Subtype").is_some())),
-            "containsAppearances" => Ok(ModelValue::Bool(self.dictionary.get("AP").is_some())),
+            "AP" => self.appearance_keys(),
+            "containsAppearances" => self.contains_appearances().map(ModelValue::Bool),
+            "FT" => self.field_type(),
+            "Subtype" => Ok(self
+                .resolved_name(self.dictionary.get("Subtype"))?
+                .map_or(ModelValue::Null, cos_name_value)),
             "containsA" => Ok(ModelValue::Bool(self.dictionary.get("A").is_some())),
             "containsAA" => Ok(ModelValue::Bool(self.dictionary.get("AA").is_some())),
             "containsC" => Ok(ModelValue::Bool(self.dictionary.get("C").is_some())),
@@ -5833,17 +6008,13 @@ impl ModelObject for AnnotationModel<'_> {
                 annotation_target_mismatch(self.document, self.dictionary, self.key)
             }
             "gOutputCS" | "structParentType" | "structParentStandardType" => Ok(ModelValue::Null),
-            "N_type" => Ok(annotation_normal_appearance_type(
-                self.document,
-                self.dictionary,
-            )),
-            "width" => Ok(optional_f64_model_value(annotation_width(self.dictionary))),
-            "height" => Ok(optional_f64_model_value(annotation_height(self.dictionary))),
+            "N_type" => self.normal_appearance_type(),
+            "width" => self.dimension(0),
+            "height" => self.dimension(1),
             "isArtifact" | "isOutsideCropBox" => Ok(ModelValue::Bool(false)),
             "isFieldWidget" => Ok(ModelValue::Bool(
-                self.dictionary.get("Subtype").is_some_and(
-                    |value| matches!(value, crate::CosObject::Name(name) if name.matches("Widget")),
-                ),
+                self.resolved_name(self.dictionary.get("Subtype"))?
+                    .is_some_and(|name| name.matches("Widget")),
             )),
             _ => dictionary_property(self.dictionary, name, ANNOTATION_DIRECT_PROPERTIES),
         }
@@ -5862,6 +6033,7 @@ impl ModelObject for AnnotationModel<'_> {
         if graph.needs_glyph_evidence() || graph.needs_scoped_text_glyph_evidence() {
             append_appearance_content(self, graph, &mut objects, max_objects)?;
         }
+        device_color::append_3d_annotation(self, graph, &mut objects, max_objects)?;
         if language::enabled(graph) {
             let location = ModelObjectRef::Annotation(self.clone()).location();
             language::append_parent_language(
@@ -9699,69 +9871,18 @@ fn object_refs_from_array(value: Option<&crate::CosObject>) -> Vec<ObjectKey> {
     }
 }
 
-fn annotation_normal_appearance_type(
-    document: &ParsedDocument,
-    dictionary: &crate::Dictionary,
-) -> ModelValue {
-    let Some(appearances) = resolve_dictionary_value(document, dictionary.get("AP")) else {
-        return ModelValue::Null;
-    };
-    let Some(value) = appearances.get("N") else {
-        return ModelValue::Null;
-    };
-    let appearance_type = match value {
-        crate::CosObject::Stream(_) => "Stream",
-        crate::CosObject::Dictionary(_) => "Dictionary",
-        crate::CosObject::Reference(key) => document.objects.get(key).map_or("Missing", |object| {
-            if matches!(object.object, crate::CosObject::Stream(_)) {
-                "Stream"
-            } else if object.object.as_dictionary().is_some() {
-                "Dictionary"
-            } else {
-                "Other"
-            }
-        }),
-        _ => "Other",
-    };
-    ModelValue::String(BoundedText::unchecked(appearance_type))
-}
-
-fn annotation_width(dictionary: &crate::Dictionary) -> Option<f64> {
-    let Some(crate::CosObject::Array(rect)) = dictionary.get("Rect") else {
-        return None;
-    };
-    let left = number_from_array(rect, 0)?;
-    let right = number_from_array(rect, 2)?;
-    if right < left {
-        return Some(0.0);
-    }
-    let width = right - left;
-    if width.is_finite() && width >= 0.0 {
-        Some(width)
-    } else {
-        None
-    }
-}
-
-fn annotation_height(dictionary: &crate::Dictionary) -> Option<f64> {
-    let Some(crate::CosObject::Array(rect)) = dictionary.get("Rect") else {
-        return None;
-    };
-    let bottom = number_from_array(rect, 1)?;
-    let top = number_from_array(rect, 3)?;
-    if top < bottom {
-        return Some(0.0);
-    }
-    let height = top - bottom;
-    if height.is_finite() && height >= 0.0 {
-        Some(height)
-    } else {
-        None
-    }
+fn cos_name_value(name: &PdfName) -> ModelValue {
+    ModelValue::String(BoundedText::unchecked(String::from_utf8_lossy(
+        name.as_bytes(),
+    )))
 }
 
 fn number_from_array(values: &[crate::CosObject], index: usize) -> Option<f64> {
-    match values.get(index)? {
+    values.get(index).and_then(number_from_cos)
+}
+
+fn number_from_cos(value: &crate::CosObject) -> Option<f64> {
+    match value {
         crate::CosObject::Integer(value) => i64_to_f64(*value).ok(),
         crate::CosObject::Real(value) if value.is_finite() => Some(*value),
         _ => None,
@@ -10533,6 +10654,7 @@ impl<'a> GenericModel<'a> {
         if self.primitive.is_some()
             || self.file_spec.is_some()
             || self.tagged_content.is_some()
+            || self.device_output.is_some()
             || self.object_type.as_str() == glyphs::UNICODE_FAMILY
         {
             return self.context.clone();
@@ -13448,6 +13570,121 @@ mod tests {
                 .iter()
                 .all(|unsupported| unsupported.rule_id != rule)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_check_extension_fields_on_their_own_rdf_resources() -> crate::Result<()> {
+        let xmp = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdfaExtension="http://www.aiim.org/pdfa/ns/extension/"
+        xmlns:pdfaSchema="http://www.aiim.org/pdfa/ns/schema#" xmlns:custom="urn:custom">
+      <pdfaExtension:schemas><rdf:Bag>
+        <rdf:li><custom:Schema>
+          <pdfaSchema:schema>Proper typed node</pdfaSchema:schema>
+          <pdfaSchema:namespaceURI>urn:custom</pdfaSchema:namespaceURI>
+          <pdfaSchema:prefix>custom</pdfaSchema:prefix>
+        </custom:Schema></rdf:li>
+        <rdf:li rdf:parseType="Resource">
+          <pdfaSchema:schema>Unexpected field</pdfaSchema:schema>
+          <pdfaSchema:namespaceURI>urn:unexpected</pdfaSchema:namespaceURI>
+          <pdfaSchema:prefix>custom</pdfaSchema:prefix>
+          <custom:Bag>Not an RDF container</custom:Bag>
+        </rdf:li>
+      </rdf:Bag></pdfaExtension:schemas>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+        let mut pdf = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Metadata 2 0 R >>\nendobj\n".to_vec();
+        append_test_stream(&mut pdf, "2 0 obj", "/Type /Metadata /Subtype /XML", xmp);
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile =
+            validate_test_profile(&pdf, ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-7-8-1", 1, 1);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("/Subtype /Circle /AP << /N 5 0 R /R null >>", "", [true,true,true,true])]
+    #[case("/Subtype 6 0 R", "6 0 obj\n/Link\nendobj\n", [true,true,true,true])]
+    #[case("/Subtype /Circle /AP << /N 5 0 R /R 5 0 R >>", "", [true,false,true,true])]
+    #[case("/Subtype /Circle /AP << /N << >> >>", "", [true,true,true,false])]
+    #[case("/Subtype /Widget /Parent 6 0 R /FT null /AP << /N << /Off 5 0 R >> >>", "6 0 obj\n<< /FT /Btn >>\nendobj\n", [true,true,true,true])]
+    #[case("/Subtype /Widget /FT /Btn /AP << /N << /Off 42 >> >>", "", [true,true,false,true])]
+    #[case("/Subtype /Circle", "", [false,true,true,true])]
+    fn test_should_check_annotation_appearance_entries_and_inherited_field_types(
+        #[case] entries: &str,
+        #[case] objects: &str,
+        #[case] expected: [bool; 4],
+    ) -> crate::Result<()> {
+        let mut pdf = format!(
+            "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type \
+             /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R \
+             /MediaBox [0 0 100 100] /Annots [4 0 R] >>\nendobj\n4 0 obj\n<< /Type /Annot /Rect \
+             [0 0 20 20] {entries} >>\nendobj\n{objects}"
+        )
+        .into_bytes();
+        append_test_stream(&mut pdf, "5 0 obj", "", b"");
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(3).ok_or(crate::ProfileError::UnsupportedSelection)?,
+                "b",
+            )?,
+        )?;
+        for (index, pass) in expected.into_iter().enumerate() {
+            let rule = format!("iso-19005-3-6-3-3-{}", index + 1);
+            assert_distinct_test_rule(&profile, &rule, usize::from(pass), usize::from(!pass));
+        }
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("", 0, 1)]
+    #[case(
+        "/Group << /S /Transparency /CS [/CalRGB << /WhitePoint [1 1 1] >>] >>",
+        1,
+        0
+    )]
+    fn test_should_check_the_device_space_reached_from_a_3d_annotation(
+        #[case] page_group: &str,
+        #[case] passes: usize,
+        #[case] failures: usize,
+    ) -> crate::Result<()> {
+        let mut pdf = format!(
+            "%PDF-2.0
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 1 /Kids [3 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [4 0 R]
+   /Resources << /ColorSpace << /Custom /RGB /RGB [/DeviceRGB] >> >> {page_group} >>
+endobj
+4 0 obj
+<< /Type /Annot /Subtype /3D /Rect [0 0 20 20] /3DD << /Type /3DRef /3DD 5 0 R >>
+   /AP << /N 6 0 R >> >>
+endobj
+"
+        )
+        .into_bytes();
+        append_test_stream(&mut pdf, "5 0 obj", "/Type /3D /ColorSpace /Custom", b"");
+        append_test_stream(&mut pdf, "6 0 obj", "/Type /XObject /Subtype /Form", b"");
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(4).ok_or(crate::ProfileError::UnsupportedSelection)?,
+                "e",
+            )?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-4-6-3-3-1", 1, 0);
+        assert_distinct_test_rule(&profile, "iso-19005-4-6-2-4-3-2", passes, failures);
         Ok(())
     }
 

@@ -351,6 +351,7 @@ struct PacketBuilder<'a> {
     properties: Vec<XmpProperty>,
     stack: Vec<ElementFrame>,
     facts: Vec<XmpFact>,
+    saw_rdf_root: bool,
     saw_packet_wrapper: bool,
     packet_bytes: Option<BoundedText>,
     packet_encoding: Option<BoundedText>,
@@ -376,6 +377,7 @@ impl<'a> PacketBuilder<'a> {
             properties: Vec::new(),
             stack: Vec::with_capacity(usize::try_from(limits.max_xmp_depth).unwrap_or(0)),
             facts: Vec::new(),
+            saw_rdf_root: false,
             saw_packet_wrapper: false,
             packet_bytes: None,
             packet_encoding: None,
@@ -452,6 +454,11 @@ impl<'a> PacketBuilder<'a> {
         self.read_namespaces(element)?;
         let namespace = self.resolve_prefix(&prefix)?;
         let in_pdfd_declarations = is_pdfd_declarations_context(&self.stack, &namespace, &local);
+        let first_root =
+            !self.saw_rdf_root && namespace.as_str() == RDF_NS && local.as_str() == "RDF";
+        self.saw_rdf_root |= first_root;
+        let in_rdf = first_root || self.stack.last().is_some_and(|parent| parent.in_rdf);
+        let resource_node = self.extension_resource_node()?;
         let mut frame = ElementFrame {
             namespace,
             prefix,
@@ -461,14 +468,23 @@ impl<'a> PacketBuilder<'a> {
             text: String::new(),
             previous_namespaces,
             in_pdfd_declarations,
+            in_rdf,
             extension_scope: self.direct_extension_scope(),
-            extension_role: None,
+            extension_role: resource_node,
+            resource_syntax: if resource_node.is_some() {
+                ResourceSyntax::Node
+            } else {
+                ResourceSyntax::None
+            },
             saw_array: false,
         };
         if let Some((role, prefix)) = self.extension_role(&frame) {
             let id = self.next_extension_scope()?;
             frame.extension_scope = Some(id);
             frame.extension_role = Some(role);
+            if role != XmpExtensionRole::Container && !self.has_resource_parse_type(element)? {
+                frame.resource_syntax = ResourceSyntax::AwaitingNode;
+            }
             let schema = if role == XmpExtensionRole::Definition {
                 Some(id)
             } else {
@@ -493,11 +509,25 @@ impl<'a> PacketBuilder<'a> {
         } else {
             None
         };
-        self.capture_attr_properties(element, attribute_scope)?;
-        if frame.namespace.as_str() == RDF_NS
+        if in_rdf {
+            let top_description = frame.namespace.as_str() == RDF_NS
+                && frame.local.as_str() == "Description"
+                && self.stack.last().is_some_and(ElementFrame::is_rdf_root);
+            self.capture_attr_properties(element, attribute_scope, top_description)?;
+        }
+        if in_rdf {
+            self.capture_array(&frame)?;
+        }
+        self.stack.push(frame);
+        Ok(())
+    }
+
+    fn capture_array(&mut self, frame: &ElementFrame) -> Result<()> {
+        if frame.resource_syntax != ResourceSyntax::Node
+            && frame.namespace.as_str() == RDF_NS
             && matches!(frame.local.as_str(), "Alt" | "Bag" | "Seq")
             && let Some(property) = self.stack.last_mut()
-            && is_rdf_property(&property.namespace, &property.local)
+            && is_rdf_property(&property.namespace)
         {
             let container = ElementFrame {
                 namespace: property.namespace.clone(),
@@ -508,14 +538,15 @@ impl<'a> PacketBuilder<'a> {
                 text: String::new(),
                 previous_namespaces: BTreeMap::new(),
                 in_pdfd_declarations: property.in_pdfd_declarations,
+                in_rdf: property.in_rdf,
                 extension_scope: property.extension_scope,
                 extension_role: None,
+                resource_syntax: ResourceSyntax::None,
                 saw_array: false,
             };
             property.saw_array = true;
             self.insert_property(&container, "")?;
         }
-        self.stack.push(frame);
         Ok(())
     }
 
@@ -530,38 +561,86 @@ impl<'a> PacketBuilder<'a> {
 
     fn direct_extension_scope(&self) -> Option<u64> {
         let parent = self.stack.last()?;
-        if parent.extension_role.is_some() {
-            return parent.extension_scope;
+        parent.extension_role?;
+        parent.extension_scope
+    }
+
+    fn extension_resource_node(&mut self) -> Result<Option<XmpExtensionRole>> {
+        let Some(parent) = self.stack.last_mut() else {
+            return Ok(None);
+        };
+        match parent.resource_syntax {
+            ResourceSyntax::AwaitingNode => {
+                parent.resource_syntax = ResourceSyntax::HasNode;
+                Ok(parent.extension_role)
+            }
+            ResourceSyntax::HasNode => Err(crate::ProfileError::InvalidXml {
+                reason: BoundedText::unchecked("XMP RDF list item has more than one resource node"),
+            }
+            .into()),
+            ResourceSyntax::None | ResourceSyntax::Node => Ok(None),
         }
-        if parent.namespace.as_str() == RDF_NS && parent.local.as_str() == "Description" {
-            let owner = self.stack.iter().rev().nth(1)?;
-            if owner.extension_role.is_some() {
-                return owner.extension_scope;
+    }
+
+    fn has_resource_parse_type(&self, element: &quick_xml::events::BytesStart<'_>) -> Result<bool> {
+        for attribute in element.attributes().with_checks(true) {
+            let attr = attribute.map_err(|error| crate::ProfileError::InvalidXml {
+                reason: bounded_reason(error.to_string()),
+            })?;
+            if namespace_decl_prefix(attr.key.as_ref()).is_none() {
+                let (prefix, local) = split_xml_name(attr.key.as_ref())?;
+                if !prefix.as_str().is_empty()
+                    && local.as_str() == "parseType"
+                    && self.resolve_prefix(&prefix)?.as_str() == RDF_NS
+                    && attr.value.as_ref() == b"Resource"
+                {
+                    return Ok(true);
+                }
             }
         }
-        None
+        Ok(false)
     }
 
     fn extension_role(&self, frame: &ElementFrame) -> Option<(XmpExtensionRole, Identifier)> {
-        if frame.namespace.as_str() == PDFA_EXTENSION_NS && frame.local.as_str() == "schemas" {
+        if !frame.in_rdf {
+            return None;
+        }
+        if frame.namespace.as_str() == PDFA_EXTENSION_NS
+            && frame.local.as_str() == "schemas"
+            && self.in_rdf_description()
+        {
             return Some((XmpExtensionRole::Container, frame.prefix.clone()));
         }
         if frame.namespace.as_str() != RDF_NS || frame.local.as_str() != "li" {
             return None;
         }
-        let array = self.stack.last()?;
+        let mut ancestors = self.stack.iter().rev();
+        let array = ancestors.next()?;
         if array.namespace.as_str() != RDF_NS
             || !matches!(array.local.as_str(), "Bag" | "Seq" | "Alt")
         {
             return None;
         }
-        let property = self.stack.iter().rev().nth(1)?;
+        let property = ancestors.next()?;
         property.extension_scope?;
-        let role = match (property.namespace.as_str(), property.local.as_str()) {
-            (PDFA_EXTENSION_NS, "schemas") => XmpExtensionRole::Definition,
-            (PDFA_SCHEMA_NS, "property") => XmpExtensionRole::Property,
-            (PDFA_SCHEMA_NS, "valueType") => XmpExtensionRole::ValueType,
-            (PDFA_TYPE_NS, "field") => XmpExtensionRole::Field,
+        let owner_role = ancestors.next().and_then(|owner| owner.extension_role);
+        let role = match (
+            property.namespace.as_str(),
+            property.local.as_str(),
+            owner_role,
+        ) {
+            (PDFA_EXTENSION_NS, "schemas", _)
+                if property.extension_role == Some(XmpExtensionRole::Container) =>
+            {
+                XmpExtensionRole::Definition
+            }
+            (PDFA_SCHEMA_NS, "property", Some(XmpExtensionRole::Definition)) => {
+                XmpExtensionRole::Property
+            }
+            (PDFA_SCHEMA_NS, "valueType", Some(XmpExtensionRole::Definition)) => {
+                XmpExtensionRole::ValueType
+            }
+            (PDFA_TYPE_NS, "field", Some(XmpExtensionRole::ValueType)) => XmpExtensionRole::Field,
             _ => return None,
         };
         Some((role, property.prefix.clone()))
@@ -575,14 +654,16 @@ impl<'a> PacketBuilder<'a> {
             .into());
         };
         let value = frame.text.trim().to_owned();
-        if !value.is_empty()
-            || (frame.extension_scope.is_some()
-                && !frame.saw_array
-                && is_rdf_property(&frame.namespace, &frame.local))
+        if frame.in_rdf
+            && frame.resource_syntax != ResourceSyntax::Node
+            && (!value.is_empty()
+                || (frame.extension_scope.is_some()
+                    && !frame.saw_array
+                    && is_rdf_property(&frame.namespace)))
         {
             if let Some(array_property) = self.array_item_property(&frame) {
                 self.insert_property(&array_property, &value)?;
-            } else if is_rdf_property(&frame.namespace, &frame.local) {
+            } else if is_rdf_property(&frame.namespace) {
                 self.insert_property(&frame, &value)?;
             }
         }
@@ -591,6 +672,13 @@ impl<'a> PacketBuilder<'a> {
             limit: "max_xmp_depth",
         })?;
         Ok(())
+    }
+
+    fn in_rdf_description(&self) -> bool {
+        let mut ancestors = self.stack.iter().rev();
+        ancestors.next().is_some_and(|parent| {
+            parent.namespace.as_str() == RDF_NS && parent.local.as_str() == "Description"
+        }) && ancestors.next().is_some_and(ElementFrame::is_rdf_root)
     }
 
     fn text(&mut self, value: &str) -> Result<()> {
@@ -731,6 +819,7 @@ impl<'a> PacketBuilder<'a> {
         &mut self,
         element: &quick_xml::events::BytesStart<'_>,
         extension_scope: Option<u64>,
+        top_description: bool,
     ) -> Result<()> {
         for attr in element.attributes().with_checks(true) {
             let attr = attr.map_err(|error| crate::ProfileError::InvalidXml {
@@ -745,22 +834,24 @@ impl<'a> PacketBuilder<'a> {
                 continue;
             }
             let namespace = self.resolve_prefix(&prefix)?;
-            if is_rdf_property(&namespace, &local) {
+            if is_rdf_property(&namespace) {
                 let value = String::from_utf8_lossy(attr.value.as_ref()).into_owned();
-                let scope =
-                    if namespace.as_str() == PDFA_EXTENSION_NS && local.as_str() == "schemas" {
-                        let id = self.next_extension_scope()?;
-                        self.facts.push(XmpFact::ExtensionScope {
-                            id,
-                            role: XmpExtensionRole::Container,
-                            schema: None,
-                            prefix: prefix.clone(),
-                            property_indices: Vec::new(),
-                        });
-                        Some(id)
-                    } else {
-                        extension_scope
-                    };
+                let scope = if namespace.as_str() == PDFA_EXTENSION_NS
+                    && local.as_str() == "schemas"
+                    && top_description
+                {
+                    let id = self.next_extension_scope()?;
+                    self.facts.push(XmpFact::ExtensionScope {
+                        id,
+                        role: XmpExtensionRole::Container,
+                        schema: None,
+                        prefix: prefix.clone(),
+                        property_indices: Vec::new(),
+                    });
+                    Some(id)
+                } else {
+                    extension_scope
+                };
                 let frame = ElementFrame {
                     namespace,
                     prefix,
@@ -773,8 +864,10 @@ impl<'a> PacketBuilder<'a> {
                         .stack
                         .last()
                         .is_some_and(|frame| frame.in_pdfd_declarations),
+                    in_rdf: true,
                     extension_scope: scope,
                     extension_role: None,
+                    resource_syntax: ResourceSyntax::None,
                     saw_array: false,
                 };
                 self.insert_property(&frame, value.trim())?;
@@ -880,7 +973,7 @@ impl<'a> PacketBuilder<'a> {
             return None;
         }
         let property = self.stack.iter().rev().nth(1)?;
-        if !is_rdf_property(&property.namespace, &property.local) {
+        if !is_rdf_property(&property.namespace) {
             return None;
         }
         Some(ElementFrame {
@@ -892,8 +985,10 @@ impl<'a> PacketBuilder<'a> {
             text: String::new(),
             previous_namespaces: BTreeMap::new(),
             in_pdfd_declarations: property.in_pdfd_declarations,
+            in_rdf: property.in_rdf,
             extension_scope: None,
             extension_role: None,
+            resource_syntax: ResourceSyntax::None,
             saw_array: false,
         })
     }
@@ -1016,9 +1111,25 @@ struct ElementFrame {
     text: String,
     previous_namespaces: BTreeMap<String, BoundedText>,
     in_pdfd_declarations: bool,
+    in_rdf: bool,
     extension_scope: Option<u64>,
     extension_role: Option<XmpExtensionRole>,
+    resource_syntax: ResourceSyntax,
     saw_array: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceSyntax {
+    None,
+    AwaitingNode,
+    HasNode,
+    Node,
+}
+
+impl ElementFrame {
+    fn is_rdf_root(&self) -> bool {
+        self.in_rdf && self.namespace.as_str() == RDF_NS && self.local.as_str() == "RDF"
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1321,15 +1432,9 @@ fn is_identification_property(namespace: &BoundedText, local: &Identifier) -> bo
     )
 }
 
-fn is_rdf_property(namespace: &BoundedText, local: &Identifier) -> bool {
+fn is_rdf_property(namespace: &BoundedText) -> bool {
     let namespace = namespace.as_str();
-    namespace != RDF_NS
-        && namespace != XML_NS
-        && !namespace.is_empty()
-        && !matches!(
-            local.as_str(),
-            "RDF" | "Description" | "Alt" | "Bag" | "Seq" | "li"
-        )
+    namespace != RDF_NS && namespace != XML_NS && !namespace.is_empty()
 }
 
 fn xpacket_attr(content: &str, name: &str, max_len: usize) -> Result<Option<BoundedText>> {
@@ -1592,6 +1697,30 @@ mod tests {
             claim.display_flavour.as_str() == "pdfa-2"
                 && claim.kind == super::XmpIdentificationKind::PdfA
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_collect_properties_only_from_the_first_rdf_root() -> crate::Result<()> {
+        let xml = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe">
+  <x:outside><rdf:Bag xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></x:outside>
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" dc:format="application/pdf"/>
+  </rdf:RDF>
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description x:outside="outside"/>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+        let packet = XmpParser.parse_packet(key(), xml, &ResourceLimits::default())?;
+        let properties = packet
+            .facts
+            .iter()
+            .filter_map(|fact| match fact {
+                XmpFact::RdfProperty { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(properties, ["format"]);
         Ok(())
     }
 
