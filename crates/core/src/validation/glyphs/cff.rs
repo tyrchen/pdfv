@@ -4,46 +4,11 @@ use std::{collections::BTreeMap, fmt};
 
 use read_fonts::{
     model::glyph::outline::NullSink,
-    ps::{PredefinedEncoding, Sid, agl, cff::CffFontRef},
+    ps::{Sid, cff::CffFontRef},
     types::GlyphId,
 };
 
-use super::{sfnt, simple_font_differences};
-use crate::{Dictionary, ParsedDocument, PdfName};
-
-#[derive(Debug)]
-pub(super) enum SimpleEncoding {
-    Embedded,
-    Standard,
-    WinAnsi,
-}
-
-#[derive(Debug)]
-pub(super) struct Encoding {
-    base: SimpleEncoding,
-    differences: BTreeMap<u8, PdfName>,
-}
-
-impl Encoding {
-    pub(super) fn read(document: &ParsedDocument, font: &Dictionary) -> Option<Self> {
-        let value = font.get("Encoding");
-        let dictionary = super::super::resolve_dictionary_value(document, value);
-        let base_value = dictionary.map_or(value, |dictionary| dictionary.get("BaseEncoding"));
-        let base = match super::super::semantic_names::name(document, base_value) {
-            Some(name) if name.matches("StandardEncoding") => SimpleEncoding::Standard,
-            Some(name) if name.matches("WinAnsiEncoding") => SimpleEncoding::WinAnsi,
-            None if base_value.is_none() => SimpleEncoding::Embedded,
-            _ => return None,
-        };
-        let differences =
-            if dictionary.is_some_and(|dictionary| dictionary.get("Differences").is_some()) {
-                simple_font_differences(document, font)?
-            } else {
-                BTreeMap::new()
-            };
-        Some(Self { base, differences })
-    }
-}
+use super::simple::Encoding;
 
 pub(super) struct Metrics<'data> {
     font: CffFontRef<'data>,
@@ -89,18 +54,23 @@ impl<'data> Metrics<'data> {
     }
 
     pub(super) fn simple_gid(&self, encoding: &Encoding, code: u8) -> Option<u16> {
-        if let Some(name) = encoding.differences.get(&code) {
-            return self.names.get(name.as_bytes()).copied();
+        if let Some(name) = encoding.name(code) {
+            self.names.get(name).copied()
+        } else {
+            u16::try_from(self.font.encoding()?.map(code)?.to_u32()).ok()
         }
-        let mut name = [0; 32];
-        let base = match encoding.base {
-            SimpleEncoding::Embedded => {
-                return u16::try_from(self.font.encoding()?.map(code)?.to_u32()).ok();
-            }
-            SimpleEncoding::Standard => PredefinedEncoding::Standard.name(code),
-            SimpleEncoding::WinAnsi => agl::char_to_name(sfnt::win_ansi_unicode(code)?, &mut name)?,
-        };
-        self.names.get(base.as_bytes()).copied()
+    }
+
+    pub(super) fn glyph_names(&self) -> impl Iterator<Item = &[u8]> {
+        self.names.keys().copied()
+    }
+
+    pub(super) fn glyph_name(&self, glyph: u16) -> Option<&[u8]> {
+        let sid = self
+            .font
+            .charset()?
+            .string_id(GlyphId::new(u32::from(glyph)))?;
+        self.font.string(sid)
     }
 
     pub(super) fn width(&self, gid: u16) -> Option<f64> {

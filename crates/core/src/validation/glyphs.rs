@@ -2,9 +2,12 @@
 
 mod cff;
 mod sfnt;
+mod simple;
+mod type1;
 mod unicode;
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     ptr,
     sync::Arc,
@@ -23,12 +26,13 @@ use super::{
 };
 use crate::{
     BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument,
-    PdfName, PropertyName, ResourceLimits, Result, ValidationError,
+    PdfName, PdfString, PropertyName, ResourceLimits, Result, ValidationError,
     content::{MarkedContentSpan, TextOperand},
 };
 
 pub(crate) const WIDTH_FAMILY: &str = "glyphWidth";
 pub(crate) const CID_SET_FAMILY: &str = "usedCidSet";
+pub(crate) const CHAR_SET_FAMILY: &str = "usedType1CharSet";
 pub(crate) const UNICODE_FAMILY: &str = unicode::FAMILY;
 pub(crate) const PUA_FAMILY: &str = unicode::PUA_FAMILY;
 
@@ -60,6 +64,7 @@ impl Coverage {
 pub(super) enum Evidence {
     Width(WidthEvidence),
     CidSet(CidSet),
+    CharSet(CharSet),
     UnresolvedCidFont,
     Unicode(unicode::Mapping),
     ActualText(Option<bool>),
@@ -80,6 +85,14 @@ pub(super) struct CidSet {
     coverage: Coverage,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct CharSet {
+    name: Option<String>,
+    declaration: Option<String>,
+    embedded: bool,
+    coverage: Coverage,
+}
+
 impl Evidence {
     pub(super) fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match (self, name.as_str()) {
@@ -96,6 +109,20 @@ impl Evidence {
             }
             (Self::CidSet(evidence), "containsCIDSet") => Ok(ModelValue::Bool(evidence.present)),
             (Self::CidSet(evidence), "cidSetListsAllGlyphs") => match evidence.coverage {
+                Coverage::Verified => Ok(ModelValue::Bool(true)),
+                Coverage::Missing => Ok(ModelValue::Bool(false)),
+                Coverage::Unavailable => unknown_property(name),
+            },
+            (Self::CharSet(evidence), "fontName") => {
+                Ok(super::optional_string_model_value(evidence.name.clone()))
+            }
+            (Self::CharSet(evidence), "CharSet") => Ok(super::optional_string_model_value(
+                evidence.declaration.clone(),
+            )),
+            (Self::CharSet(evidence), "containsFontFile") => {
+                Ok(ModelValue::Bool(evidence.embedded))
+            }
+            (Self::CharSet(evidence), "charSetListsAllGlyphs") => match evidence.coverage {
                 Coverage::Verified => Ok(ModelValue::Bool(true)),
                 Coverage::Missing => Ok(ModelValue::Bool(false)),
                 Coverage::Unavailable => unknown_property(name),
@@ -198,6 +225,7 @@ impl TextState {
 #[derive(Debug, Default)]
 pub(super) struct CidAudit {
     fonts: BTreeMap<FontId, (CidSet, String)>,
+    charsets: BTreeMap<ProgramFontId, (CharSet, String)>,
     modeled_cmaps: BTreeSet<FontId>,
     modeled_true_type: BTreeSet<ProgramFontId>,
     unresolved: Option<String>,
@@ -205,6 +233,87 @@ pub(super) struct CidAudit {
 }
 
 impl CidAudit {
+    fn append_cmaps<'a>(
+        &mut self,
+        graph: &ModelGraph<'a>,
+        font: &FontSelection,
+        dictionary: &Dictionary,
+        path: &str,
+        objects: &mut Vec<ModelObjectRef<'a>>,
+        max: usize,
+    ) -> Result<()> {
+        if cmap::FAMILIES
+            .iter()
+            .any(|family| graph.materializes(family))
+            && semantic_names::name(graph.document, dictionary.get("Subtype"))
+                .is_some_and(|name| name.matches("Type0"))
+            && self.modeled_cmaps.insert(font.id)
+        {
+            cmap::append_encoding_models(graph, dictionary.get("Encoding"), path, objects, max)?;
+        }
+        Ok(())
+    }
+
+    fn record_char_set(
+        &mut self,
+        graph: &ModelGraph<'_>,
+        id: ProgramFontId,
+        font: &Dictionary,
+        program: &SimpleProgram,
+        samples: &[Sample<'_>],
+        path: &str,
+    ) -> Result<()> {
+        let document = graph.document;
+        if !is_type1(document, font) {
+            return Ok(());
+        }
+        let descriptor = font_descriptor_dictionary(document, font);
+        let value = descriptor.and_then(|descriptor| descriptor.get("CharSet"));
+        let declaration = match semantic_names::resolve(document, value) {
+            Some(CosObject::String(text)) => Some(text.as_bytes()),
+            _ => None,
+        };
+        let used_only = graph
+            .active_flavour
+            .as_ref()
+            .is_some_and(|flavour| flavour.family.as_str() == "pdfa" && flavour.part.get() == 1);
+        let coverage = if !used_only && self.charsets.contains_key(&id) {
+            return Ok(());
+        } else if let Some(declaration) = declaration {
+            char_set_coverage(
+                document,
+                font,
+                program,
+                declaration,
+                used_only.then_some(samples),
+            )
+        } else {
+            Coverage::Missing
+        };
+        match self.charsets.entry(id) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let record = &mut entry.get_mut().0;
+                record.coverage = record.coverage.include(coverage);
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                if let Some(declaration) = declaration {
+                    graph.charge_text_bytes(declaration.len())?;
+                }
+                entry.insert((
+                    CharSet {
+                        name: font_name(document, font),
+                        declaration: declaration
+                            .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+                        embedded: font_program_stream(document, font).is_some(),
+                        coverage,
+                    },
+                    path.to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn true_type_model<'a>(
         &mut self,
         id: ProgramFontId,
@@ -283,6 +392,19 @@ impl CidAudit {
                 max,
             )?;
         }
+        for (ordinal, (record, context)) in self.charsets.values().enumerate() {
+            push_linked(
+                &mut models,
+                model(
+                    document,
+                    CHAR_SET_FAMILY,
+                    Evidence::CharSet(record.clone()),
+                    ordinal,
+                    context,
+                ),
+                max,
+            )?;
+        }
         if let Some(context) = &self.unresolved {
             let ordinal = models.len();
             push_linked(
@@ -299,6 +421,169 @@ impl CidAudit {
         }
         Ok(models)
     }
+}
+
+fn char_set_coverage(
+    document: &ParsedDocument,
+    font: &Dictionary,
+    program: &SimpleProgram,
+    declaration: &[u8],
+    samples: Option<&[Sample<'_>]>,
+) -> Coverage {
+    let mut names = declaration.trim_ascii().split(|byte| *byte == b'/');
+    if names.next().is_some_and(|first| !first.is_empty()) {
+        return Coverage::Missing;
+    }
+    let mut declared = BTreeSet::new();
+    for name in names {
+        let name = name.trim_ascii();
+        if name.is_empty() || name.iter().any(u8::is_ascii_whitespace) {
+            return Coverage::Missing;
+        }
+        let Some(name) = decode_char_set_name(name) else {
+            return Coverage::Missing;
+        };
+        if name.as_ref() != b".notdef" {
+            declared.insert(name);
+        }
+    }
+    let cff = program.cff();
+    let type1 = program.type1();
+    if let Some(samples) = samples {
+        used_char_set(document, font, cff.as_ref(), type1, &declared, samples)
+    } else {
+        match (cff, type1) {
+            (Some(program), _) => compare_char_set(&declared, program.glyph_names()),
+            (None, Some(program)) => compare_char_set(&declared, program.glyph_names()),
+            _ => Coverage::Unavailable,
+        }
+    }
+}
+
+fn decode_char_set_name(name: &[u8]) -> Option<Cow<'_, [u8]>> {
+    if !name.contains(&b'#') {
+        return Some(Cow::Borrowed(name));
+    }
+    let mut decoded = Vec::with_capacity(name.len());
+    let mut bytes = name.iter().copied();
+    while let Some(byte) = bytes.next() {
+        if byte == b'#' {
+            let digits = [bytes.next()?, bytes.next()?];
+            if !digits.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            decoded.push(u8::from_str_radix(std::str::from_utf8(&digits).ok()?, 16).ok()?);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    Some(Cow::Owned(decoded))
+}
+
+fn used_char_set(
+    document: &ParsedDocument,
+    font: &Dictionary,
+    cff: Option<&cff::Metrics<'_>>,
+    type1: Option<&type1::Program>,
+    declared: &BTreeSet<Cow<'_, [u8]>>,
+    samples: &[Sample<'_>],
+) -> Coverage {
+    let Some(encoding) = simple::Encoding::read(document, font) else {
+        return Coverage::Unavailable;
+    };
+    if cff.is_none() && type1.is_none() {
+        return Coverage::Unavailable;
+    }
+    let mut seen = BTreeSet::new();
+    let mut result = Coverage::Verified;
+    for sample in samples {
+        let Some(text) = sample.text else {
+            result = Coverage::Unavailable;
+            continue;
+        };
+        for code in text.0.iter().flat_map(PdfString::as_bytes) {
+            if !seen.insert(*code) {
+                continue;
+            }
+            let name = if let Some(program) = cff {
+                program
+                    .simple_gid(&encoding, *code)
+                    .and_then(|glyph| program.glyph_name(glyph))
+            } else if let Some(program) = type1 {
+                let name = program.glyph_name(&encoding, *code);
+                program.contains(name).then_some(name)
+            } else {
+                None
+            };
+            if name.is_some_and(|name| name != b".notdef" && !declared.contains(name)) {
+                return Coverage::Missing;
+            }
+        }
+    }
+    result
+}
+
+fn compare_char_set<'a>(
+    declared: &BTreeSet<Cow<'_, [u8]>>,
+    program: impl Iterator<Item = &'a [u8]>,
+) -> Coverage {
+    if declared
+        .iter()
+        .map(Cow::as_ref)
+        .eq(program.filter(|name| *name != b".notdef"))
+    {
+        Coverage::Verified
+    } else {
+        Coverage::Missing
+    }
+}
+
+#[derive(Debug)]
+enum SimpleProgram {
+    Cff(Vec<u8>),
+    Type1(type1::Program),
+    Unavailable,
+}
+
+impl SimpleProgram {
+    fn read(graph: &ModelGraph<'_>, font: &Dictionary) -> Result<Self> {
+        let document = graph.document;
+        let Some(stream) = font_program_stream(document, font).filter(|_| is_type1(document, font))
+        else {
+            return Ok(Self::Unavailable);
+        };
+        if semantic_names::name(document, stream.dictionary.get("Subtype"))
+            .is_some_and(|name| name.matches("Type1C"))
+        {
+            return Ok(sfnt::decode(stream, graph.limits)?.map_or(Self::Unavailable, Self::Cff));
+        }
+        let type1_stream = font_descriptor_dictionary(document, font)
+            .and_then(|descriptor| stream_from_value(document, descriptor.get("FontFile")));
+        if type1_stream.is_some_and(|candidate| ptr::eq(candidate, stream)) {
+            return Ok(type1::Program::read(document, stream, graph.limits)?
+                .map_or(Self::Unavailable, Self::Type1));
+        }
+        Ok(Self::Unavailable)
+    }
+
+    fn cff(&self) -> Option<cff::Metrics<'_>> {
+        match self {
+            Self::Cff(bytes) => cff::Metrics::read(bytes, false),
+            _ => None,
+        }
+    }
+
+    fn type1(&self) -> Option<&type1::Program> {
+        match self {
+            Self::Type1(program) => Some(program),
+            _ => None,
+        }
+    }
+}
+
+fn is_type1(document: &ParsedDocument, font: &Dictionary) -> bool {
+    semantic_names::name(document, font.get("Subtype"))
+        .is_some_and(|name| name.matches("Type1") || name.matches("MMType1"))
 }
 
 fn cid_font_id(document: &ParsedDocument, font: &Dictionary, fallback: FontId) -> FontId {
@@ -374,7 +659,10 @@ pub(super) fn inspect<'a>(
         &resources,
         summary,
         graph.limits,
-        if graph.materializes(TRUE_TYPE_PROGRAM) || super::unicode_name::enabled(graph) {
+        if graph.materializes(TRUE_TYPE_PROGRAM)
+            || graph.materializes(CHAR_SET_FAMILY)
+            || super::unicode_name::enabled(graph)
+        {
             ShowScope::Operators
         } else {
             ShowScope::Glyphs
@@ -397,6 +685,18 @@ pub(super) fn inspect<'a>(
                 )?;
             }
             let has_glyphs = samples.iter().any(|sample| sample.has_glyphs());
+            let check_char_set = !scoped_only && graph.materializes(CHAR_SET_FAMILY);
+            let inspect_font_program = check_char_set
+                || (has_glyphs
+                    && (graph.materializes(PUA_FAMILY)
+                        || (!scoped_only
+                            && (graph.materializes(UNICODE_FAMILY)
+                                || graph.materializes(WIDTH_FAMILY)))));
+            let simple_program = if inspect_font_program {
+                SimpleProgram::read(graph, dictionary)?
+            } else {
+                SimpleProgram::Unavailable
+            };
             if (graph.materializes(PUA_FAMILY)
                 || (!scoped_only && graph.materializes(UNICODE_FAMILY)))
                 && has_glyphs
@@ -405,31 +705,26 @@ pub(super) fn inspect<'a>(
                     content,
                     graph,
                     dictionary,
+                    &simple_program,
                     samples,
                     replacement_offsets,
                     objects,
                     max,
                 )?;
             }
-            if !scoped_only
-                && has_glyphs
-                && cmap::FAMILIES
-                    .iter()
-                    .any(|family| graph.materializes(family))
-                && semantic_names::name(graph.document, dictionary.get("Subtype"))
-                    .is_some_and(|name| name.matches("Type0"))
-                && cid_audit.modeled_cmaps.insert(font.id)
-            {
-                cmap::append_encoding_models(
+            if !scoped_only && has_glyphs {
+                cid_audit.append_cmaps(
                     graph,
-                    dictionary.get("Encoding"),
+                    font,
+                    dictionary,
                     &content.context_prefix,
                     objects,
                     max,
                 )?;
             }
             if !scoped_only
-                && (graph.materializes(TRUE_TYPE_PROGRAM)
+                && (check_char_set
+                    || graph.materializes(TRUE_TYPE_PROGRAM)
                     || (has_glyphs
                         && (graph.materializes(WIDTH_FAMILY)
                             || graph.materializes(CID_SET_FAMILY))))
@@ -439,6 +734,7 @@ pub(super) fn inspect<'a>(
                     graph,
                     font,
                     dictionary,
+                    &simple_program,
                     samples,
                     &mut cid_audit,
                     objects,
@@ -762,8 +1058,10 @@ fn font_selection(
 #[derive(Debug)]
 enum Encoding {
     WinAnsi,
+    MacRoman(simple::Encoding),
     TrueTypeBuiltin,
-    CffSimple(cff::Encoding),
+    CffSimple(simple::Encoding),
+    Type1(simple::Encoding),
     CffCid(CidEncoding),
     Type3(BTreeMap<u8, PdfName>),
     CidTrueType(CidEncoding, CidToGid),
@@ -817,8 +1115,15 @@ fn encoding(
     if subtype.is_some_and(|subtype| subtype.matches("Type1") || subtype.matches("MMType1"))
         && embedded_subtype.is_some_and(|subtype| subtype.matches("Type1C"))
     {
+        return Ok(simple::Encoding::read(document, font)
+            .map_or(Encoding::Unsupported, Encoding::CffSimple));
+    }
+    if subtype.is_some_and(|subtype| subtype.matches("Type1") || subtype.matches("MMType1"))
+        && font_descriptor_dictionary(document, font)
+            .is_some_and(|descriptor| descriptor.get("FontFile").is_some())
+    {
         return Ok(
-            cff::Encoding::read(document, font).map_or(Encoding::Unsupported, Encoding::CffSimple)
+            simple::Encoding::read(document, font).map_or(Encoding::Unsupported, Encoding::Type1)
         );
     }
     if subtype.is_some_and(|subtype| subtype.matches("CIDFontType0"))
@@ -842,6 +1147,12 @@ fn encoding(
         }
         if sfnt::is_win_ansi(document, font, descriptor) {
             return Ok(Encoding::WinAnsi);
+        }
+        if !sfnt::is_symbolic(document, descriptor)
+            && let Some(encoding) = simple::Encoding::read(document, font)
+            && encoding.base == simple::Base::MacRoman
+        {
+            return Ok(Encoding::MacRoman(encoding));
         }
     }
     if !subtype.is_some_and(|subtype| subtype.matches("CIDFontType2")) {
@@ -959,6 +1270,7 @@ struct FontMetrics<'a, 'program> {
     encoding: &'a Encoding,
     sfnt: Option<sfnt::Metrics<'program>>,
     cff: Option<cff::Metrics<'program>>,
+    type1: Option<&'program type1::Program>,
     cid_widths: Option<CidWidths>,
 }
 
@@ -969,19 +1281,22 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
         metric_font: &Dictionary,
         encoding: &'a Encoding,
         bytes: Option<&'program [u8]>,
+        simple_program: &'program SimpleProgram,
     ) -> Self {
         let (sfnt, cff) = match encoding {
-            Encoding::CffSimple(_) | Encoding::CffCid(_) => (
+            Encoding::CffSimple(_) => (None, simple_program.cff()),
+            Encoding::CffCid(_) => (
                 None,
                 bytes.and_then(|bytes| {
                     cff::Metrics::read(bytes, matches!(encoding, Encoding::CffCid(_)))
                 }),
             ),
-            Encoding::WinAnsi | Encoding::TrueTypeBuiltin | Encoding::CidTrueType(..) => {
-                (bytes.and_then(sfnt::Metrics::read), None)
-            }
-            Encoding::Unsupported => (bytes.and_then(sfnt::Metrics::read), None),
-            Encoding::Type3(_) => (None, None),
+            Encoding::WinAnsi
+            | Encoding::MacRoman(_)
+            | Encoding::TrueTypeBuiltin
+            | Encoding::CidTrueType(..)
+            | Encoding::Unsupported => (bytes.and_then(sfnt::Metrics::read), None),
+            Encoding::Type3(_) | Encoding::Type1(_) => (None, None),
         };
         let cid_widths = encoding
             .cid_encoding()
@@ -994,6 +1309,7 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
             encoding,
             sfnt,
             cff,
+            type1: simple_program.type1(),
             cid_widths,
         }
     }
@@ -1014,13 +1330,20 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
                 .sfnt
                 .as_ref()?
                 .unicode_gid(sfnt::win_ansi_unicode(u8::try_from(code).ok()?)?),
+            Encoding::MacRoman(encoding) => {
+                let name = std::str::from_utf8(encoding.name(u8::try_from(code).ok()?)?).ok()?;
+                self.sfnt.as_ref()?.named_gid(name)
+            }
             Encoding::CidTrueType(_, map) => map.gid(code),
             Encoding::CffSimple(encoding) => self
                 .cff
                 .as_ref()?
                 .simple_gid(encoding, u8::try_from(code).ok()?),
             Encoding::CffCid(_) => self.cff.as_ref()?.cid_gid(code),
-            Encoding::Type3(_) | Encoding::TrueTypeBuiltin | Encoding::Unsupported => None,
+            Encoding::Type3(_)
+            | Encoding::Type1(_)
+            | Encoding::TrueTypeBuiltin
+            | Encoding::Unsupported => None,
         }
     }
 
@@ -1068,6 +1391,11 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
                 audit,
                 limits,
             )?
+        } else if let Encoding::Type1(encoding) = self.encoding {
+            u8::try_from(code).ok().and_then(|code| {
+                let program = self.type1?;
+                program.width(program.glyph_name(encoding, code))
+            })
         } else if matches!(self.encoding, Encoding::TrueTypeBuiltin) {
             u8::try_from(code)
                 .ok()
@@ -1087,9 +1415,11 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
     fn expected(&self, code: u16) -> Measurement {
         let expected = match self.encoding {
             Encoding::WinAnsi
+            | Encoding::MacRoman(_)
             | Encoding::TrueTypeBuiltin
             | Encoding::Type3(_)
-            | Encoding::CffSimple(_) => simple_width(self.document, self.dictionary, code),
+            | Encoding::CffSimple(_)
+            | Encoding::Type1(_) => simple_width(self.document, self.dictionary, code),
             Encoding::CidTrueType(..) | Encoding::CffCid(_) => {
                 self.cid_widths.as_ref().map(|widths| widths.get(code))
             }
@@ -1145,12 +1475,23 @@ fn inspect_font<'a>(
     graph: &ModelGraph<'a>,
     selection: &FontSelection,
     font: &Dictionary,
+    simple_program: &SimpleProgram,
     samples: &[Sample<'_>],
     audit: &mut CidAudit,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
 ) -> Result<()> {
     let document = graph.document;
+    if graph.materializes(CHAR_SET_FAMILY) {
+        audit.record_char_set(
+            graph,
+            selection.program_id,
+            font,
+            simple_program,
+            samples,
+            &content.context_prefix,
+        )?;
+    }
     let metric_font = descendant_font_dictionary(document, font).unwrap_or(font);
     let is_true_type = semantic_names::name(document, font.get("Subtype"))
         .is_some_and(|name| name.matches("TrueType"));
@@ -1173,10 +1514,21 @@ fn inspect_font<'a>(
     };
     let bytes = font_bytes(
         embedded,
-        program || !matches!(encoding, Encoding::Unsupported),
+        program
+            || !matches!(
+                encoding,
+                Encoding::Unsupported | Encoding::CffSimple(_) | Encoding::Type1(_)
+            ),
         graph.limits,
     )?;
-    let measurements = FontMetrics::read(document, font, metric_font, &encoding, bytes.as_deref());
+    let measurements = FontMetrics::read(
+        document,
+        font,
+        metric_font,
+        &encoding,
+        bytes.as_deref(),
+        simple_program,
+    );
     if program
         && let Some(metrics) = &measurements.sfnt
         && let Some(model) = audit.true_type_model(

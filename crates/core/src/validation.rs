@@ -1862,7 +1862,8 @@ impl ValidationSession {
             file_spec::association::finalize(&graph, &mut object)?;
             state.apply_rule(&object, rule, &mut evaluator)?;
         }
-        if graph.materializes(glyphs::CID_SET_FAMILY) {
+        if graph.materializes(glyphs::CID_SET_FAMILY) || graph.materializes(glyphs::CHAR_SET_FAMILY)
+        {
             let budget = remaining_object_budget(&self.limits, visited.len(), 0)?;
             for object in graph
                 .cid_audit
@@ -2494,6 +2495,16 @@ impl ModelRegistry {
                 EMPTY_LINK_NAMES,
             ),
             family(
+                glyphs::CHAR_SET_FAMILY,
+                &[
+                    "fontName",
+                    "CharSet",
+                    "containsFontFile",
+                    "charSetListsAllGlyphs",
+                ],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 glyphs::UNICODE_FAMILY,
                 &["hasUnicodeMapping", "hasForbiddenUnicode"],
                 EMPTY_LINK_NAMES,
@@ -2686,6 +2697,7 @@ impl ModelRegistry {
                 "pageBox"
                     | glyphs::WIDTH_FAMILY
                     | glyphs::CID_SET_FAMILY
+                    | glyphs::CHAR_SET_FAMILY
                     | glyphs::UNICODE_FAMILY
                     | glyphs::PUA_FAMILY
                     | glyphs::TRUE_TYPE_PROGRAM
@@ -3644,6 +3656,7 @@ impl<'a> ModelGraph<'a> {
                         family.as_str(),
                         glyphs::WIDTH_FAMILY
                             | glyphs::CID_SET_FAMILY
+                            | glyphs::CHAR_SET_FAMILY
                             | glyphs::UNICODE_FAMILY
                             | glyphs::PUA_FAMILY
                             | glyphs::TRUE_TYPE_PROGRAM
@@ -3720,6 +3733,7 @@ impl<'a> ModelGraph<'a> {
             && (self.materializes(glyphs::WIDTH_FAMILY)
                 || self.materializes(glyphs::TRUE_TYPE_PROGRAM)
                 || self.materializes(glyphs::CID_SET_FAMILY)
+                || self.materializes(glyphs::CHAR_SET_FAMILY)
                 || self.materializes(glyphs::UNICODE_FAMILY)
                 || self.materializes(glyphs::PUA_FAMILY)
                 || unicode_name::enabled(self)

@@ -503,3 +503,67 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+  - id: pdfa-1a-6-3-8-t01-pass-a
+    path: "PDF_A-1a/6.3 Fonts/6.3.8 Unicode character maps/veraPDF test suite 6-3-8-t01-pass-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: a
+    expectedFeatures:
+      - font
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-1a-6-3-8-t01-fail-a
+    path: "PDF_A-1a/6.3 Fonts/6.3.8 Unicode character maps/veraPDF test suite 6-3-8-t01-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 1
+        conformance: a
+    expectedFeatures:
+      - font
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-2u-6-2-11-7-2-t01-pass-a
+    path: "PDF_A-2u/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.2 Level A and Level U conformance/veraPDF test suite 6-2-11-7-2-t01-pass-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: u
+    expectedFeatures:
+      - font
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-2u-6-2-11-7-2-t01-fail-a
+    path: "PDF_A-2u/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.2 Level A and Level U conformance/veraPDF test suite 6-2-11-7-2-t01-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: u
+    expectedFeatures:
+      - font
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable

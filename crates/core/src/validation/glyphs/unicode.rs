@@ -1,19 +1,22 @@
 //! Unicode evidence from character codes used by text-show operators.
 
-use std::{collections::BTreeSet, str};
+use std::{
+    collections::{BTreeSet, HashSet},
+    str,
+    sync::OnceLock,
+};
 
-use read_fonts::ps::{PredefinedEncoding, agl};
+use read_fonts::ps::agl;
 
 use super::{
-    ContentStreamModel, Evidence, ModelGraph, ModelObjectRef, Sample, cff, font_bytes, model,
-    simple_font_differences,
+    ContentStreamModel, Evidence, ModelGraph, ModelObjectRef, Sample, SimpleProgram, cff, model,
+    simple, type1,
 };
 use crate::{
     CosObject, Dictionary, ParsedDocument, Result, pdf_text,
     validation::{
         cmap::{self, CMap, Code, UnicodeLookup, UnicodeMap},
-        descendant_font_dictionary, font_program_dictionary, font_program_stream, push_linked,
-        resolve_dictionary_value, semantic_names,
+        descendant_font_dictionary, push_linked, resolve_dictionary_value, semantic_names,
     },
 };
 
@@ -107,40 +110,25 @@ impl SourceEncoding {
 }
 
 #[derive(Debug)]
-enum SimpleBase {
-    Standard,
-    WinAnsi,
-    Unspecified,
-    Unavailable,
-}
-
-#[derive(Debug)]
 struct SimpleMap<'a> {
-    base: SimpleBase,
-    differences: Option<std::collections::BTreeMap<u8, crate::PdfName>>,
+    encoding: Option<simple::Encoding>,
     cff: Option<cff::Metrics<'a>>,
+    type1: Option<&'a type1::Program>,
+    require_listed_name: bool,
 }
 
 impl<'a> SimpleMap<'a> {
-    fn read(document: &ParsedDocument, font: &Dictionary, font_bytes: Option<&'a [u8]>) -> Self {
-        let value = font.get("Encoding");
-        let dictionary = resolve_dictionary_value(document, value);
-        let name_value = dictionary.map_or(value, |dict| dict.get("BaseEncoding"));
-        let base = match semantic_names::name(document, name_value) {
-            Some(name) if name.matches("StandardEncoding") => SimpleBase::Standard,
-            Some(name) if name.matches("WinAnsiEncoding") => SimpleBase::WinAnsi,
-            None if name_value.is_none() => SimpleBase::Unspecified,
-            _ => SimpleBase::Unavailable,
-        };
-        let differences = if dictionary.is_some_and(|dict| dict.get("Differences").is_some()) {
-            simple_font_differences(document, font)
-        } else {
-            Some(std::collections::BTreeMap::new())
-        };
+    fn read(
+        document: &ParsedDocument,
+        font: &Dictionary,
+        program: &'a SimpleProgram,
+        require_listed_name: bool,
+    ) -> Self {
         Self {
-            base,
-            differences,
-            cff: font_bytes.and_then(|bytes| cff::Metrics::read(bytes, false)),
+            encoding: simple::Encoding::read(document, font),
+            cff: program.cff(),
+            type1: program.type1(),
+            require_listed_name,
         }
     }
 
@@ -148,37 +136,53 @@ impl<'a> SimpleMap<'a> {
         let Ok(code) = u8::try_from(code) else {
             return UnicodeLookup::Unavailable;
         };
-        let Some(differences) = &self.differences else {
+        let Some(encoding) = &self.encoding else {
             return UnicodeLookup::Unavailable;
         };
-        if let Some(name) = differences.get(&code) {
-            return str::from_utf8(name.as_bytes()).map_or(UnicodeLookup::Invalid, glyph_name);
+        if let Some(name) = encoding.name(code) {
+            return str::from_utf8(name).map_or(UnicodeLookup::Invalid, |name| {
+                glyph_name(name, self.require_listed_name)
+            });
         }
-        match self.base {
-            SimpleBase::Standard => glyph_name(PredefinedEncoding::Standard.name(code)),
-            SimpleBase::WinAnsi => super::sfnt::win_ansi_unicode(code)
-                .and_then(char::from_u32)
-                .map_or(UnicodeLookup::Missing, |ch| {
-                    UnicodeLookup::Value(ch.to_string())
-                }),
-            SimpleBase::Unspecified => {
-                self.cff.as_ref().map_or(UnicodeLookup::Unavailable, |cff| {
-                    cff.embedded_name(code)
-                        .map_or(UnicodeLookup::Missing, glyph_name)
+        if let Some(program) = self.type1 {
+            return str::from_utf8(program.embedded_name(code))
+                .map_or(UnicodeLookup::Invalid, |name| {
+                    glyph_name(name, self.require_listed_name)
+                });
+        }
+        self.cff.as_ref().map_or(UnicodeLookup::Unavailable, |cff| {
+            cff.embedded_name(code)
+                .map_or(UnicodeLookup::Missing, |name| {
+                    glyph_name(name, self.require_listed_name)
                 })
-            }
-            SimpleBase::Unavailable => UnicodeLookup::Unavailable,
-        }
+        })
     }
 }
 
-fn glyph_name(name: &str) -> UnicodeLookup {
+fn glyph_name(name: &str, require_listed_name: bool) -> UnicodeLookup {
+    if require_listed_name && !listed_glyph_name(name) {
+        return UnicodeLookup::Missing;
+    }
     let text: String = agl::name_to_chars(name).collect();
     if text.is_empty() {
         UnicodeLookup::Missing
     } else {
         UnicodeLookup::Value(text)
     }
+}
+
+fn listed_glyph_name(name: &str) -> bool {
+    static LEGACY_NAMES: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    // The Adobe Glyph List covers the names in the PDF Symbol font.
+    LEGACY_NAMES
+        .get_or_init(|| {
+            include_str!("../../../data/fonts/adobe-glyph-list.txt")
+                .lines()
+                .filter(|line| !line.starts_with('#'))
+                .filter_map(|line| line.split_once(';').map(|(name, _)| name))
+                .collect()
+        })
+        .contains(name)
 }
 
 #[derive(Debug)]
@@ -190,11 +194,7 @@ struct GlyphMap<'a> {
 }
 
 impl<'a> GlyphMap<'a> {
-    fn read(
-        graph: &ModelGraph<'_>,
-        font: &Dictionary,
-        font_bytes: Option<&'a [u8]>,
-    ) -> Result<Self> {
+    fn read(graph: &ModelGraph<'_>, font: &Dictionary, program: &'a SimpleProgram) -> Result<Self> {
         let document = graph.document;
         let direct = DirectMap::read(graph, font)?;
         let subtype = semantic_names::name(document, font.get("Subtype"));
@@ -222,10 +222,21 @@ impl<'a> GlyphMap<'a> {
                 .iter()
                 .any(|subtype| name.matches(subtype))
         }) {
+            let pdfa1 = graph.active_flavour.as_ref().is_some_and(|flavour| {
+                flavour.family.as_str() == "pdfa" && flavour.part.get() == 1
+            });
+            let only_cmap = pdfa1 && subtype.is_some_and(|name| name.matches("Type3"));
             (
                 SourceEncoding::SingleByte,
                 None,
-                Some(SimpleMap::read(document, font, font_bytes)),
+                (!only_cmap).then(|| {
+                    SimpleMap::read(
+                        document,
+                        font,
+                        program,
+                        pdfa1 && super::is_type1(document, font),
+                    )
+                }),
             )
         } else {
             (SourceEncoding::Unavailable, None, None)
@@ -280,23 +291,28 @@ fn collection_map(document: &ParsedDocument, font: &Dictionary) -> Option<&'stat
     cmap::registry_map(str::from_utf8(ordering.as_bytes()).ok()?)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "glyph checks reuse both their parsed font program and the marked-content use sites"
+)]
 pub(super) fn inspect<'a>(
     content: &ContentStreamModel<'_>,
     graph: &ModelGraph<'a>,
     font: &Dictionary,
+    program: &SimpleProgram,
     samples: &[Sample<'_>],
     replacement_offsets: &BTreeSet<u64>,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
 ) -> Result<()> {
     let document = graph.document;
-    let is_cff = font_program_dictionary(document, font)
-        .and_then(|dict| semantic_names::name(document, dict.get("Subtype")))
-        .is_some_and(|name| name.matches("Type1C"));
-    let program = font_bytes(font_program_stream(document, font), is_cff, graph.limits)?;
-    let map = GlyphMap::read(graph, font, program.as_deref())?;
+    let map = GlyphMap::read(graph, font, program)?;
     let check_unicode = graph.materializes(FAMILY)
         && content.object_type.as_str() != crate::validation::language::CONTENT_FAMILY;
+    let keep_marked_context = graph
+        .active_flavour
+        .as_ref()
+        .is_some_and(|flavour| flavour.family.as_str() == "pdfa" && flavour.part.get() == 1);
     let mut seen = BTreeSet::new();
     let mut private_use = BTreeSet::new();
     for sample in samples {
@@ -359,7 +375,12 @@ pub(super) fn inspect<'a>(
                     }
                     break;
                 };
-                let unicode = check_unicode && seen.insert(Some((code, sample.mode)));
+                let mark = if keep_marked_context {
+                    sample.marked_content
+                } else {
+                    None
+                };
+                let unicode = check_unicode && seen.insert(Some((code, sample.mode, mark)));
                 let pua =
                     graph.materializes(PUA_FAMILY) && private_use.insert(decode_seen(Some(code)));
                 if unicode || pua {
@@ -460,4 +481,28 @@ fn push_evidence<'a>(
     evidence.key = sample.location.object;
     evidence.offset = sample.location.offset;
     push_linked(objects, ModelObjectRef::Generic(evidence), max)
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::glyph_name;
+    use crate::validation::cmap::UnicodeLookup;
+
+    #[rstest]
+    #[case("Aacute", true)]
+    #[case("integral", true)]
+    #[case("uni0041", false)]
+    #[case("a1", false)]
+    #[case("A.alt", false)]
+    fn test_should_require_a_listed_type1_name_for_pdfa1_fallback(
+        #[case] name: &str,
+        #[case] listed: bool,
+    ) {
+        assert_eq!(
+            matches!(glyph_name(name, true), UnicodeLookup::Value(_)),
+            listed
+        );
+    }
 }

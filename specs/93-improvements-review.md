@@ -19,11 +19,12 @@ of the current implementation phase.
   within the existing syntax budget. Feed the exact RDF value to PDF/A
   `conformance` checks alongside the normalized claim used for detection.
   See [the XMP audit](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation).
-- **P1.** The 15-profile audit has four incomplete decisions in PDF/A-1a
-  and PDF/A-2u. Resolve the remaining font subset coverage, glyph-width,
-  and glyph Unicode evidence. The
-  [live audit](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit)
-  records the rule IDs and representative fixtures.
+- **P2.** Resolve the built-in encodings of nonembedded standard fonts and
+  bind PDF/A-1 font embedding exceptions to the rendering modes of actual
+  text use. An invisible Helvetica control lacks an explicit Encoding,
+  and its companion with an explicit Encoding still exercises the font
+  embedding applicability gap. See the
+  [font model](../crates/core/src/validation/glyphs/unicode.rs).
 - **P1.** Embedded PDF conformance checks `isValidPDFA12` and
   `isValidPDFA124` still need evidence from `/EF` stream traversal and
   bounded nested validation. Reuse the MIME rule's
@@ -84,3 +85,7 @@ of the current implementation phase.
   use sites, and private-use glyphs check their scoped replacement text.
   The twelve upstream fixtures agree on all 22 targeted rule counts.
   See [the name and glyph audit](../docs/reviews/m9-live-conformance-review.md#utf-8-names-and-glyph-replacement-text).
+- **P1.** MacRoman glyph metrics, Type 1 font subset coverage, and
+  glyph-level Unicode evidence resolve the four incomplete decisions in
+  the 15-profile audit. All 30 outcomes now agree with Greenfield.
+  See [the font audit](../docs/reviews/m9-live-conformance-review.md#type-1-font-subsets-and-macintosh-character-maps).

@@ -2817,7 +2817,7 @@ impl XmlRuleBuilder {
         {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::CID_SET_FAMILY);
         }
-        let unicode_test = if self.source_is_glyph && !id.0.as_str().starts_with("iso-19005-1-") {
+        let unicode_test = if self.source_is_glyph {
             glyph_unicode_rule(source_test.as_str())?
         } else {
             None
@@ -2825,7 +2825,7 @@ impl XmlRuleBuilder {
         if unicode_test.is_some() {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::UNICODE_FAMILY);
         }
-        if let Some(family) = imported_media_family(object_type.as_str(), source_test.as_str()) {
+        if let Some(family) = imported_rule_family(object_type.as_str(), source_test.as_str()) {
             object_type = ObjectTypeName::unchecked(family);
         }
         let mut test = if let Some(reason) = self.unsupported_reason {
@@ -2890,7 +2890,10 @@ impl XmlRuleBuilder {
     }
 }
 
-fn imported_media_family(object: &str, test: &str) -> Option<&'static str> {
+fn imported_rule_family(object: &str, test: &str) -> Option<&'static str> {
+    if object == "type1Font" && test.contains("charSetListsAllGlyphs") {
+        return Some(crate::validation::glyphs::CHAR_SET_FAMILY);
+    }
     if object == "image" && test.starts_with("isMask == true || BitsPerComponent == null") {
         return Some(crate::validation::image_mask::INVOKED_IMAGE);
     }

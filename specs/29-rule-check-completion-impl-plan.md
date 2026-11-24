@@ -92,10 +92,10 @@ extension resource. Annotation rules resolve the appearance entries and
 inherited widget type. All 12 upstream attachment fixtures now agree
 at document level with zero incomplete results and zero unsupported checks.
 
-The broader audit sampled all 15 built-in profiles. Twenty-six of its 30
-whole-document decisions agree and four remain incomplete, with zero
-false-compliant and zero false-invalid decisions. The checked-in 8-row
-and expanded supplemental 31-row release checks agree.
+The broader audit sampled all 15 built-in profiles. All 30 whole-document
+decisions agree, with zero incomplete, false-compliant, or false-invalid
+decisions. The checked-in 8-row and expanded supplemental 35-row release
+checks agree.
 
 The dedicated XMP audit now agrees on all 575 PDF/A-2b document decisions.
 Property rules use individual qualified RDF properties, predefined or
@@ -117,6 +117,11 @@ use sites. PDF/A-2a and PDF/A-3a bind private-use mappings to each glyph
 and check its ActualText context. The ten PDF/A-2a glyph fixtures and
 two PDF/A-2b name fixtures agree on all 22 rule comparisons.
 [Name and glyph review](../docs/reviews/m9-live-conformance-review.md#utf-8-names-and-glyph-replacement-text)
+
+MacRoman width selection, numeric widths from embedded Type 1 programs,
+Type 1 subset coverage, and PDF/A-1 per-glyph Unicode checks resolve the
+four remaining incomplete controls. All 14 targeted rule counts agree.
+[Font review](../docs/reviews/m9-live-conformance-review.md#type-1-font-subsets-and-macintosh-character-maps)
 
 ## Implementation constraints
 

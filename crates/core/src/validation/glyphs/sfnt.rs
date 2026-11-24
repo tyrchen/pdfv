@@ -4,8 +4,9 @@ use std::{cell::OnceCell, fmt};
 
 use read_fonts::{
     FontRef, ReadError, TableProvider,
+    ps::agl,
     tables::cmap::{Cmap, CmapSubtable, ConstantMapGroup, PlatformId, SequentialMapGroup},
-    types::{GlyphId, Tag},
+    types::{GlyphId, GlyphId16, Tag},
 };
 
 use super::super::{
@@ -124,6 +125,37 @@ impl<'data> Metrics<'data> {
         })?;
         let table = record.subtable(cmap.offset_data()).ok()?;
         mapped_gid(&table, unicode).filter(|gid| *gid != 0)
+    }
+
+    pub(super) fn named_gid(&self, name: &str) -> Option<u16> {
+        if let Some(unicode) = agl::name_to_chars(name).next()
+            && let Some(gid) = self.unicode_gid(u32::from(unicode))
+            && self.has_glyph(gid)
+        {
+            return Some(gid);
+        }
+        let cmap = self.cmap().ok()?;
+        if let Some(cmap) = &cmap
+            && let Some(code) = super::simple::mac_os_code(name)
+            && let Some(gid) = cmap
+                .encoding_records()
+                .iter()
+                .find(|record| {
+                    record.platform_id() == PlatformId::Macintosh && record.encoding_id() == 0
+                })
+                .and_then(|record| record.subtable(cmap.offset_data()).ok())
+                .and_then(|table| mapped_gid(&table, u32::from(code)))
+                .filter(|gid| *gid != 0 && self.has_glyph(*gid))
+        {
+            return Some(gid);
+        }
+        let post = self.font.post().ok();
+        if let Some(gid) = post.as_ref().and_then(|table| {
+            (0..self.glyphs).find(|gid| table.glyph_name(GlyphId16::new(*gid)) == Some(name))
+        }) {
+            return Some(gid);
+        }
+        cmap.is_some().then_some(0)
     }
 
     pub(super) fn builtin_width(&self, code: u8) -> Option<f64> {

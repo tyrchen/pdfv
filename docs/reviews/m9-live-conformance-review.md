@@ -513,11 +513,38 @@ omits the colour space under an uncoloured Pattern. For replacement
 text it treats a Form as a separate marked-content scope. The pdfv
 model uses original PDF name bytes and the context of the Form call.
 
+## Type 1 Font Subsets and Macintosh Character Maps
+
+Used TrueType glyphs with MacRomanEncoding resolve through the Windows
+Unicode, Macintosh Roman, and glyph-name tables. Type 1 glyphs use the
+PDF's selected encoding, including Differences, and can fall back to
+the embedded program's encoding. A bounded interpreter reads horizontal
+advances from the Type 1 charstrings and their subroutines. The decoded
+FontFile stream supplies binary eexec bytes using Length1 and Length2.
+[ISO 32000-1, sections 9.6.6 and 9.9](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)
+
+The Type 1 CharSet rule checks the glyph names used by PDF/A-1 text
+operations. PDF/A-2 and PDF/A-3 compare the declared names against the
+embedded program's glyph inventory, excluding the reserved .notdef glyph.
+PDF/A-1 evaluates Unicode coverage per glyph and recognizes exact
+Adobe Glyph List names for Type 1 fallback. The vendored list includes
+all names in the PDF Symbol font.
+[Pinned Adobe Glyph List](https://github.com/adobe-type-tools/agl-aglfn/blob/4036a9ca80a62f64f9de4f7321a9a045ad0ecfd6/glyphlist.txt)
+
+The four previously incomplete PDF/A-1a and PDF/A-2u documents match
+all 14 targeted rule counts and all four document outcomes. Each negative
+retains a Unicode mapping failure for CMEX10's integraldisplay glyph.
+All **30 of 30** document outcomes in the 15-profile audit now match,
+with zero incomplete, false-compliant, or false-invalid decisions.
+The public manifests match 8 of 8 and 35 of 35 document outcomes.
+
+Independent review matched 131 of 132 rule counts across 37 files.
+One focused PDF/A-1 control differs. When a PDF omits its Encoding entry
+and declares an empty CharSet, pdfv checks the glyph name from the
+embedded encoding and fails its CharSet rule. Greenfield records a pass.
+
 ## Release Blockers
 
-- The audit of the 15 profiles still has four incomplete document decisions
-  in its 30 controls. See
-  [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
 - The focused XPath function and identification cases still need
   rule-level evidence.
 - The current workspace has zero private T3 release documents. Qualification
