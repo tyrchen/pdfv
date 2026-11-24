@@ -34,6 +34,13 @@ const MAX_RDF_NESTING: u32 = 128;
 pub(crate) const PDFA_EXTENSION_NS: &str = "http://www.aiim.org/pdfa/ns/extension/";
 pub(crate) const PDFA_SCHEMA_NS: &str = "http://www.aiim.org/pdfa/ns/schema#";
 pub(crate) const PDFA_TYPE_NS: &str = "http://www.aiim.org/pdfa/ns/type#";
+pub(crate) const PACKET_FAMILY: &str = "xmpPackage";
+pub(crate) const PACKET_PROPERTIES: &[&str] = &[
+    "bytes",
+    "encoding",
+    "actualEncoding",
+    "isSerializationValid",
+];
 const WTPDF_ACCESSIBILITY_DECLARATION: &str = "http://pdfa.org/declarations/wtpdf#accessibility1.0";
 const WTPDF_REUSE_DECLARATION: &str = "http://pdfa.org/declarations/wtpdf#reuse1.0";
 
@@ -146,8 +153,27 @@ pub struct DetectedFlavours {
     pub warnings: Vec<ValidationWarning>,
 }
 
-/// Report-safe XMP parse result independent of profile selection.
-#[derive(Clone, Debug)]
+/// Catalog RDF extension declaration retained while parsing linked metadata.
+#[derive(Debug, Default)]
+pub(crate) struct CatalogSchemas(Option<rdf::Node>);
+
+#[derive(Debug)]
+pub(crate) struct CatalogDeclarations<'a>(property::Declarations<'a>);
+
+impl CatalogSchemas {
+    pub(crate) fn declarations(&self) -> CatalogDeclarations<'_> {
+        CatalogDeclarations(property::Declarations::read(self.0.as_slice()))
+    }
+}
+
+#[derive(Debug)]
+struct ParsedPacket {
+    packet: XmpPacket,
+    catalog_schemas: CatalogSchemas,
+}
+
+/// XMP parse result independent of profile selection.
+#[derive(Debug, Default)]
 #[non_exhaustive]
 pub(crate) struct XmpParseResult {
     /// Parsed packet, when XML was parseable.
@@ -156,6 +182,8 @@ pub(crate) struct XmpParseResult {
     pub parse_facts: Vec<ParseFact>,
     /// Structured warnings generated during parsing.
     pub warnings: Vec<ValidationWarning>,
+    pub(crate) catalog_schemas: CatalogSchemas,
+    pub(crate) decoded_bytes: u64,
 }
 
 /// Profile selector backed by XMP identification claims.
@@ -188,17 +216,29 @@ impl FlavourDetector {
         default: Option<&ValidationFlavour>,
         limits: &ResourceLimits,
     ) -> Result<DetectedFlavours> {
-        let parsed_xmp = parse_document_xmp(document, limits, true)?;
-        let Some(packet) = parsed_xmp.packet else {
-            return Ok(DetectedFlavours {
-                packet: None,
-                profiles: self.fallback_profiles(default)?,
-                parse_facts: parsed_xmp.parse_facts,
-                warnings: parsed_xmp.warnings,
-            });
-        };
+        let mut parsed_xmp = parse_document_xmp(document, limits, true)?;
+        let profiles = self.select(
+            parsed_xmp.packet.as_ref(),
+            default,
+            &mut parsed_xmp.warnings,
+        )?;
+        Ok(DetectedFlavours {
+            packet: parsed_xmp.packet,
+            profiles,
+            parse_facts: parsed_xmp.parse_facts,
+            warnings: parsed_xmp.warnings,
+        })
+    }
 
-        let mut warnings = parsed_xmp.warnings;
+    pub(crate) fn select(
+        &self,
+        packet: Option<&XmpPacket>,
+        default: Option<&ValidationFlavour>,
+        warnings: &mut Vec<ValidationWarning>,
+    ) -> Result<Vec<ValidationProfile>> {
+        let Some(packet) = packet else {
+            return self.fallback_profiles(default);
+        };
         let mut profiles = Vec::new();
         for claim in &packet.identification {
             match self
@@ -219,14 +259,9 @@ impl FlavourDetector {
             });
             profiles = self.fallback_profiles(default)?;
         } else {
-            profiles = select_compatible_profiles(profiles, &mut warnings)?;
+            profiles = select_compatible_profiles(profiles, warnings)?;
         }
-        Ok(DetectedFlavours {
-            packet: Some(packet),
-            profiles,
-            parse_facts: parsed_xmp.parse_facts,
-            warnings,
-        })
+        Ok(profiles)
     }
 
     fn fallback_profiles(
@@ -251,11 +286,19 @@ impl XmpParser {
         bytes: &[u8],
         limits: &ResourceLimits,
     ) -> Result<XmpPacket> {
-        enforce_xmp_len(bytes.len(), limits.max_xmp_bytes)?;
-        let (text, actual_encoding) = decode_xmp_text(bytes)?;
-        let parser = PacketBuilder::new(source_object, bytes.len(), actual_encoding, limits);
-        parser.parse(&text)
+        Ok(parse_packet(source_object, bytes, limits, None)?.packet)
     }
+}
+
+fn parse_packet(
+    object: ObjectKey,
+    bytes: &[u8],
+    limits: &ResourceLimits,
+    catalog: Option<&property::Declarations<'_>>,
+) -> Result<ParsedPacket> {
+    enforce_xmp_len(bytes.len(), limits.max_xmp_bytes)?;
+    let (text, actual_encoding) = decode_xmp_text(bytes)?;
+    PacketBuilder::new(object, bytes.len(), actual_encoding, limits).parse(&text, catalog)
 }
 
 fn decode_xmp_text(bytes: &[u8]) -> Result<(String, Identifier)> {
@@ -363,6 +406,7 @@ struct PacketBuilder<'a> {
     rdf_property_count: usize,
     stack: Vec<ElementFrame>,
     facts: Vec<XmpFact>,
+    saw_xml_root: bool,
     saw_rdf_root: bool,
     saw_packet_wrapper: bool,
     packet_bytes: Option<BoundedText>,
@@ -391,6 +435,7 @@ impl<'a> PacketBuilder<'a> {
             rdf_property_count: 0,
             stack: Vec::new(),
             facts: Vec::new(),
+            saw_xml_root: false,
             saw_rdf_root: false,
             saw_packet_wrapper: false,
             packet_bytes: None,
@@ -398,7 +443,11 @@ impl<'a> PacketBuilder<'a> {
         }
     }
 
-    fn parse(mut self, text: &str) -> Result<XmpPacket> {
+    fn parse(
+        mut self,
+        text: &str,
+        catalog: Option<&property::Declarations<'_>>,
+    ) -> Result<ParsedPacket> {
         let mut reader = Reader::from_str(text);
         loop {
             match reader.read_event().map_err(|error| xmp_xml_error(&error))? {
@@ -418,6 +467,11 @@ impl<'a> PacketBuilder<'a> {
                 Event::End(_) => self.end()?,
                 Event::PI(instruction) => self.processing_instruction(&instruction)?,
                 Event::CData(text) => {
+                    if self.stack.is_empty() {
+                        return Err(rdf::invalid(
+                            "XMP CDATA is outside the XML document element",
+                        ));
+                    }
                     let decoded =
                         text.decode()
                             .map_err(|error| crate::ProfileError::InvalidXml {
@@ -443,10 +497,18 @@ impl<'a> PacketBuilder<'a> {
                 "XMP XML ended before all elements were closed",
             ));
         }
-        self.finish()
+        if !self.saw_xml_root {
+            return Err(rdf::invalid("XMP packet has no XML document element"));
+        }
+        self.finish(catalog)
     }
 
     fn character_reference(&mut self, reference: &BytesRef<'_>) -> Result<()> {
+        if self.stack.is_empty() {
+            return Err(rdf::invalid(
+                "XMP character reference is outside the XML document element",
+            ));
+        }
         if let Some(character) = reference
             .resolve_char_ref()
             .map_err(|error| xmp_xml_error(&error))?
@@ -473,27 +535,7 @@ impl<'a> PacketBuilder<'a> {
     }
 
     fn start(&mut self, element: &quick_xml::events::BytesStart<'_>) -> Result<()> {
-        self.depth = self.depth.checked_add(1).ok_or(ParseError::LimitExceeded {
-            limit: "max_xmp_depth",
-        })?;
-        if self.depth > self.limits.max_xmp_depth.min(MAX_RDF_NESTING) {
-            return Err(ParseError::LimitExceeded {
-                limit: "max_xmp_depth",
-            }
-            .into());
-        }
-        self.elements = self
-            .elements
-            .checked_add(1)
-            .ok_or(ParseError::LimitExceeded {
-                limit: "max_xmp_elements",
-            })?;
-        if self.elements > self.limits.max_xmp_elements {
-            return Err(ParseError::LimitExceeded {
-                limit: "max_xmp_elements",
-            }
-            .into());
-        }
+        self.enter_element()?;
         let (prefix, local) = split_xml_name(element.name().as_ref())?;
         let previous_namespaces = self.current_namespaces.clone();
         self.read_namespaces(element)?;
@@ -568,6 +610,39 @@ impl<'a> PacketBuilder<'a> {
             self.capture_array(&frame)?;
         }
         self.stack.push(frame);
+        Ok(())
+    }
+
+    fn enter_element(&mut self) -> Result<()> {
+        if self.stack.is_empty() {
+            if self.saw_xml_root {
+                return Err(rdf::invalid(
+                    "XMP packet contains multiple XML document elements",
+                ));
+            }
+            self.saw_xml_root = true;
+        }
+        self.depth = self.depth.checked_add(1).ok_or(ParseError::LimitExceeded {
+            limit: "max_xmp_depth",
+        })?;
+        if self.depth > self.limits.max_xmp_depth.min(MAX_RDF_NESTING) {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_xmp_depth",
+            }
+            .into());
+        }
+        self.elements = self
+            .elements
+            .checked_add(1)
+            .ok_or(ParseError::LimitExceeded {
+                limit: "max_xmp_elements",
+            })?;
+        if self.elements > self.limits.max_xmp_elements {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_xmp_elements",
+            }
+            .into());
+        }
         Ok(())
     }
 
@@ -753,7 +828,14 @@ impl<'a> PacketBuilder<'a> {
 
     fn text(&mut self, value: &str) -> Result<()> {
         let Some((frame, parents)) = self.stack.split_last_mut() else {
-            return Ok(());
+            return if value
+                .bytes()
+                .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+            {
+                Ok(())
+            } else {
+                Err(rdf::invalid("XMP text is outside the XML document element"))
+            };
         };
         if is_thumbnail_payload(frame, parents) {
             // The thumbnail is opaque XMP Text. Retain only evidence of text when checking
@@ -781,11 +863,18 @@ impl<'a> PacketBuilder<'a> {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<XmpPacket> {
+    fn finish(mut self, catalog: Option<&property::Declarations<'_>>) -> Result<ParsedPacket> {
         if !self.saw_packet_wrapper {
             self.facts.push(XmpFact::MissingPacketWrapper);
         }
-        let identification = self.claims()?;
+        if !self.saw_rdf_root {
+            self.facts.push(XmpFact::MissingRdfRoot);
+        }
+        let identification = if catalog.is_some() {
+            Vec::new()
+        } else {
+            self.claims()?
+        };
         self.facts.push(XmpFact::PacketHeader {
             bytes: self.packet_bytes.clone(),
             encoding: self.packet_encoding.clone(),
@@ -815,14 +904,14 @@ impl<'a> PacketBuilder<'a> {
                 reason: BoundedText::unchecked("Duplicate property in XMP RDF packet"),
             });
         }
-        let checks = if self
+        let invalid = self
             .facts
             .iter()
-            .any(|fact| matches!(fact, XmpFact::Malformed { .. }))
-        {
+            .any(|fact| matches!(fact, XmpFact::Malformed { .. }));
+        let checks = if invalid {
             Vec::new()
         } else {
-            property::check(&self.rdf_properties)?
+            property::check(&self.rdf_properties, catalog)?
         };
         self.facts
             .push(XmpFact::CheckedProperties { properties: checks });
@@ -846,12 +935,23 @@ impl<'a> PacketBuilder<'a> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(XmpPacket {
+        let catalog_schemas = CatalogSchemas(if catalog.is_none() && !invalid {
+            self.rdf_properties
+                .into_iter()
+                .find(|node| node.matches(PDFA_EXTENSION_NS, "schemas"))
+        } else {
+            None
+        });
+        let packet = XmpPacket {
             source_object: self.source_object,
             bytes: checked_u64_len(self.byte_len, "XMP packet length")?,
             namespaces,
             identification,
             facts: self.facts,
+        };
+        Ok(ParsedPacket {
+            packet,
+            catalog_schemas,
         })
     }
 
@@ -1319,11 +1419,37 @@ pub(crate) fn parse_document_xmp(
             });
         }
         return Ok(XmpParseResult {
-            packet: None,
-            parse_facts: Vec::new(),
             warnings,
+            ..XmpParseResult::default()
         });
     };
+    read_xmp_stream(
+        object,
+        stream,
+        limits,
+        None,
+        document.is_encrypted(),
+        warnings,
+    )
+}
+
+pub(crate) fn parse_object_xmp(
+    object: ObjectKey,
+    stream: &StreamObject,
+    limits: &ResourceLimits,
+    catalog: &CatalogDeclarations<'_>,
+) -> Result<XmpParseResult> {
+    read_xmp_stream(object, stream, limits, Some(&catalog.0), false, Vec::new())
+}
+
+fn read_xmp_stream(
+    object: ObjectKey,
+    stream: &StreamObject,
+    limits: &ResourceLimits,
+    catalog: Option<&property::Declarations<'_>>,
+    encrypted: bool,
+    mut warnings: Vec<ValidationWarning>,
+) -> Result<XmpParseResult> {
     let mut xmp_limits = limits.clone();
     xmp_limits.max_stream_decode_bytes = limits.max_stream_decode_bytes.min(limits.max_xmp_bytes);
     let bytes = match stream.decoded_bytes(&xmp_limits) {
@@ -1341,23 +1467,26 @@ pub(crate) fn parse_document_xmp(
                 &mut warnings,
             );
             return Ok(XmpParseResult {
-                packet: None,
                 parse_facts,
                 warnings,
+                ..XmpParseResult::default()
             });
         }
         Err(error) => return Err(error.into()),
     };
-    if document.is_encrypted() && !looks_like_xml(&bytes) {
+    let decoded_bytes = checked_u64_len(bytes.len(), "XMP packet length")?;
+    if encrypted && !looks_like_xml(&bytes) {
         return Ok(XmpParseResult {
-            packet: None,
-            parse_facts: Vec::new(),
             warnings,
+            decoded_bytes,
+            ..XmpParseResult::default()
         });
     }
-    let parser = XmpParser;
-    match parser.parse_packet(object, &bytes, limits) {
-        Ok(packet) => {
+    match parse_packet(object, &bytes, limits, catalog) {
+        Ok(ParsedPacket {
+            packet,
+            catalog_schemas,
+        }) => {
             warnings.extend(packet_warnings(&packet)?);
             let parse_facts = xmp_parse_facts(
                 packet.source_object,
@@ -1369,6 +1498,8 @@ pub(crate) fn parse_document_xmp(
                 packet: Some(packet),
                 parse_facts,
                 warnings,
+                catalog_schemas,
+                decoded_bytes,
             })
         }
         Err(PdfvError::Parse(ParseError::LimitExceeded { limit })) => {
@@ -1387,9 +1518,10 @@ pub(crate) fn parse_document_xmp(
                 &mut warnings,
             );
             Ok(XmpParseResult {
-                packet: None,
                 parse_facts,
                 warnings,
+                decoded_bytes,
+                ..XmpParseResult::default()
             })
         }
     }
@@ -1481,10 +1613,12 @@ fn packet_warnings(packet: &XmpPacket) -> Result<Vec<ValidationWarning>> {
                 Some("XMP metadata contains duplicate identification claims")
             }
             XmpFact::PacketParsed { .. }
+            | XmpFact::MissingRdfRoot
             | XmpFact::FlavourClaim { .. }
             | XmpFact::PacketHeader { .. }
             | XmpFact::RdfProperty { .. }
             | XmpFact::CheckedProperties { .. }
+            | XmpFact::LinkedMetadata { .. }
             | XmpFact::ExtensionScope { .. } => None,
         })
         .map(|message| {
@@ -1838,6 +1972,106 @@ mod tests {
             claim.display_flavour.as_str() == "pdfa-2"
                 && claim.kind == super::XmpIdentificationKind::PdfA
         }));
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("")]
+    #[case(" \n ")]
+    #[case("unwrapped text")]
+    #[case("<first/><second/>")]
+    #[case("<element/>trailing text")]
+    fn test_should_require_one_xml_document_element(#[case] xml: &str) {
+        assert!(matches!(
+            XmpParser.parse_packet(key(), xml.as_bytes(), &ResourceLimits::default()),
+            Err(crate::PdfvError::Profile(
+                crate::ProfileError::InvalidXml { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_should_distinguish_xml_without_rdf_from_malformed_xml() -> crate::Result<()> {
+        let parsed = XmpParser.parse_packet(key(), b"<ordinary/>", &ResourceLimits::default())?;
+        assert!(
+            parsed
+                .facts
+                .iter()
+                .any(|fact| matches!(fact, XmpFact::PacketParsed { .. }))
+        );
+        assert!(
+            parsed
+                .facts
+                .iter()
+                .any(|fact| matches!(fact, XmpFact::MissingRdfRoot))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_use_catalog_declarations_for_linked_packet_properties() -> crate::Result<()> {
+        let catalog = br#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description xmlns:ext="http://www.aiim.org/pdfa/ns/extension/"
+ xmlns:sch="http://www.aiim.org/pdfa/ns/schema#" xmlns:prop="http://www.aiim.org/pdfa/ns/property#"
+ xmlns:typ="http://www.aiim.org/pdfa/ns/type#" xmlns:fld="http://www.aiim.org/pdfa/ns/field#">
+<ext:schemas><rdf:Bag><rdf:li rdf:parseType="Resource">
+  <sch:namespaceURI>urn:article</sch:namespaceURI>
+  <sch:property><rdf:Seq><rdf:li rdf:parseType="Resource">
+    <prop:name>Original</prop:name><prop:valueType>ArticleCode</prop:valueType>
+  </rdf:li></rdf:Seq></sch:property>
+  <sch:valueType><rdf:Seq><rdf:li rdf:parseType="Resource">
+    <typ:type>ArticleCode</typ:type><typ:namespaceURI>urn:article-field</typ:namespaceURI>
+    <typ:field><rdf:Seq><rdf:li rdf:parseType="Resource">
+      <fld:name>number</fld:name><fld:valueType>Integer</fld:valueType>
+    </rdf:li></rdf:Seq></typ:field>
+  </rdf:li></rdf:Seq></sch:valueType>
+</rdf:li></rdf:Bag></ext:schemas>
+</rdf:Description>
+</rdf:RDF>"#;
+        let linked = br#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description xmlns:ext="http://www.aiim.org/pdfa/ns/extension/"
+ xmlns:sch="http://www.aiim.org/pdfa/ns/schema#" xmlns:prop="http://www.aiim.org/pdfa/ns/property#"
+ xmlns:art="urn:article" xmlns:detail="urn:article-field" xmlns:other="urn:other">
+<ext:schemas><rdf:Bag><rdf:li rdf:parseType="Resource">
+  <sch:namespaceURI>urn:article</sch:namespaceURI>
+  <sch:property><rdf:Seq><rdf:li rdf:parseType="Resource">
+    <prop:name>Local</prop:name><prop:valueType>ArticleCode</prop:valueType>
+  </rdf:li></rdf:Seq></sch:property>
+</rdf:li></rdf:Bag></ext:schemas>
+<art:Original rdf:parseType="Resource"><detail:number>42</detail:number></art:Original>
+<art:Local rdf:parseType="Resource"><detail:number>bad</detail:number></art:Local>
+<other:Original rdf:parseType="Resource"><detail:number>42</detail:number></other:Original>
+</rdf:Description>
+</rdf:RDF>"#;
+        let limits = ResourceLimits::default();
+        let main = super::parse_packet(key(), catalog, &limits, None)?;
+        let declarations = main.catalog_schemas.declarations();
+        let local = super::parse_packet(key(), linked, &limits, Some(&declarations.0))?;
+        let checks = local
+            .packet
+            .facts
+            .iter()
+            .find_map(|fact| match fact {
+                XmpFact::CheckedProperties { properties } => Some(properties.as_slice()),
+                _ => None,
+            })
+            .ok_or(crate::ProfileError::UnsupportedSelection)?;
+        assert_eq!(
+            checks
+                .iter()
+                .map(|check| (
+                    check.name.as_str(),
+                    check.pdfa23.declared,
+                    check.declared_in_catalog,
+                    check.pdfa23.valid,
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("Original", false, Some(true), true),
+                ("Local", true, Some(false), false),
+                ("Original", false, Some(false), false),
+            ],
+        );
         Ok(())
     }
 

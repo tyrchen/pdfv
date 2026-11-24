@@ -9,6 +9,7 @@ pub(crate) mod glyphs;
 mod icc;
 pub(crate) mod image_mask;
 pub(crate) mod language;
+mod object_xmp;
 pub(crate) mod scoped_pua;
 mod semantic_names;
 pub(crate) mod structure_roles;
@@ -1622,8 +1623,11 @@ impl Validator {
         };
 
         let mut parsed = parsed;
-        if parsed.is_encrypted() {
-            let xmp = parse_document_xmp(&parsed, &self.options.resource_limits, false)?;
+        let encrypted = parsed.is_encrypted();
+        let limits = &self.options.resource_limits;
+        let auto = matches!(self.options.flavour, crate::FlavourSelection::Auto { .. });
+        let mut xmp = parse_document_xmp(&parsed, limits, auto && !encrypted)?;
+        if encrypted {
             parsed.parse_facts.extend(xmp.parse_facts);
             parsed.warnings.extend(xmp.warnings);
             return base_report(
@@ -1636,24 +1640,18 @@ impl Validator {
         }
 
         let profiles = match &self.options.flavour {
-            crate::FlavourSelection::Auto { default } => {
-                let detected = FlavourDetector::new(Arc::clone(&self.profiles)).detect(
-                    &parsed,
-                    default.as_ref(),
-                    &self.options.resource_limits,
-                )?;
-                parsed.parse_facts.extend(detected.parse_facts);
-                parsed.warnings.extend(detected.warnings);
-                detected.profiles
-            }
+            crate::FlavourSelection::Auto { default } => FlavourDetector::new(Arc::clone(
+                &self.profiles,
+            ))
+            .select(xmp.packet.as_ref(), default.as_ref(), &mut xmp.warnings)?,
             crate::FlavourSelection::Explicit { .. }
             | crate::FlavourSelection::CustomProfile { .. } => {
-                let xmp = parse_document_xmp(&parsed, &self.options.resource_limits, false)?;
-                parsed.parse_facts.extend(xmp.parse_facts);
-                parsed.warnings.extend(xmp.warnings);
                 self.profiles.profiles_for(&self.options.flavour)?
             }
         };
+        drop(xmp.packet);
+        parsed.parse_facts.extend(xmp.parse_facts);
+        parsed.warnings.extend(xmp.warnings);
         if profiles.is_empty() {
             return base_report(
                 source_summary,
@@ -1663,6 +1661,13 @@ impl Validator {
                 started.elapsed(),
             );
         }
+        object_xmp::append(
+            &mut parsed,
+            limits,
+            &profiles,
+            &xmp.catalog_schemas,
+            xmp.decoded_bytes,
+        )?;
         let mut session = ValidationSession::new(
             parsed,
             self.options.resource_limits.clone(),
@@ -2335,6 +2340,11 @@ impl ModelRegistry {
             family("catalog", CATALOG_PROPERTIES, CATALOG_LINKS),
             family("metadata", METADATA_PROPERTIES, EMPTY_LINK_NAMES),
             family(
+                crate::xmp::PACKET_FAMILY,
+                crate::xmp::PACKET_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 crate::xmp::property::FAMILY,
                 crate::xmp::property::PROPERTIES,
                 EMPTY_LINK_NAMES,
@@ -2783,7 +2793,10 @@ impl ModelRegistry {
 }
 
 fn property_source_evidence(family: &str, property: &str) -> PropertySourceEvidence {
-    if family == crate::xmp::property::FAMILY {
+    if matches!(
+        family,
+        crate::xmp::property::FAMILY | crate::xmp::PACKET_FAMILY
+    ) {
         return PropertySourceEvidence::XmpRdf;
     }
     if family == "cMapFile" {
@@ -3486,6 +3499,7 @@ pub struct ModelGraph<'a> {
     active_flavour: Option<ValidationFlavour>,
     text_content_mode: scoped_pua::ContentMode,
     accessibility_cache: OnceLock<Arc<AccessibilityGraph>>,
+    catalog_xmp_types: OnceLock<xmp_extension::CatalogTypes>,
     text_bytes: Cell<u64>,
     character_resources: RefCell<BTreeMap<String, Option<Arc<crate::Dictionary>>>>,
     cid_audit: RefCell<glyphs::CidAudit>,
@@ -3632,6 +3646,7 @@ impl<'a> ModelGraph<'a> {
             active_flavour: Some(active_flavour.clone()),
             text_content_mode,
             accessibility_cache: OnceLock::new(),
+            catalog_xmp_types: OnceLock::new(),
             cid_audit: RefCell::new(glyphs::CidAudit::default()),
             associated_files: needs_associations.then(RefCell::default),
             device_n_spaces: RefCell::default(),
@@ -3654,6 +3669,7 @@ impl<'a> ModelGraph<'a> {
             active_flavour: None,
             text_content_mode: scoped_pua::ContentMode::default(),
             accessibility_cache: OnceLock::new(),
+            catalog_xmp_types: OnceLock::new(),
             cid_audit: RefCell::new(glyphs::CidAudit::default()),
             associated_files: None,
             device_n_spaces: RefCell::default(),
@@ -3702,6 +3718,7 @@ impl<'a> ModelGraph<'a> {
                 && structure_roles::rule_family(family.as_str()).is_none()
                 && !xmp_extension::FAMILIES.contains(&family.as_str())
                 && family.as_str() != crate::xmp::property::FAMILY
+                && family.as_str() != crate::xmp::PACKET_FAMILY
                 && !semantic_names::FAMILIES.contains(&family.as_str())
                 && !device_color::FAMILIES.contains(&family.as_str())
                 && family.as_str() != glyphs::TRUE_TYPE_PROGRAM
@@ -4507,6 +4524,7 @@ impl ModelObject for DocumentModel<'_> {
         if let Some(catalog) = graph.catalog() {
             push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
         }
+        object_xmp::link_models(graph, &mut objects, max_objects)?;
         if language::enabled(graph) {
             language::append_form_fields(graph, &mut objects, max_objects)?;
         }
@@ -4767,6 +4785,14 @@ pub struct MetadataModel<'a> {
     links: Vec<LinkName>,
     extension: Option<ExtensionResource<'a>>,
     property_check: Option<(usize, &'a crate::XmpCheckedProperty, u32)>,
+    linked_packet: Option<LinkedXmpPacket>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LinkedXmpPacket {
+    owner: Option<ObjectKey>,
+    start: usize,
+    end: usize,
 }
 
 impl<'a> MetadataModel<'a> {
@@ -4789,10 +4815,12 @@ impl<'a> MetadataModel<'a> {
             supertypes: vec![
                 ObjectTypeName::unchecked("stream"),
                 ObjectTypeName::unchecked("object"),
+                ObjectTypeName::unchecked(crate::xmp::PACKET_FAMILY),
             ],
             links: Vec::new(),
             extension: None,
             property_check: None,
+            linked_packet: None,
         })
     }
 
@@ -4815,22 +4843,46 @@ impl<'a> MetadataModel<'a> {
     }
 
     fn context(&self) -> BoundedText {
+        let base = self.linked_packet.map_or_else(
+            || "root/catalog[0]/metadata[0]".to_owned(),
+            |source| {
+                let owner = source.owner.map_or_else(
+                    || "root/trailer".to_owned(),
+                    |key| format!("root/indirectObjects[{}]", object_key_text(key)),
+                );
+                format!("{owner}/metadata[{}]", object_key_text(self.key))
+            },
+        );
         if let Some((ordinal, property, _)) = self.property_check {
             return BoundedText::unchecked(format!(
-                "root/catalog[0]/metadata[0]/xmpProperty[{ordinal}]/{}",
+                "{base}/xmpProperty[{ordinal}]/{}",
                 property.name.as_str(),
             ));
         }
-        self.extension.as_ref().map_or_else(
-            || BoundedText::unchecked("root/catalog[0]/metadata[0]"),
-            |extension| {
-                BoundedText::unchecked(format!(
-                    "root/catalog[0]/metadata[0]/{}[{}]",
-                    extension.family(),
-                    extension.id
-                ))
-            },
-        )
+        if let Some(extension) = &self.extension {
+            BoundedText::unchecked(format!("{base}/{}[{}]", extension.family(), extension.id))
+        } else {
+            BoundedText::unchecked(base)
+        }
+    }
+
+    fn packet_facts<'doc>(
+        &self,
+        document: &'doc ParsedDocument,
+    ) -> Result<&'doc [crate::ParseFact]> {
+        if let Some(link) = self.linked_packet {
+            document
+                .parse_facts
+                .get(link.start..link.end)
+                .ok_or_else(|| {
+                    ValidationError::SubsystemUnavailable {
+                        subsystem: "object_xmp_packet",
+                    }
+                    .into()
+                })
+        } else {
+            Ok(&document.parse_facts)
+        }
     }
 
     fn xmp_rdf_property(&self, name: &str) -> Option<Result<ModelValue>> {
@@ -4841,22 +4893,25 @@ impl<'a> MetadataModel<'a> {
     }
 
     fn xmp_packet_property(&self, name: &str) -> Option<Result<ModelValue>> {
+        let read: fn(&[crate::ParseFact], ObjectKey) -> ModelValue = match name {
+            "actualEncoding" => xmp_packet_actual_encoding,
+            "bytes" => |facts, key| xmp_packet_header_attr(facts, key, XmpPacketHeaderAttr::Bytes),
+            "encoding" => {
+                |facts, key| xmp_packet_header_attr(facts, key, XmpPacketHeaderAttr::Encoding)
+            }
+            "isSerializationValid" => {
+                |facts, key| ModelValue::Bool(xmp_serialization_valid(facts, key))
+            }
+            _ => return self.xmp_legacy_packet_property(name),
+        };
+        Some(
+            self.packet_facts(self.document)
+                .map(|facts| read(facts, self.key)),
+        )
+    }
+
+    fn xmp_legacy_packet_property(&self, name: &str) -> Option<Result<ModelValue>> {
         match name {
-            "actualEncoding" => Some(Ok(xmp_packet_actual_encoding(self.document, self.key))),
-            "bytes" => Some(Ok(xmp_packet_header_attr(
-                self.document,
-                self.key,
-                XmpPacketHeaderAttr::Bytes,
-            ))),
-            "encoding" => Some(Ok(xmp_packet_header_attr(
-                self.document,
-                self.key,
-                XmpPacketHeaderAttr::Encoding,
-            ))),
-            "isSerializationValid" => Some(Ok(ModelValue::Bool(xmp_serialization_valid(
-                self.document,
-                self.key,
-            )))),
             "isPredefinedInXMP2004" | "isPredefinedInXMP2005" => Some(Ok(ModelValue::Bool(
                 !xmp_contains_custom_fields(self.document, self.key),
             ))),
@@ -5107,6 +5162,11 @@ impl ModelObject for MetadataModel<'_> {
         if let Some(extension) = &self.extension {
             return extension.property(name);
         }
+        if self.linked_packet.is_some() {
+            return self
+                .xmp_packet_property(name.as_str())
+                .unwrap_or_else(|| unknown_property(name));
+        }
         let family = self.active_family.as_ref().map(Identifier::as_str);
         if let Some(value) = self.xmp_rdf_property(name.as_str()) {
             return value;
@@ -5215,7 +5275,19 @@ impl ModelObject for MetadataModel<'_> {
                 .active_flavour
                 .as_ref()
                 .map_or(2, |flavour| flavour.part.get());
-            for extension in xmp_extension::resources(graph.document, self.key, part) {
+            let facts = self.packet_facts(graph.document)?;
+            let catalog_types = self.linked_packet.map(|_| {
+                graph.catalog_xmp_types.get_or_init(|| {
+                    let facts = &graph.document.parse_facts;
+                    match catalog_metadata_key(graph.document) {
+                        Some(key) if xmp_serialization_valid(facts, key) => {
+                            xmp_extension::catalog_types(facts, key)
+                        }
+                        _ => BTreeMap::new(),
+                    }
+                })
+            });
+            for extension in xmp_extension::resources(facts, self.key, part, catalog_types) {
                 let family = extension.family();
                 let schema_object = extension.is_schema_object();
                 if graph.materializes(family)
@@ -5234,6 +5306,7 @@ impl ModelObject for MetadataModel<'_> {
                         links: Vec::new(),
                         extension: Some(extension),
                         property_check: None,
+                        linked_packet: self.linked_packet,
                     };
                     push_linked(&mut linked, ModelObjectRef::Metadata(object), max_objects)?;
                 }
@@ -5251,7 +5324,7 @@ impl MetadataModel<'_> {
         objects: &mut Vec<ModelObjectRef<'a>>,
         max_objects: usize,
     ) -> Result<()> {
-        let facts = &graph.document.parse_facts;
+        let facts = self.packet_facts(graph.document)?;
         let checks = facts.iter().find_map(|fact| match fact {
             crate::ParseFact::Xmp {
                 object,
@@ -5260,7 +5333,7 @@ impl MetadataModel<'_> {
             _ => None,
         });
         let Some(checks) = checks else {
-            if xmp_serialization_valid(graph.document, self.key) {
+            if xmp_serialization_valid(facts, self.key) {
                 return Err(ValidationError::LimitExceeded {
                     limit: "xmp_property_evidence",
                 }
@@ -5279,6 +5352,7 @@ impl MetadataModel<'_> {
                 links: Vec::new(),
                 extension: None,
                 property_check: Some((ordinal, check, part)),
+                linked_packet: self.linked_packet,
             };
             push_linked(objects, ModelObjectRef::Metadata(model), max_objects)?;
         }
@@ -5300,7 +5374,9 @@ fn xmp_checked_property(
         "isPredefinedInXMP2004" => ModelValue::Bool(check.pdfa1.predefined),
         "isPredefinedInXMP2005" => ModelValue::Bool(check.pdfa23.predefined),
         "isDefinedInCurrentPackage" => ModelValue::Bool(selected.declared),
-        "isDefinedInMainPackage" => ModelValue::Bool(check.pdfa23.declared),
+        "isDefinedInMainPackage" => {
+            ModelValue::Bool(check.declared_in_catalog.unwrap_or(check.pdfa23.declared))
+        }
         "isValueTypeCorrect" => ModelValue::Bool(selected.valid),
         "predefinedType" => selected
             .expected_type
@@ -12938,7 +13014,17 @@ fn xmp_rdf_properties(
     document: &ParsedDocument,
     object: Option<ObjectKey>,
 ) -> impl Iterator<Item = XmpRdfPropertyView<'_>> {
-    document.parse_facts.iter().filter_map(move |fact| {
+    object
+        .or_else(|| catalog_metadata_key(document))
+        .into_iter()
+        .flat_map(|key| xmp_packet_properties(&document.parse_facts, key))
+}
+
+fn xmp_packet_properties(
+    facts: &[crate::ParseFact],
+    object: ObjectKey,
+) -> impl Iterator<Item = XmpRdfPropertyView<'_>> {
+    facts.iter().filter_map(move |fact| {
         let crate::ParseFact::Xmp {
             object: fact_object,
             fact:
@@ -12954,7 +13040,7 @@ fn xmp_rdf_properties(
         else {
             return None;
         };
-        if object.is_some_and(|object| object != *fact_object) {
+        if object != *fact_object {
             return None;
         }
         Some(XmpRdfPropertyView {
@@ -13076,63 +13162,59 @@ fn normalized_date_digits(value: &str) -> String {
         .collect()
 }
 
-fn xmp_packet_actual_encoding(document: &ParsedDocument, object: ObjectKey) -> ModelValue {
-    document
-        .parse_facts
-        .iter()
-        .find_map(|fact| {
-            let crate::ParseFact::Xmp {
-                object: fact_object,
-                fact:
-                    crate::XmpFact::PacketHeader {
-                        actual_encoding, ..
-                    },
-            } = fact
-            else {
-                return None;
-            };
-            if *fact_object != object {
-                return None;
-            }
-            Some(ModelValue::String(BoundedText::unchecked(
-                actual_encoding.as_str(),
-            )))
-        })
-        .unwrap_or(ModelValue::Null)
+fn xmp_packet_actual_encoding(facts: &[crate::ParseFact], object: ObjectKey) -> ModelValue {
+    match xmp_packet_header(facts, object) {
+        Some(crate::XmpFact::PacketHeader {
+            actual_encoding, ..
+        }) => ModelValue::String(BoundedText::unchecked(actual_encoding.as_str())),
+        _ => ModelValue::Null,
+    }
 }
 
 fn xmp_packet_header_attr(
-    document: &ParsedDocument,
+    facts: &[crate::ParseFact],
     object: ObjectKey,
     attr: XmpPacketHeaderAttr,
 ) -> ModelValue {
-    document
-        .parse_facts
-        .iter()
-        .find_map(|fact| {
-            let crate::ParseFact::Xmp {
-                object: fact_object,
-                fact:
-                    crate::XmpFact::PacketHeader {
-                        bytes, encoding, ..
-                    },
-            } = fact
-            else {
-                return None;
-            };
-            if *fact_object != object {
-                return None;
-            }
-            match attr {
-                XmpPacketHeaderAttr::Bytes => bytes.clone(),
-                XmpPacketHeaderAttr::Encoding => encoding.clone(),
-            }
-        })
-        .map_or(ModelValue::Null, ModelValue::String)
+    let Some(crate::XmpFact::PacketHeader {
+        bytes, encoding, ..
+    }) = xmp_packet_header(facts, object)
+    else {
+        return ModelValue::Null;
+    };
+    let value = match attr {
+        XmpPacketHeaderAttr::Bytes => bytes,
+        XmpPacketHeaderAttr::Encoding => encoding,
+    };
+    value.clone().map_or(ModelValue::Null, ModelValue::String)
 }
 
-fn xmp_serialization_valid(document: &ParsedDocument, object: ObjectKey) -> bool {
-    document.parse_facts.iter().any(|fact| {
+fn xmp_packet_header(facts: &[crate::ParseFact], object: ObjectKey) -> Option<&crate::XmpFact> {
+    let mut header = None;
+    for entry in facts {
+        let crate::ParseFact::Xmp {
+            object: source,
+            fact,
+        } = entry
+        else {
+            continue;
+        };
+        if *source != object {
+            continue;
+        }
+        match fact {
+            crate::XmpFact::MissingRdfRoot
+            | crate::XmpFact::Malformed { .. }
+            | crate::XmpFact::HostileXmlRejected { .. } => return None,
+            crate::XmpFact::PacketHeader { .. } => header = Some(fact),
+            _ => {}
+        }
+    }
+    header
+}
+
+fn xmp_serialization_valid(facts: &[crate::ParseFact], object: ObjectKey) -> bool {
+    facts.iter().any(|fact| {
         matches!(
             fact,
             crate::ParseFact::Xmp {
@@ -13140,7 +13222,7 @@ fn xmp_serialization_valid(document: &ParsedDocument, object: ObjectKey) -> bool
                 fact: crate::XmpFact::PacketParsed { .. },
             } if *fact_object == object
         )
-    }) && !document.parse_facts.iter().any(|fact| {
+    }) && !facts.iter().any(|fact| {
         matches!(
             fact,
             crate::ParseFact::Xmp {
@@ -15686,6 +15768,83 @@ trailer
                 )
             });
         assert!(has_redacted_uri);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(
+        "/Metadata 5 0 R /Custom << /Metadata 5 0 R >>",
+        "/XML",
+        "<xmp:Rating>bad</xmp:Rating>",
+        1,
+        1
+    )]
+    #[case(
+        "/Custom << /Metadata 5 0 R >>",
+        "/XML",
+        "<xmp:Rating>bad</xmp:Rating>",
+        1,
+        1
+    )]
+    #[case("/Metadata 5 0 R", "/Form", "<xmp:Rating>bad</xmp:Rating>", 0, 0)]
+    #[case("", "/XML", "<xmp:Rating>bad</xmp:Rating>", 0, 0)]
+    #[case("/Metadata 5 0 R", "/XML", "<unclosed", 1, 0)]
+    #[case("/Metadata 4 0 R", "/XML", "<xmp:Rating>bad</xmp:Rating>", 0, 0)]
+    fn test_should_validate_each_linked_metadata_packet_once(
+        #[case] page: &str,
+        #[case] subtype: &str,
+        #[case] secondary: &str,
+        #[case] linked: usize,
+        #[case] bad_rating: usize,
+    ) -> crate::Result<()> {
+        let catalog = br#"<?xpacket begin=""?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:id="http://www.aiim.org/pdfa/ns/id/" id:part="2" id:conformance="B"
+      xmlns:xmp="http://ns.adobe.com/xap/1.0/"><xmp:Rating>1</xmp:Rating></rdf:Description>
+</rdf:RDF>"#;
+        let secondary = format!(
+            r#"<?xpacket begin=""?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:xmp="http://ns.adobe.com/xap/1.0/">{secondary}</rdf:Description>
+</rdf:RDF>"#
+        );
+        let mut pdf = format!(
+            "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Metadata 4 0 R >>\nendobj\n2 0 \
+             obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page \
+             /Parent 2 0 R /MediaBox [0 0 100 100] {page} >>\nendobj\n",
+        )
+        .into_bytes();
+        append_test_stream(
+            &mut pdf,
+            "4 0 obj",
+            "/Type /Metadata /Subtype /XML",
+            catalog,
+        );
+        append_test_stream(
+            &mut pdf,
+            "5 0 obj",
+            &format!("/Type /Metadata /Subtype {subtype}"),
+            secondary.as_bytes(),
+        );
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(2).ok_or(crate::ProfileError::UnsupportedSelection)?,
+                "b",
+            )?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-2-6-6-2-1-2", 1 + linked, 0);
+        assert_distinct_test_rule(&profile, "iso-19005-2-6-6-2-3-1-2", 3, bad_rating);
+        let broken_xml = usize::from(secondary.contains("<unclosed"));
+        assert_distinct_test_rule(
+            &profile,
+            "iso-19005-2-6-6-2-1-4",
+            1 + linked - broken_xml,
+            broken_xml,
+        );
+        assert_distinct_test_rule(&profile, "iso-19005-2-6-6-4-2", 1, 0);
         Ok(())
     }
 

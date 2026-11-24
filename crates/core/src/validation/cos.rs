@@ -39,7 +39,7 @@ pub(super) enum CosPrimitive<'a> {
     String(&'a PdfString),
     Array(usize),
     Dictionary(&'a Dictionary),
-    StreamOrTrailerDictionary(usize),
+    StreamOrTrailerDictionary(&'a Dictionary),
 }
 
 impl CosPrimitive<'_> {
@@ -61,12 +61,11 @@ impl CosPrimitive<'_> {
                 Ok(ModelValue::Bool(i32::try_from(value).is_ok()))
             }
             (Self::Real(value), "realValue") => Ok(ModelValue::Number(value)),
-            (Self::Dictionary(dictionary), "size") => {
-                usize_to_f64(dictionary.len()).map(ModelValue::Number)
-            }
-            (Self::Array(size) | Self::StreamOrTrailerDictionary(size), "size") => {
-                usize_to_f64(size).map(ModelValue::Number)
-            }
+            (
+                Self::Dictionary(dictionary) | Self::StreamOrTrailerDictionary(dictionary),
+                "size",
+            ) => usize_to_f64(dictionary.len()).map(ModelValue::Number),
+            (Self::Array(size), "size") => usize_to_f64(size).map(ModelValue::Number),
             (Self::Name(value), "byteLength") => byte_length(value.as_bytes()),
             (Self::String(value), "byteLength") => byte_length(value.as_bytes()),
             (Self::Name(value), "internalRepresentation") => Ok(text_value(value.as_bytes())),
@@ -246,10 +245,10 @@ impl<'a> CosNode<'a> {
             Self::Value(CosObject::String(value)) => Some(CosPrimitive::String(value)),
             Self::Value(CosObject::Array(values)) => Some(CosPrimitive::Array(values.len())),
             Self::Value(CosObject::Dictionary(values)) => Some(CosPrimitive::Dictionary(values)),
-            Self::Dictionary(values) => Some(CosPrimitive::StreamOrTrailerDictionary(values.len())),
-            Self::Value(CosObject::Stream(stream)) => Some(
-                CosPrimitive::StreamOrTrailerDictionary(stream.dictionary.len()),
-            ),
+            Self::Dictionary(values) => Some(CosPrimitive::StreamOrTrailerDictionary(values)),
+            Self::Value(CosObject::Stream(stream)) => {
+                Some(CosPrimitive::StreamOrTrailerDictionary(&stream.dictionary))
+            }
             Self::Value(_) => None,
         }
     }

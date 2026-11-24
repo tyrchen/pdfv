@@ -57,9 +57,15 @@ pub struct XmpCheckedProperty {
     pub pdfa1: XmpPropertyCheck,
     /// Evidence for PDF/A-2 and PDF/A-3.
     pub pdfa23: XmpPropertyCheck,
+    /// The catalog packet declares this qualified name with a recognized type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_in_catalog: Option<bool>,
 }
 
-pub(super) fn check(properties: &[Node]) -> Result<Vec<XmpCheckedProperty>> {
+pub(super) fn check(
+    properties: &[Node],
+    catalog: Option<&Declarations<'_>>,
+) -> Result<Vec<XmpCheckedProperty>> {
     let schemas = Schemas::get()?;
     let declarations = Declarations::read(properties);
     properties
@@ -68,20 +74,30 @@ pub(super) fn check(properties: &[Node]) -> Result<Vec<XmpCheckedProperty>> {
         .map(|node| {
             let namespace = node.namespace.as_str();
             let name = node.name.as_str();
-            let open_schema = declarations.schemas.get(namespace);
+            let current = declarations.schemas.get(namespace);
+            let inherited = catalog.and_then(|catalog| catalog.schemas.get(namespace));
+            let primary = SchemaView {
+                predefined: &schemas.pdfa23,
+                extension: inherited,
+                inherited_types: None,
+            };
+            let primary_type = primary.declared_type(name);
             Ok(XmpCheckedProperty {
                 namespace_uri: node.namespace.clone(),
                 name: node.name.clone(),
                 pdfa1: SchemaView {
                     predefined: &schemas.pdfa1,
-                    extension: open_schema,
+                    extension: current,
+                    inherited_types: None,
                 }
-                .check(node, name)?,
+                .check(node, None)?,
                 pdfa23: SchemaView {
                     predefined: &schemas.pdfa23,
-                    extension: open_schema,
+                    extension: current,
+                    inherited_types: inherited,
                 }
-                .check(node, name)?,
+                .check(node, primary_type.as_ref().map(|kind| (&primary, kind)))?,
+                declared_in_catalog: catalog.map(|_| primary_type.is_some()),
             })
         })
         .collect()
@@ -189,7 +205,7 @@ impl<'a> Structure<'a> {
 }
 
 #[derive(Debug, Default)]
-struct Declarations<'a> {
+pub(super) struct Declarations<'a> {
     schemas: BTreeMap<&'a str, Extension<'a>>,
 }
 
@@ -200,7 +216,7 @@ struct Extension<'a> {
 }
 
 impl<'a> Declarations<'a> {
-    fn read(properties: &'a [Node]) -> Self {
+    pub(super) fn read(properties: &'a [Node]) -> Self {
         let mut declarations = Self::default();
         for schema in properties
             .iter()
@@ -276,28 +292,41 @@ fn field_text<'a>(node: &'a Node, namespace: &str, name: &str) -> Option<&'a str
 struct SchemaView<'a> {
     predefined: &'a Predefined,
     extension: Option<&'a Extension<'a>>,
+    inherited_types: Option<&'a Extension<'a>>,
+}
+
+#[derive(Debug)]
+struct DeclaredType<'a> {
+    spelling: &'a str,
+    normalized: String,
 }
 
 impl SchemaView<'_> {
-    fn check(&self, node: &Node, name: &str) -> Result<XmpPropertyCheck> {
+    fn check(
+        &self,
+        node: &Node,
+        catalog: Option<(&Self, &DeclaredType<'_>)>,
+    ) -> Result<XmpPropertyCheck> {
+        let name = node.name.as_str();
         let predefined = self
             .predefined
             .properties
             .get(node.namespace.as_str())
             .and_then(|properties| properties.get(name))
             .copied();
-        let declared = self
-            .extension
-            .and_then(|schema| schema.properties.get(name))
-            .copied()
-            .map(|source| (source, normalize_type(source)))
-            .filter(|(_, kind)| self.known_type(kind));
-        let (valid, expected) = if let Some((source, kind)) = &declared {
-            (self.validate(node, kind)?, Some(*source))
+        let declared = self.declared_type(name);
+        let (valid, expected) = if let Some(kind) = &declared {
+            (self.validate(node, &kind.normalized)?, Some(kind.spelling))
+        } else if let Some((primary, kind)) = catalog {
+            (
+                primary.validate(node, &kind.normalized)?,
+                Some(kind.spelling),
+            )
         } else if let Some(kind) = predefined {
             let validator = Self {
                 predefined: self.predefined,
                 extension: None,
+                inherited_types: None,
             };
             (validator.validate(node, kind)?, Some(kind))
         } else {
@@ -311,6 +340,15 @@ impl SchemaView<'_> {
         })
     }
 
+    fn declared_type(&self, name: &str) -> Option<DeclaredType<'_>> {
+        let spelling = self.extension?.properties.get(name).copied()?;
+        let normalized = normalize_type(spelling);
+        self.known_type(&normalized).then_some(DeclaredType {
+            spelling,
+            normalized,
+        })
+    }
+
     fn known_type(&self, mut kind: &str) -> bool {
         while let Some((_, child)) = array_type(kind) {
             kind = child;
@@ -321,6 +359,10 @@ impl SchemaView<'_> {
     fn structure(&self, kind: &str) -> Option<&Structure<'_>> {
         self.extension
             .and_then(|schema| schema.types.get(kind))
+            .or_else(|| {
+                self.inherited_types
+                    .and_then(|schema| schema.types.get(kind))
+            })
             .or_else(|| self.predefined.types.get(kind))
     }
 
@@ -385,6 +427,7 @@ pub(crate) fn extension_value_type_defined(
     part: u32,
     value: &str,
     custom: &BTreeSet<String>,
+    inherited: Option<&BTreeSet<String>>,
 ) -> Result<bool> {
     let schemas = Schemas::get()?;
     let predefined = if part == 1 {
@@ -398,6 +441,7 @@ pub(crate) fn extension_value_type_defined(
         base = child;
     }
     Ok(custom.contains(base)
+        || inherited.is_some_and(|types| types.contains(base))
         || (base != "any" && is_primitive(base))
         || predefined.types.contains_key(base))
 }

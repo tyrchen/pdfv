@@ -7,7 +7,7 @@ use std::{
 
 use super::{
     XMP_NS_PDFA_EXTENSION, XMP_NS_PDFA_FIELD, XMP_NS_PDFA_PROPERTY, XMP_NS_PDFA_SCHEMA,
-    XMP_NS_PDFA_TYPE, XmpRdfPropertyView, unknown_property, xmp_rdf_properties,
+    XMP_NS_PDFA_TYPE, XmpRdfPropertyView, unknown_property, xmp_packet_properties,
 };
 use crate::{
     BoundedText, Identifier, ModelValue, ObjectKey, ParseFact, ParsedDocument, PropertyName,
@@ -25,6 +25,8 @@ pub(super) const FAMILIES: &[&str] = &[
     "extensionSchemaField",
 ];
 
+pub(super) type CatalogTypes = BTreeMap<String, Arc<BTreeSet<String>>>;
+
 #[derive(Clone, Debug)]
 pub(super) struct ExtensionResource<'a> {
     pub(super) id: u64,
@@ -32,17 +34,18 @@ pub(super) struct ExtensionResource<'a> {
     prefix: &'a Identifier,
     fields: Vec<XmpRdfPropertyView<'a>>,
     defined_types: Arc<BTreeSet<String>>,
+    inherited_types: Option<Arc<BTreeSet<String>>>,
     part: u32,
 }
 
-pub(super) fn resources(
-    document: &ParsedDocument,
+pub(super) fn resources<'a>(
+    facts: &'a [ParseFact],
     key: ObjectKey,
     part: u32,
-) -> Vec<ExtensionResource<'_>> {
-    let properties = xmp_rdf_properties(document, Some(key)).collect::<Vec<_>>();
-    let scopes = document
-        .parse_facts
+    catalog_types: Option<&CatalogTypes>,
+) -> Vec<ExtensionResource<'a>> {
+    let properties = xmp_packet_properties(facts, key).collect::<Vec<_>>();
+    let scopes = facts
         .iter()
         .filter_map(|fact| {
             let ParseFact::Xmp {
@@ -86,6 +89,16 @@ pub(super) fn resources(
         .map(|(id, types)| (id, Arc::new(types)))
         .collect::<BTreeMap<_, _>>();
     let empty = Arc::new(BTreeSet::new());
+    let inherited_types: BTreeMap<_, _> = scopes
+        .iter()
+        .filter_map(|(id, role, _, _, fields)| {
+            if *role != XmpExtensionRole::Definition {
+                return None;
+            }
+            let namespace = declaration_namespace(fields)?;
+            Some((*id, catalog_types?.get(namespace)?))
+        })
+        .collect();
     scopes
         .into_iter()
         .map(|(id, role, schema, prefix, fields)| ExtensionResource {
@@ -94,16 +107,45 @@ pub(super) fn resources(
             prefix,
             fields,
             defined_types: Arc::clone(schema.and_then(|id| type_names.get(&id)).unwrap_or(&empty)),
+            inherited_types: schema
+                .and_then(|id| inherited_types.get(&id))
+                .map(|types| Arc::clone(*types)),
             part,
         })
         .collect()
+}
+
+pub(super) fn catalog_types(facts: &[ParseFact], key: ObjectKey) -> CatalogTypes {
+    resources(facts, key, 2, None)
+        .into_iter()
+        .filter_map(|resource| {
+            if resource.role != XmpExtensionRole::Definition
+                || select_field(&resource.fields, XMP_NS_PDFA_SCHEMA, "property")
+                    .0
+                    .is_none_or(|field| field.array_kind.is_none())
+            {
+                return None;
+            }
+            Some((
+                declaration_namespace(&resource.fields)?.to_owned(),
+                resource.defined_types,
+            ))
+        })
+        .collect()
+}
+
+fn declaration_namespace<'a>(fields: &[XmpRdfPropertyView<'a>]) -> Option<&'a str> {
+    select_field(fields, XMP_NS_PDFA_SCHEMA, "namespaceURI")
+        .0?
+        .value
+        .map(BoundedText::as_str)
 }
 
 pub(super) fn declared_value_types_valid(
     document: &ParsedDocument,
     key: ObjectKey,
 ) -> Option<bool> {
-    let resources = resources(document, key, 2);
+    let resources = resources(&document.parse_facts, key, 2, None);
     (!resources.is_empty()).then(|| {
         resources.iter().all(|resource| {
             let namespace = match resource.role {
@@ -122,7 +164,12 @@ pub(super) fn declared_value_types_valid(
 
 impl ExtensionResource<'_> {
     fn value_type_defined(&self, value: &str) -> Result<bool> {
-        crate::xmp::property::extension_value_type_defined(self.part, value, &self.defined_types)
+        crate::xmp::property::extension_value_type_defined(
+            self.part,
+            value,
+            &self.defined_types,
+            self.inherited_types.as_deref(),
+        )
     }
 
     pub(super) fn family(&self) -> &'static str {

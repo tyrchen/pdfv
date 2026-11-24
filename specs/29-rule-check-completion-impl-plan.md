@@ -99,11 +99,12 @@ continue to agree.
 
 The dedicated XMP audit now agrees on all 575 PDF/A-2b document decisions.
 Property rules use individual qualified RDF properties, predefined or
-declared types, and scalar, array, or structure evidence. The three
-schema rules match in 1,717 of 1,725 comparisons. The remaining eight
-comparisons involve object-level XMP packets. Focused controls still need
-XPath function validation and original PDF/A identification values.
-[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation)
+declared types, and scalar, array, or structure evidence. Object-level
+metadata uses scoped packet checks and catalog extension declarations.
+The three audited XMP rules now match in all 1,725 comparisons. Focused
+controls still need XPath function validation and original PDF/A
+identification values.
+[Live review and representative rules](../docs/reviews/m9-live-conformance-review.md#object-level-xmp-packets)
 
 ## Implementation constraints
 

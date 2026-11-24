@@ -422,13 +422,38 @@ differences affect, respectively, mixed language arrays, syntactically
 correct XPath with invalid function calls, and whitespace around
 `pdfaid:conformance`.
 
+## Object-Level XMP Packets
+
+PDF/A-2, 3, and 4 validate metadata streams linked through a dictionary's
+`/Metadata` entry. The walk includes nested COS dictionaries and stream
+dictionaries. It resolves the link to a `/Type /Metadata /Subtype /XML`
+stream and checks each stream once. The catalog remains the source for
+document identification and profile selection. Packet-level rules cover
+XML serialization, encoding, and packet header attributes. Object packets
+can use catalog extension declarations, with local definitions taking
+precedence for the same qualified property. The decoder applies both a
+per-stream limit and a shared budget for decoded packet bytes.
+
+All 575 PDF/A-2b XMP documents still match Greenfield at document level.
+The three directly audited rules now match in **1,725 of 1,725**
+comparisons, with zero unsupported evaluations. The three fixtures
+with object metadata also match all 63 comparisons across the 21
+schema rules. The 12 PDF/A-3b attachment fixtures continue to match
+all 84 comparisons of their attachment and targeted XMP rules.
+
+In shared-stream controls, pdfv keeps catalog identification active when
+the catalog packet is also referenced by an object. Distinct packets each
+validate their own value when they share a qualified property name.
+Greenfield can coalesce these observations during traversal, which makes
+its assertions sensitive to packet order.
+
 ## Release Blockers
 
 - The audit of the 15 profiles still has seven whole-document differences
   in its 30 controls. See
   [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
-- Object-level XMP packets and the focused XPath and identification cases
-  still need rule-level evidence.
+- The focused XPath function and identification cases still need
+  rule-level evidence.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

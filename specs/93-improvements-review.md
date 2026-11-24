@@ -15,12 +15,6 @@ of the current implementation phase.
   the embedded-font rules. See
   [the glyph measurement](../crates/core/src/validation/glyphs.rs) and
   [the live comparisons](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
-- **P2.** Three PDF/A-2b fixtures have additional XMP property assertions
-  and two also have additional schema assertions from object-level
-  `/Metadata` streams. Extend bounded XMP parsing to
-  reachable metadata streams needed by each profile, preserving packet
-  identity and main-package declarations. See
-  [XMP design](./18-xmp-metadata-flavour-design.md).
 - **P2.** Resolve XPath 1.0 core function names and arity at validation time
   within the existing syntax budget. Feed the exact RDF value to PDF/A
   `conformance` checks alongside the normalized claim used for detection.
@@ -79,3 +73,7 @@ of the current implementation phase.
   The 575-fixture audit now has zero false-compliant or false-invalid
   document decisions. See
   [the final property comparison](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation).
+- **P2.** Object-level XMP streams now produce scoped packet, property,
+  and extension-schema assertions. The three affected PDF/A-2b fixtures
+  agree on all 63 schema rule comparisons. See
+  [the object-level audit](../docs/reviews/m9-live-conformance-review.md#object-level-xmp-packets).

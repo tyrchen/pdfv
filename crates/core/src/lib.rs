@@ -2017,6 +2017,8 @@ pub enum XmpFact {
     },
     /// XMP packet wrapper was absent.
     MissingPacketWrapper,
+    /// The packet contains well-formed XML without an RDF root.
+    MissingRdfRoot,
     /// Recognized XMP flavour claim.
     FlavourClaim {
         /// Flavour family.
@@ -2075,6 +2077,15 @@ pub enum XmpFact {
     CheckedProperties {
         /// One entry for each top-level RDF property, excluding extension declarations.
         properties: Vec<XmpCheckedProperty>,
+    },
+    /// An XMP stream selected through an object dictionary's metadata entry.
+    LinkedMetadata {
+        /// Enclosing indirect object, or no key for a trailer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        owner: Option<ObjectKey>,
+        /// Number of subsequent facts belonging to this packet.
+        #[serde(rename = "factCount")]
+        fact_count: usize,
     },
     /// A PDF/A extension container or one of its RDF resources.
     ExtensionScope {
@@ -3657,6 +3668,7 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
             claims,
         } => format!("packetParsed bytes={bytes} namespaces={namespaces} claims={claims}"),
         XmpFact::MissingPacketWrapper => String::from("missingPacketWrapper"),
+        XmpFact::MissingRdfRoot => String::from("missingRdfRoot"),
         XmpFact::FlavourClaim {
             family,
             part,
@@ -3709,6 +3721,9 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
         ),
         XmpFact::CheckedProperties { properties } => {
             format!("checkedProperties count={}", properties.len())
+        }
+        XmpFact::LinkedMetadata { owner, fact_count } => {
+            format!("linkedMetadata owner={owner:?} factCount={fact_count}")
         }
         XmpFact::ExtensionScope {
             id, role, prefix, ..
