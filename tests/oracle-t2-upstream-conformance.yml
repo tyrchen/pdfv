@@ -204,3 +204,98 @@ rows:
     encryption: unencrypted
     tagging: tagged
     license: redistributable
+  - id: pdfa-2b-6-1-12-t01-pass-a
+    path: "PDF_A-2b/6.1 File structure/6.1.12 Permissions/veraPDF test suite 6-1-12-t01-pass-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: b
+    expectedFeatures:
+      - signature
+      - permissions
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-2b-6-1-12-t01-fail-a
+    path: "PDF_A-2b/6.1 File structure/6.1.12 Permissions/veraPDF test suite 6-1-12-t01-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: b
+    expectedFeatures:
+      - permissions
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-2b-6-1-12-t02-pass-a
+    path: "PDF_A-2b/6.1 File structure/6.1.12 Permissions/veraPDF test suite 6-1-12-t02-pass-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: b
+    expectedFeatures:
+      - signature
+      - permissions
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-2b-6-1-12-t02-fail-a
+    path: "PDF_A-2b/6.1 File structure/6.1.12 Permissions/veraPDF test suite 6-1-12-t02-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: b
+    expectedFeatures:
+      - signature
+      - permissions
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-2b-6-1-12-t02-fail-b
+    path: "PDF_A-2b/6.1 File structure/6.1.12 Permissions/veraPDF test suite 6-1-12-t02-fail-b.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: b
+    expectedFeatures:
+      - signature
+      - permissions
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-2b-6-1-12-t02-fail-c
+    path: "PDF_A-2b/6.1 File structure/6.1.12 Permissions/veraPDF test suite 6-1-12-t02-fail-c.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: b
+    expectedFeatures:
+      - signature
+      - permissions
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable

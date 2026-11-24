@@ -15,6 +15,9 @@ homepage.workspace = true
 aes = { workspace = true, optional = true }
 cbc = { workspace = true, optional = true }
 cipher = { workspace = true, optional = true }
+cms.workspace = true
+const-oid.workspace = true
+der.workspace = true
 md-5 = { workspace = true, optional = true }
 rc4 = { workspace = true, optional = true }
 secrecy.workspace = true

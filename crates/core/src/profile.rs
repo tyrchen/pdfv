@@ -3299,7 +3299,9 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "SEMarkedContent" => Some("taggedContentSequence"),
         "SESimpleContentItem" => Some("taggedContentItem"),
         "PDStructElem" | "SEGraphicContentItem" | "SETextItem" => Some("structureElement"),
-        "PDSignature" | "PDSigRef" | "PKCSDataObject" => Some("signature"),
+        "PDSignature" => Some(crate::validation::signature::FIELD_VALUE),
+        "PDSigRef" => Some(crate::validation::signature::REFERENCE),
+        "PKCSDataObject" => Some(crate::validation::signature::PKCS),
         "PDEncryption" => Some("security"),
         _ => crate::validation::structure_roles::rule_family(value),
     };

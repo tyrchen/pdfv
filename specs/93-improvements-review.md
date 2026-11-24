@@ -19,11 +19,10 @@ of the current implementation phase.
   within the existing syntax budget. Feed the exact RDF value to PDF/A
   `conformance` checks alongside the normalized claim used for detection.
   See [the XMP audit](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation).
-- **P1.** The 15-profile audit found six incomplete decisions and
-  one false-invalid decision. Scope the transparency rules to actual groups
-  and their use. Resolve the
-  remaining object-stream, CIDSet, glyph-width, and Unicode evidence. The
-  [live audit](../docs/reviews/m9-live-conformance-review.md#xmp-extension-resources-and-annotation-appearances)
+- **P1.** The 15-profile audit found six incomplete decisions. Scope UTF-8
+  name checks to font, colourant, and structure names. Resolve the
+  remaining CIDSet, glyph-width, and glyph Unicode evidence. The
+  [live audit](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit)
   records the rule IDs and representative fixtures.
 - **P1.** Embedded PDF conformance checks `isValidPDFA12` and
   `isValidPDFA124` still need evidence from `/EF` stream traversal and
@@ -77,3 +76,7 @@ of the current implementation phase.
   and extension-schema assertions. The three affected PDF/A-2b fixtures
   agree on all 63 schema rule comparisons. See
   [the object-level audit](../docs/reviews/m9-live-conformance-review.md#object-level-xmp-packets).
+- **P1.** Signature rules use AcroForm signature field values, typed
+  signature references, physical Contents spans, and DER SignedData.
+  The remaining false-invalid decision in the 15-profile audit is resolved.
+  See [the permission and signature audit](../docs/reviews/m9-live-conformance-review.md#digital-signatures-and-document-permissions).

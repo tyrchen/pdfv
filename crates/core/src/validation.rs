@@ -12,6 +12,7 @@ pub(crate) mod language;
 mod object_xmp;
 pub(crate) mod scoped_pua;
 mod semantic_names;
+pub(crate) mod signature;
 pub(crate) mod structure_roles;
 mod tagged_content;
 pub(crate) mod xmp_extension;
@@ -1253,10 +1254,7 @@ const SIGNATURE_PROPERTIES: &[&str] = &[
     "Contents",
     "Reference",
     "M",
-    "signingCertificatePresent",
-    "permsContainDocMDP",
     "doesByteRangeCoverEntireDocument",
-    "SignerInfoCount",
     "entries",
 ];
 const SECURITY_PROPERTIES: &[&str] = SECURITY_DIRECT_PROPERTIES;
@@ -2557,7 +2555,21 @@ impl ModelRegistry {
             family("list", LIST_PROPERTIES, EMPTY_LINK_NAMES),
             family("heading", HEADING_PROPERTIES, EMPTY_LINK_NAMES),
             family("link", LINK_PROPERTIES, EMPTY_LINK_NAMES),
-            family("signature", SIGNATURE_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                signature::FIELD_VALUE,
+                SIGNATURE_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                signature::REFERENCE,
+                signature::REFERENCE_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                signature::PKCS,
+                signature::PKCS_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("security", SECURITY_PROPERTIES, EMPTY_LINK_NAMES),
             family("outputIntent", OUTPUT_INTENT_PROPERTIES, EMPTY_LINK_NAMES),
             family("stream", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
@@ -3720,6 +3732,8 @@ impl<'a> ModelGraph<'a> {
                 && family.as_str() != crate::xmp::property::FAMILY
                 && family.as_str() != crate::xmp::PACKET_FAMILY
                 && !semantic_names::FAMILIES.contains(&family.as_str())
+                && (self.active_flavour.is_none()
+                    || !signature::FAMILIES.contains(&family.as_str()))
                 && !device_color::FAMILIES.contains(&family.as_str())
                 && family.as_str() != glyphs::TRUE_TYPE_PROGRAM
                 && !matches!(
@@ -4117,8 +4131,10 @@ impl<'a> ModelGraph<'a> {
             ) {
                 continue;
             }
-            if matches!(family, "cMap" | "structureElement" | "structureTreeRoot")
-                && self.active_flavour.is_some()
+            if matches!(
+                family,
+                "cMap" | "structureElement" | "structureTreeRoot" | signature::FIELD_VALUE
+            ) && self.active_flavour.is_some()
             {
                 continue;
             }
@@ -4525,6 +4541,7 @@ impl ModelObject for DocumentModel<'_> {
             push_linked(&mut objects, ModelObjectRef::Catalog(catalog), max_objects)?;
         }
         object_xmp::link_models(graph, &mut objects, max_objects)?;
+        signature::append(graph, &mut objects, max_objects)?;
         if language::enabled(graph) {
             language::append_form_fields(graph, &mut objects, max_objects)?;
         }
@@ -6077,31 +6094,10 @@ impl<'a> AnnotationModel<'a> {
     }
 
     fn field_type(&self) -> Result<ModelValue> {
-        let mut current = self.dictionary;
-        let mut seen = HashSet::new();
-        for _ in 0..=self.limits.max_object_depth {
-            if !seen.insert(core::ptr::from_ref(current)) {
-                return Ok(ModelValue::Null);
-            }
-            if let Some(value) = current.get("FT")
-                && !matches!(value, crate::CosObject::Null)
-            {
-                return Ok(self
-                    .resolved_name(Some(value))?
-                    .map_or(ModelValue::Null, cos_name_value));
-            }
-            let Some(parent) = self
-                .resolve(current.get("Parent"))?
-                .and_then(crate::CosObject::as_dictionary)
-            else {
-                return Ok(ModelValue::Null);
-            };
-            current = parent;
-        }
-        Err(ValidationError::LimitExceeded {
-            limit: "max_object_depth",
-        }
-        .into())
+        Ok(
+            signature::field_type(self.document, self.dictionary, self.limits.max_object_depth)?
+                .map_or(ModelValue::Null, cos_name_value),
+        )
     }
 
     fn resolved_name(&self, value: Option<&'a crate::CosObject>) -> Result<Option<&'a PdfName>> {
@@ -10701,6 +10697,7 @@ pub struct GenericModel<'a> {
     device_output: Option<device_color::OutputSpaces>,
     glyph_evidence: Option<glyphs::Evidence>,
     device_n: Option<device_n::Evidence>,
+    pkcs: Option<signature::Pkcs>,
     icc_header: Option<Arc<IccHeader>>,
     parsed_cmap: Option<Arc<cmap::CMap>>,
     tagged_content: Option<tagged_content::Evidence>,
@@ -10744,6 +10741,7 @@ impl<'a> GenericModel<'a> {
             device_output: None,
             glyph_evidence: None,
             device_n: None,
+            pkcs: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10778,6 +10776,7 @@ impl<'a> GenericModel<'a> {
             device_output: None,
             glyph_evidence: None,
             device_n: None,
+            pkcs: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10808,6 +10807,7 @@ impl<'a> GenericModel<'a> {
             device_output: None,
             glyph_evidence: None,
             device_n: None,
+            pkcs: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10837,6 +10837,10 @@ impl<'a> GenericModel<'a> {
             || self.tagged_content.is_some()
             || self.device_output.is_some()
             || self.object_type.as_str() == glyphs::UNICODE_FAMILY
+            || matches!(
+                self.object_type.as_str(),
+                signature::REFERENCE | signature::PKCS
+            )
         {
             return self.context.clone();
         }
@@ -10917,7 +10921,7 @@ impl<'a> GenericModel<'a> {
                     |value| destination_targets_structure(self.document, value),
                 ))))
             }
-            ("action", "entries") => Some(dictionary_entries_model_value(&self.dictionary)),
+            ("action", "entries") => Some(dictionary_entries_model_value(&self.dictionary, true)),
             ("destination", "D" | "Dest") => Some(self.direct_value.clone().map_or_else(
                 || dictionary_property(&self.dictionary, name, self.allowed_properties),
                 Ok,
@@ -10965,21 +10969,24 @@ impl<'a> GenericModel<'a> {
             ("optionalContentProperties", "hasDuplicateName" | "OCGsNotContainedInOrder") => {
                 Some(Ok(ModelValue::Bool(false)))
             }
-            ("permissions", "entries") => Some(dictionary_entries_model_value(&self.dictionary)),
+            ("permissions", "entries") => {
+                Some(dictionary_entries_model_value(&self.dictionary, false))
+            }
             _ => None,
         }
     }
 
     fn signature_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
         match (self.object_type.as_str(), name.as_str()) {
-            (
-                "signature",
-                "signingCertificatePresent"
-                | "permsContainDocMDP"
-                | "doesByteRangeCoverEntireDocument",
-            ) => Some(Ok(ModelValue::Bool(false))),
-            ("signature", "SignerInfoCount") => Some(Ok(ModelValue::Number(0.0))),
-            ("signature", "entries") => Some(dictionary_entries_model_value(&self.dictionary)),
+            (signature::FIELD_VALUE, "doesByteRangeCoverEntireDocument")
+            | (signature::REFERENCE, "permsContainDocMDP") => self.direct_value.clone().map(Ok),
+            (signature::REFERENCE, "entries") => {
+                Some(dictionary_entries_model_value(&self.dictionary, false))
+            }
+            (signature::FIELD_VALUE, "entries") => {
+                Some(dictionary_entries_model_value(&self.dictionary, true))
+            }
+            (signature::PKCS, property) => self.pkcs?.property(property),
             _ => None,
         }
     }
@@ -11417,11 +11424,15 @@ fn push_generic_model<'a>(
     Ok(())
 }
 
-fn dictionary_entries_model_value(dictionary: &crate::Dictionary) -> Result<ModelValue> {
+fn dictionary_entries_model_value(
+    dictionary: &crate::Dictionary,
+    include_null_entries: bool,
+) -> Result<ModelValue> {
     Ok(ModelValue::String(BoundedText::new(
         dictionary
             .iter()
-            .map(|(name, _value)| String::from_utf8_lossy(name.as_bytes()).into_owned())
+            .filter(|(_, value)| include_null_entries || !matches!(value, crate::CosObject::Null))
+            .map(|(name, _value)| String::from_utf8_lossy(name.as_bytes()).replace('&', "#26"))
             .collect::<Vec<_>>()
             .join("&"),
         512,
@@ -14501,6 +14512,104 @@ endobj
                 .iter()
                 .all(|unsupported| unsupported.rule_id.0.as_str() != rule)
         );
+    }
+
+    #[rstest]
+    #[case("", "7 0 R", "(example)", 0, 0, 0)]
+    #[case("/AcroForm << /Fields [3 0 R] >>", "7 0 R", "(example)", 1, 0, 2)]
+    #[case("/AcroForm << /Fields [3 0 R] >>", "7 0 R", "null", 1, 2, 0)]
+    #[case("/AcroForm << /Fields [3 0 R 4 0 R] >>", "null", "(example)", 1, 2, 0)]
+    fn test_should_scope_signature_assertions_to_acroform_values(
+        #[case] form: &str,
+        #[case] doc_mdp: &str,
+        #[case] digest: &str,
+        #[case] signatures: usize,
+        #[case] reference_passes: usize,
+        #[case] reference_failures: usize,
+    ) -> crate::Result<()> {
+        let pdf = format!(
+            "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Perms << /UR3 8 0 R /DocMDP {doc_mdp} /Extra \
+             null >> {form} >>\nendobj\n3 0 obj\n<< /FT /Sig /Kids [4 0 R 5 0 R] >>\nendobj\n4 0 \
+             obj\n<< /Parent 3 0 R /T (Named) /V 7 0 R >>\nendobj\n5 0 obj\n<< /Parent 3 0 R /T \
+             null /V 8 0 R >>\nendobj\n7 0 obj\n<< /ByteRange [0 0 0 0] /Contents <0000> \
+             /Reference [9 0 R 9 0 R] >>\nendobj\n8 0 obj\n<< /Type /Sig /ByteRange [0 0 0 0] \
+             /Contents <0000> >>\nendobj\n9 0 obj\n<< /DigestValue {digest} \
+             >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n"
+        );
+        let profile = validate_test_profile(
+            pdf.as_bytes(),
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(2).ok_or(crate::ProfileError::UnsupportedSelection)?,
+                "b",
+            )?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-2-6-1-12-1", 1, 0);
+        for clause in 1..=3 {
+            assert_distinct_test_rule(
+                &profile,
+                &format!("iso-19005-2-6-4-3-{clause}"),
+                0,
+                signatures,
+            );
+        }
+        assert_distinct_test_rule(
+            &profile,
+            "iso-19005-2-6-1-12-2",
+            reference_passes,
+            reference_failures,
+        );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("", 0, "", false, true)]
+    #[case("", 1, "", false, false)]
+    #[case(" 0 0", 0, "", false, false)]
+    #[case("", 0, "\n", false, true)]
+    #[case("", 0, "\n", true, false)]
+    fn test_should_match_byte_range_to_exact_contents_token(
+        #[case] extra_range: &str,
+        #[case] trim_gap: usize,
+        #[case] tail: &str,
+        #[case] sign_tail: bool,
+        #[case] passes: bool,
+    ) -> crate::Result<()> {
+        let prefix = "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /AcroForm << /Fields [<< /FT /Sig /V 2 \
+                      0 R >>] >> >>\nendobj\n2 0 obj\n<< /ByteRange ";
+        let before = " /Ignored << /Contents (irrelevant) >> /Cont#65nts % comment\n";
+        let contents = "<00 00>";
+        let after = " >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let empty = format!("[0 {:010} {:010} {:010}{extra_range}]", 0, 0, 0);
+        let start = prefix.len() + empty.len() + before.len();
+        let end = start + contents.len();
+        let second_length = after.len() + if sign_tail { tail.len() } else { 0 };
+        let signed = format!(
+            "{prefix}[0 {:010} {end:010} \
+             {second_length:010}{extra_range}]{before}{contents}{after}{tail}",
+            start - trim_gap,
+        );
+        let profile = validate_test_profile(
+            signed.as_bytes(),
+            ValidationFlavour::new(
+                "pdfa",
+                NonZeroU32::new(2).ok_or(crate::ProfileError::UnsupportedSelection)?,
+                "b",
+            )?,
+        )?;
+        assert_distinct_test_rule(
+            &profile,
+            "iso-19005-2-6-4-3-1",
+            usize::from(passes),
+            usize::from(!passes),
+        );
+        assert_distinct_test_rule(
+            &profile,
+            "iso-19005-2-6-1-3-3",
+            usize::from(tail.is_empty()),
+            usize::from(!tail.is_empty()),
+        );
+        Ok(())
     }
 
     fn m1_model_pdf() -> &'static [u8] {

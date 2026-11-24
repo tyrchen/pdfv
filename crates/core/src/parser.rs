@@ -9,6 +9,7 @@ use std::{
     fmt,
     io::{Read, Seek, SeekFrom, Write},
     num::NonZeroU32,
+    ops::RangeInclusive,
     sync::{Arc, OnceLock},
 };
 
@@ -489,6 +490,8 @@ pub struct ParsedDocument {
     pub warnings: Vec<ValidationWarning>,
     #[serde(default)]
     pub(crate) file_syntax: FileSyntax,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) signed_revision_ends: Vec<RangeInclusive<u64>>,
 }
 
 /// Fixed-size syntax observations used by conformance rules.
@@ -739,6 +742,7 @@ impl From<PdfName> for String {
 pub struct PdfString {
     bytes: Vec<u8>,
     syntax: PdfStringSyntax,
+    pub(crate) file_range: Option<StreamRange>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -756,6 +760,8 @@ enum PdfStringWire {
     Parsed {
         bytes: Vec<u8>,
         syntax: PdfStringSyntax,
+        #[serde(default, rename = "fileRange", skip_serializing_if = "Option::is_none")]
+        file_range: Option<StreamRange>,
     },
 }
 
@@ -773,8 +779,17 @@ impl From<PdfStringWire> for PdfString {
             PdfStringWire::Bytes(bytes) => Self {
                 bytes,
                 syntax: PdfStringSyntax::Unknown,
+                file_range: None,
             },
-            PdfStringWire::Parsed { bytes, syntax } => Self { bytes, syntax },
+            PdfStringWire::Parsed {
+                bytes,
+                syntax,
+                file_range,
+            } => Self {
+                bytes,
+                syntax,
+                file_range,
+            },
         }
     }
 }
@@ -786,6 +801,7 @@ impl From<PdfString> for PdfStringWire {
             syntax => Self::Parsed {
                 bytes: value.bytes,
                 syntax,
+                file_range: value.file_range,
             },
         }
     }
@@ -806,6 +822,7 @@ impl PdfString {
         Ok(Self {
             bytes,
             syntax: PdfStringSyntax::Unknown,
+            file_range: None,
         })
     }
 
@@ -832,6 +849,7 @@ impl TryFrom<Vec<u8>> for PdfString {
         Ok(Self {
             bytes: value,
             syntax: PdfStringSyntax::Unknown,
+            file_range: None,
         })
     }
 }
@@ -991,6 +1009,8 @@ struct ByteParser<'a> {
     startxref_marker: Option<usize>,
     revision_probe_budget: usize,
     active_xref: Option<ActiveXrefSection>,
+    file_offsets: bool,
+    signed_revision_ends: Vec<RangeInclusive<u64>>,
 }
 
 #[derive(Debug)]
@@ -1103,6 +1123,8 @@ impl<'a> ByteParser<'a> {
             startxref_marker: None,
             revision_probe_budget,
             active_xref: None,
+            file_offsets: false,
+            signed_revision_ends: Vec::new(),
         }
     }
 
@@ -1116,6 +1138,7 @@ impl<'a> ByteParser<'a> {
 
         let mut objects = ObjectStore::default();
         let mut trailers = Vec::new();
+        self.file_offsets = true;
         self.parse_top_level_objects(&mut objects, &mut trailers)?;
 
         let encrypted_catalog = trailers
@@ -1147,43 +1170,19 @@ impl<'a> ByteParser<'a> {
                             message: BoundedText::unchecked(error.safe_message()),
                         });
                         self.push_fact(error.into_fact(fact));
-                        return Ok(ParsedDocument {
-                            version,
-                            catalog: encrypted_catalog,
-                            objects,
-                            trailers,
-                            parse_facts: self.parse_facts,
-                            warnings: self.warnings,
-                            file_syntax: self.file_syntax,
-                        });
+                        return Ok(self.finish(version, encrypted_catalog, objects, trailers));
                     }
                     Err(error) => return Err(error.into_parse_error().into()),
                 }
             } else if self.options.password.is_none() {
                 self.push_fact(fact);
-                return Ok(ParsedDocument {
-                    version,
-                    catalog: encrypted_catalog,
-                    objects,
-                    trailers,
-                    parse_facts: self.parse_facts,
-                    warnings: self.warnings,
-                    file_syntax: self.file_syntax,
-                });
+                return Ok(self.finish(version, encrypted_catalog, objects, trailers));
             }
 
             #[cfg(not(feature = "decrypt"))]
             {
                 self.push_fact(fact);
-                return Ok(ParsedDocument {
-                    version,
-                    catalog: encrypted_catalog,
-                    objects,
-                    trailers,
-                    parse_facts: self.parse_facts,
-                    warnings: self.warnings,
-                    file_syntax: self.file_syntax,
-                });
+                return Ok(self.finish(version, encrypted_catalog, objects, trailers));
             }
         }
 
@@ -1204,7 +1203,17 @@ impl<'a> ByteParser<'a> {
             .rev()
             .find_map(|trailer| object_ref_from_dictionary(&trailer.dictionary, "Root"));
 
-        Ok(ParsedDocument {
+        Ok(self.finish(version, catalog, objects, trailers))
+    }
+
+    fn finish(
+        self,
+        version: PdfVersion,
+        catalog: Option<ObjectKey>,
+        objects: ObjectStore,
+        trailers: Vec<Trailer>,
+    ) -> ParsedDocument {
+        ParsedDocument {
             version,
             catalog,
             objects,
@@ -1212,7 +1221,8 @@ impl<'a> ByteParser<'a> {
             parse_facts: self.parse_facts,
             warnings: self.warnings,
             file_syntax: self.file_syntax,
-        })
+            signed_revision_ends: self.signed_revision_ends,
+        }
     }
 
     fn parse_top_level_objects(
@@ -1224,9 +1234,13 @@ impl<'a> ByteParser<'a> {
             self.skip_ws_and_comments();
             if self.starts_with(EOF_MARKER) {
                 if self.has_linked_revision(objects)? {
+                    if self.startxref.is_some_and(|offset| offset != 0) {
+                        self.record_signed_revision_end()?;
+                    }
                     self.consume_bytes(EOF_MARKER)?;
                     continue;
                 }
+                self.record_signed_revision_end()?;
                 self.parse_post_eof_fact()?;
                 return Ok(());
             }
@@ -1279,6 +1293,32 @@ impl<'a> ByteParser<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn record_signed_revision_end(&mut self) -> Result<()> {
+        if u64::try_from(self.signed_revision_ends.len()).unwrap_or(u64::MAX)
+            >= self.limits.max_objects
+        {
+            return Err(ParseError::LimitExceeded {
+                limit: "max_objects",
+            }
+            .into());
+        }
+        let marker_end = self.pos.saturating_add(EOF_MARKER.len());
+        let to_offset = |position| {
+            u64::try_from(position).map_err(|_| ParseError::ArithmeticOverflow {
+                context: "signed revision end",
+            })
+        };
+        let line_end = offset_after_eol(&self.source, marker_end).unwrap_or(marker_end);
+        let minimum = if line_end == self.end {
+            line_end
+        } else {
+            marker_end
+        };
+        self.signed_revision_ends
+            .push(to_offset(minimum)?..=to_offset(line_end)?);
         Ok(())
     }
 
@@ -1840,7 +1880,7 @@ impl<'a> ByteParser<'a> {
             context: "object offset",
         })?;
 
-        let parsed = self.parse_object(0)?;
+        let parsed = self.parse_spanned_object(0, true)?;
         let object = match parsed {
             CosObject::Dictionary(dictionary) if self.peek_stream_marker() => {
                 CosObject::Stream(self.parse_stream(key, dictionary)?)
@@ -1913,7 +1953,8 @@ impl<'a> ByteParser<'a> {
                 return Ok(dictionary);
             }
             let key = self.parse_name()?;
-            let value = self.parse_object(depth.saturating_add(1))?;
+            let value =
+                self.parse_spanned_object(depth.saturating_add(1), key.matches("Contents"))?;
             let next_len =
                 u64::try_from(dictionary.len()).map_err(|_| ParseError::ArithmeticOverflow {
                     context: "dictionary length",
@@ -1925,6 +1966,26 @@ impl<'a> ByteParser<'a> {
             }
             dictionary.insert(key, value);
         }
+    }
+
+    fn parse_spanned_object(
+        &mut self,
+        depth: u32,
+        record_range: bool,
+    ) -> std::result::Result<CosObject, ParseError> {
+        if !self.file_offsets || !record_range {
+            return self.parse_object(depth);
+        }
+        self.skip_ws_and_comments();
+        let start = self.offset()?;
+        let mut value = self.parse_object(depth)?;
+        if let CosObject::String(text) = &mut value {
+            text.file_range = Some(StreamRange {
+                start,
+                end: self.offset()?,
+            });
+        }
+        Ok(value)
     }
 
     fn parse_array(&mut self, depth: u32) -> std::result::Result<Vec<CosObject>, ParseError> {
@@ -2405,11 +2466,8 @@ impl<'a> ByteParser<'a> {
 
     fn parse_post_eof_fact(&mut self) -> std::result::Result<(), ParseError> {
         self.consume_bytes(EOF_MARKER)?;
-        let remaining = self
-            .source
-            .len()
-            .saturating_sub(self.pos)
-            .saturating_sub(count_trailing_ws(self.slice(self.pos, self.end)?.as_ref()));
+        let line_end = offset_after_eol(&self.source, self.pos).unwrap_or(self.pos);
+        let remaining = self.end.saturating_sub(line_end);
         if remaining > 0 {
             self.push_fact(ParseFact::PostEofData {
                 bytes: u64::try_from(remaining).map_err(|_| ParseError::ArithmeticOverflow {
@@ -2722,10 +2780,6 @@ fn trim_eol_before(source: &SourceStorage, data_start: usize, keyword_pos: usize
         return keyword_pos.saturating_sub(1);
     }
     keyword_pos
-}
-
-fn count_trailing_ws(bytes: &[u8]) -> usize {
-    bytes.iter().rev().take_while(|byte| is_ws(**byte)).count()
 }
 
 fn integer_from_dictionary(dictionary: &Dictionary, key: &str) -> Option<i64> {

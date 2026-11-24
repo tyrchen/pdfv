@@ -322,8 +322,8 @@ decisions. These are the representative gaps for the next rule-scope work.
 | Profile | Representative control | Rules needing evidence or scope |
 | --- | --- | --- |
 | PDF/A-1a | `6-3-8-t01-pass-a`, `6-3-8-t01-fail-a` | Font width `6.3.6-1`, Unicode `6.3.8-1`, and CIDSet `6.3.5-2` |
-| PDF/A-2a | `6-2-11-7-3-t01-pass-a`, `6-2-11-7-3-t01-fail-a` | Object stream `6.1.8-1` |
-| PDF/A-2b | `6-1-12-t01-pass-a` | Transparency `6.4.3-1` through `6.4.3-3` |
+| PDF/A-2a | `6-2-11-7-3-t01-pass-a`, `6-2-11-7-3-t01-fail-a` | UTF-8 names `6.1.8-1` |
+| PDF/A-2b | `6-1-12-t01-pass-a` | Digital signature applicability `6.4.3-1` through `6.4.3-3` |
 | PDF/A-2u | `6-2-11-7-2-t01-pass-a`, `6-2-11-7-2-t01-fail-a` | Width, Unicode, and CMap rules `6.2.11.5-1`, `6.2.11.7.2-1/-2`, `6.2.11.4.2-1` |
 | PDF/A-3b | Upstream `6-8-t02-*` attachment fixtures | XMP `6.6.2.3.1-1/-2` and `6.6.2.3.2-1`, annotation appearance `6.3.3-1` |
 | PDF/A-4e, PDF/A-4f | `6-2-4-1-t01-pass-a`, `6-3-1-t01-pass-a` | Annotation appearance `6.3.3-1` |
@@ -382,7 +382,7 @@ zero unsupported evaluations, and the wider attachment corpus still
 matches all 581 assertions. The 30-case audit across 15 profiles now has
 23 matching outcomes, six incomplete decisions, and one false-invalid
 decision, with zero false-compliant decisions. The last false-invalid
-decision is the PDF/A-2b transparency control.
+decision is the PDF/A-2b permissions control.
 
 The 575-fixture PDF/A-2b XMP audit still has 302 matching document outcomes,
 165 false-compliant decisions, and 108 false-invalid decisions. A rebuild
@@ -447,9 +447,40 @@ validate their own value when they share a qualified property name.
 Greenfield can coalesce these observations during traversal, which makes
 its assertions sensitive to packet order.
 
+## Digital Signatures and Document Permissions
+
+PDF/A-2 and PDF/A-3 signature rules start at the catalog's AcroForm field
+tree. They select the dictionary in a signature field's own `/V`, including
+fields that inherit `/FT /Sig` from their parent. A usage-rights signature
+whose only reference is `/Perms/UR3` produces zero digital-signature
+assertions. Each applicable `/Reference` entry is evaluated under the
+DocMDP restriction with the catalog's permissions dictionary as evidence.
+Null-valued permission and signature-reference entries represent absence.
+
+The byte-range check matches the excluded gap to the source token that
+holds `/Contents` and checks the signed end against the applicable revision's
+`%%EOF`. The parser permits one optional final line ending and reports
+any bytes after it. For PKCS#7, the validator decodes DER SignedData and
+checks for parseable X.509 certificates and the number of SignerInfo
+records. The rule evidence covers structure, certificate presence, and byte
+coverage. [CMS SignedData](https://www.rfc-editor.org/rfc/rfc5652.html#section-5.1)
+
+The supplemental oracle manifest now contains all six upstream PDF/A-2b
+permission fixtures. Their document decisions and all 30 targeted rule
+comparisons agree with Greenfield 1.30.4. The broader 15-profile audit
+now matches 24 of 30 document decisions. Six decisions remain incomplete
+and there are zero false-compliant or false-invalid decisions in that audit.
+
+Independent review compared 296 targeted pass/fail counts across 58
+fixtures. All 292 matching comparisons and the four differences produced
+definitive rule outcomes. pdfv requires exactly two byte ranges, accepts
+a gap that precisely selects an indirect Contents string, and requires
+any padding after the DER object to be zero. The nonzero-padding fixture
+is the sole document decision difference in this focused set.
+
 ## Release Blockers
 
-- The audit of the 15 profiles still has seven whole-document differences
+- The audit of the 15 profiles still has six incomplete document decisions
   in its 30 controls. See
   [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
 - The focused XPath function and identification cases still need
