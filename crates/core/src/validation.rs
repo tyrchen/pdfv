@@ -15,6 +15,7 @@ mod semantic_names;
 pub(crate) mod signature;
 pub(crate) mod structure_roles;
 mod tagged_content;
+pub(crate) mod unicode_name;
 pub(crate) mod xmp_extension;
 
 use std::{
@@ -2498,6 +2499,11 @@ impl ModelRegistry {
                 EMPTY_LINK_NAMES,
             ),
             family(
+                glyphs::PUA_FAMILY,
+                &["hasRequiredActualText"],
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 "iccBasedCmyk",
                 &[
                     "overprintFlag",
@@ -2576,6 +2582,11 @@ impl ModelRegistry {
             family("object", OBJECT_PROPERTIES, EMPTY_LINK_NAMES),
             family("documentInfo", DOCUMENT_INFO_PROPERTIES, EMPTY_LINK_NAMES),
             family("cosIndirect", &["spacingCompliesPDFA"], EMPTY_LINK_NAMES),
+            family(
+                unicode_name::FAMILY,
+                unicode_name::PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("deviceGray", device_color::PROPERTIES, EMPTY_LINK_NAMES),
             family("deviceRgb", device_color::PROPERTIES, EMPTY_LINK_NAMES),
             family("deviceCmyk", device_color::PROPERTIES, EMPTY_LINK_NAMES),
@@ -2676,6 +2687,7 @@ impl ModelRegistry {
                     | glyphs::WIDTH_FAMILY
                     | glyphs::CID_SET_FAMILY
                     | glyphs::UNICODE_FAMILY
+                    | glyphs::PUA_FAMILY
                     | glyphs::TRUE_TYPE_PROGRAM
             )
             && self.has_family(family)
@@ -3520,6 +3532,7 @@ pub struct ModelGraph<'a> {
     inline_colour_spaces: RefCell<BTreeMap<(ObjectKey, u64), Arc<crate::CosObject>>>,
     initial_gray_resources: RefCell<Vec<device_n::GrayResources>>,
     device_n_visits: Cell<u64>,
+    unicode_names: RefCell<unicode_name::Scope>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3632,6 +3645,7 @@ impl<'a> ModelGraph<'a> {
                         glyphs::WIDTH_FAMILY
                             | glyphs::CID_SET_FAMILY
                             | glyphs::UNICODE_FAMILY
+                            | glyphs::PUA_FAMILY
                             | glyphs::TRUE_TYPE_PROGRAM
                     )
                     || cmap::FAMILIES.contains(&family.as_str())
@@ -3667,6 +3681,7 @@ impl<'a> ModelGraph<'a> {
             device_n_visits: Cell::default(),
             text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
+            unicode_names: RefCell::default(),
         }
     }
 
@@ -3690,6 +3705,7 @@ impl<'a> ModelGraph<'a> {
             device_n_visits: Cell::default(),
             text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
+            unicode_names: RefCell::default(),
         }
     }
 
@@ -3705,6 +3721,8 @@ impl<'a> ModelGraph<'a> {
                 || self.materializes(glyphs::TRUE_TYPE_PROGRAM)
                 || self.materializes(glyphs::CID_SET_FAMILY)
                 || self.materializes(glyphs::UNICODE_FAMILY)
+                || self.materializes(glyphs::PUA_FAMILY)
+                || unicode_name::enabled(self)
                 || cmap::FAMILIES
                     .iter()
                     .any(|family| self.materializes(family)))
@@ -3732,6 +3750,7 @@ impl<'a> ModelGraph<'a> {
                 && family.as_str() != crate::xmp::property::FAMILY
                 && family.as_str() != crate::xmp::PACKET_FAMILY
                 && !semantic_names::FAMILIES.contains(&family.as_str())
+                && family.as_str() != unicode_name::FAMILY
                 && (self.active_flavour.is_none()
                     || !signature::FAMILIES.contains(&family.as_str()))
                 && !device_color::FAMILIES.contains(&family.as_str())
@@ -3778,6 +3797,8 @@ impl<'a> ModelGraph<'a> {
     fn materializes_accessibility(&self) -> bool {
         language::enabled(self)
             || scoped_pua::replacement_enabled(self)
+            || (unicode_name::enabled(self)
+                && catalog_value(self.document, "StructTreeRoot").is_some())
             || self.materialized_families.iter().any(|family| {
                 structure_roles::rule_family(family.as_str()).is_some()
                     || matches!(
@@ -3873,10 +3894,14 @@ impl<'a> ModelGraph<'a> {
             || self.associated_files.is_some()
             || image_mask::enabled(self)
             || device_n::enabled(self)
+            || unicode_name::enabled(self)
     }
 
     fn needs_pattern_invocations(&self) -> bool {
-        self.associated_files.is_some() || image_mask::enabled(self) || device_n::enabled(self)
+        self.associated_files.is_some()
+            || image_mask::enabled(self)
+            || device_n::enabled(self)
+            || unicode_name::enabled(self)
     }
 
     fn charge_text_bytes(&self, bytes: usize) -> Result<()> {
@@ -5567,6 +5592,7 @@ fn page_linked_objects<'a>(
     let mut objects = Vec::new();
     file_spec::association::collect_page(graph, page)?;
     device_n::append_page(graph, page, &mut objects, max_objects)?;
+    unicode_name::append_page(graph, page, &mut objects, max_objects)?;
     if graph.materializes("pageBox") {
         append_page_boxes(page, graph.document, &mut objects, max_objects)?;
     }
@@ -7517,6 +7543,7 @@ impl ModelObject for AccessibilityModel<'_> {
         let mut objects = Vec::new();
         match self.kind {
             AccessibilityModelKind::Document => {
+                unicode_name::append_structure(graph, &self.graph, &mut objects, max_objects)?;
                 if self.graph.truncated
                     && (language::enabled(graph) || scoped_pua::replacement_enabled(graph))
                 {
@@ -10698,6 +10725,7 @@ pub struct GenericModel<'a> {
     glyph_evidence: Option<glyphs::Evidence>,
     device_n: Option<device_n::Evidence>,
     pkcs: Option<signature::Pkcs>,
+    unicode_name: Option<unicode_name::Evidence>,
     icc_header: Option<Arc<IccHeader>>,
     parsed_cmap: Option<Arc<cmap::CMap>>,
     tagged_content: Option<tagged_content::Evidence>,
@@ -10742,6 +10770,7 @@ impl<'a> GenericModel<'a> {
             glyph_evidence: None,
             device_n: None,
             pkcs: None,
+            unicode_name: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10777,6 +10806,7 @@ impl<'a> GenericModel<'a> {
             glyph_evidence: None,
             device_n: None,
             pkcs: None,
+            unicode_name: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10808,6 +10838,7 @@ impl<'a> GenericModel<'a> {
             glyph_evidence: None,
             device_n: None,
             pkcs: None,
+            unicode_name: None,
             icc_header: None,
             parsed_cmap: None,
             tagged_content: None,
@@ -10836,7 +10867,11 @@ impl<'a> GenericModel<'a> {
             || self.file_spec.is_some()
             || self.tagged_content.is_some()
             || self.device_output.is_some()
-            || self.object_type.as_str() == glyphs::UNICODE_FAMILY
+            || self.unicode_name.is_some()
+            || matches!(
+                self.object_type.as_str(),
+                glyphs::UNICODE_FAMILY | glyphs::PUA_FAMILY
+            )
             || matches!(
                 self.object_type.as_str(),
                 signature::REFERENCE | signature::PKCS
@@ -10861,6 +10896,9 @@ impl<'a> GenericModel<'a> {
     }
 
     fn cos_property(&self, name: &PropertyName) -> Option<Result<ModelValue>> {
+        if let Some(evidence) = &self.unicode_name {
+            return Some(evidence.property(name));
+        }
         if let Some(evidence) = self.device_n {
             return Some(evidence.property(name));
         }
@@ -11539,34 +11577,45 @@ fn append_scoped_content_models<'a>(
         objects,
         max_objects,
     )?;
-    if language_only {
-        let text = glyphs::text_invocations(model, graph, summary)?;
-        return append_content_resources(
-            model,
-            graph,
-            &summary.resource_uses,
-            ContentInvocationStates {
-                color: &invocation_states,
-                text: &text,
-                tags: &BTreeMap::new(),
-            },
-            objects,
-            max_objects,
-        );
+    unicode_name::append_content(
+        graph,
+        model,
+        summary,
+        &mut invocation_states,
+        objects,
+        max_objects,
+    )?;
+    if !language_only {
+        append_content_semantic_names(model, graph, summary, objects, max_objects)?;
     }
-    append_content_semantic_names(model, graph, summary, objects, max_objects)?;
-    let text_states = if graph.needs_glyph_evidence() {
-        glyphs::inspect(model, graph, summary, objects, max_objects)?
-    } else if graph.needs_scoped_text_glyph_evidence() && model.page_key.is_some() {
-        glyphs::text_invocations(model, graph, summary)?
-    } else {
-        BTreeMap::new()
-    };
-    let tag_contexts = if graph.materializes(tagged_content::MARKED)
-        || graph.materializes(tagged_content::PAINTED)
-        || language::semantic_content_enabled(graph)
+    let tag_contexts = if graph.materializes(glyphs::PUA_FAMILY)
+        || (!language_only
+            && (graph.materializes(tagged_content::MARKED)
+                || graph.materializes(tagged_content::PAINTED)
+                || language::semantic_content_enabled(graph)))
     {
         tagged_content::append(model, graph, summary, objects, max_objects)?
+    } else {
+        tagged_content::ContentContexts::default()
+    };
+    let inspect_glyphs = if language_only {
+        unicode_name::enabled(graph) || graph.materializes(glyphs::PUA_FAMILY)
+    } else {
+        graph.needs_glyph_evidence()
+    };
+    let text_states = if inspect_glyphs {
+        glyphs::inspect(
+            model,
+            graph,
+            summary,
+            &tag_contexts.replacement_offsets,
+            objects,
+            max_objects,
+        )?
+    } else if language_only
+        || (graph.needs_scoped_text_glyph_evidence() && model.page_key.is_some())
+    {
+        glyphs::text_invocations(model, graph, summary)?
     } else {
         BTreeMap::new()
     };
@@ -11577,7 +11626,7 @@ fn append_scoped_content_models<'a>(
         ContentInvocationStates {
             color: &invocation_states,
             text: &text_states,
-            tags: &tag_contexts,
+            tags: &tag_contexts.invocations,
         },
         objects,
         max_objects,
@@ -11662,7 +11711,8 @@ fn append_content_resources<'a>(
         && (graph.materializes(semantic_names::INTENT)
             || graph.materializes(semantic_names::BLEND_MODE)
             || graph.materializes("halftone"));
-    let follow_content = graph.active_flavour.is_some() && graph.materializes("contentStream");
+    let follow_content = graph.active_flavour.is_some()
+        && (graph.materializes("contentStream") || unicode_name::enabled(graph));
     if !(check_graphics_states || follow_content) {
         return Ok(());
     }
@@ -11741,7 +11791,9 @@ fn append_content_resources<'a>(
                 form.language_view = language::StreamView::Semantic;
             }
             if form.initial_tag_context.is_some()
-                || (form.initial_text_state.is_some() && graph.materializes(glyphs::UNICODE_FAMILY))
+                || (form.initial_text_state.is_some()
+                    && (graph.materializes(glyphs::UNICODE_FAMILY)
+                        || graph.materializes(glyphs::PUA_FAMILY)))
             {
                 form.context_prefix = format!("{path}/form[{}]", object_key_text(key));
             }
@@ -14512,6 +14564,92 @@ endobj
                 .iter()
                 .all(|unsupported| unsupported.rule_id.0.as_str() != rule)
         );
+    }
+
+    #[test]
+    fn test_should_check_utf8_bytes_at_font_colour_and_structure_use_sites() -> crate::Result<()> {
+        let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 8 0 R /Ignored /Ignored#FF >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R
+   /Resources << /Font << /F1 5 0 R >> /ColorSpace << /C [/Separation /Spot#FF /DeviceGray 6 0 R] >> >> >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Test#C3#A9 >>
+endobj
+8 0 obj
+<< /Type /StructTreeRoot /K 9 0 R /RoleMap << /Custom#FF /P >> >>
+endobj
+9 0 obj
+<< /Type /StructElem /S /P /P 8 0 R >>
+endobj
+10 0 obj
+<< /Type /StructElem /S /Detached#FF >>
+endobj
+"
+        .to_vec();
+        append_test_stream(
+            &mut pdf,
+            "4 0 obj",
+            "",
+            b"/C cs 0 scn 0 0 1 1 re f 0 g BT /F1 10 Tf (A) Tj ET",
+        );
+        pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new("pdfa", NonZeroU32::MIN.saturating_add(1), "b")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-2-6-1-8-1", 4, 5);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("E000")]
+    #[case("DB80DC00")]
+    fn test_should_require_actual_text_for_each_private_use_glyph_context(
+        #[case] mapping: &str,
+    ) -> crate::Result<()> {
+        let mut pdf = br"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>
+endobj
+7 0 obj
+(replacement)
+endobj
+"
+        .to_vec();
+        append_test_stream(
+            &mut pdf,
+            "4 0 obj",
+            "",
+            b"BT /F1 10 Tf 3 Tr /Span << /ActualText 7 0 R >> BDC /Nested BMC <01> Tj EMC EMC <01> Tj ET",
+        );
+        let cmap = format!(
+            "begincmap /CMapType 2 def 1 begincodespacerange <00> <FF> endcodespacerange 1 \
+             beginbfchar <01> <{mapping}> endbfchar endcmap"
+        );
+        append_test_stream(&mut pdf, "6 0 obj", "", cmap.as_bytes());
+        pdf.extend_from_slice(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new("pdfa", NonZeroU32::MIN.saturating_add(1), "a")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-2-6-2-11-7-3-1", 1, 1);
+        Ok(())
     }
 
     #[rstest]

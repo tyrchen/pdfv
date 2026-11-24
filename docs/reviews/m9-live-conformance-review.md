@@ -478,9 +478,44 @@ a gap that precisely selects an indirect Contents string, and requires
 any padding after the DER object to be zero. The nonzero-padding fixture
 is the sole document decision difference in this focused set.
 
+## UTF-8 Names and Glyph Replacement Text
+
+The PDF/A-2, PDF/A-3, and PDF/A-4 name rules evaluate original COS name
+bytes after PDF escape expansion. They cover BaseFont names in resource
+slots and fonts used by text-show operators, Separation and DeviceN
+colourants, and reachable structure roles and RoleMap entries. Colour
+evidence includes effective resources, paint operations, nested colour
+spaces, transparency groups, invoked images and alternate images. Shared
+colour spaces with resource-dependent links retain the context used to
+resolve their colourants.
+
+PDF/A-2a and PDF/A-3a now evaluate whether each used glyph mapped to a
+Unicode Private Use Area value has a string-valued ActualText
+replacement. The check uses that glyph's Unicode mapping, its enclosing
+marked-content sequence, or the structure element selected through the
+ParentTree. An explicit inner MCID shadows an outer MCID. The check
+retains the enclosing marked-content replacement through Form calls
+and also inspects marked content local to the Form or appearance.
+
+Ten upstream PDF/A-2a glyph fixtures and two PDF/A-2b name fixtures now
+match Greenfield on all 12 document decisions and all 22 targeted
+rule comparisons. The two PDF/A-2b files were false compliant on the
+previous build. The supplemental oracle manifest now includes all 12
+fixtures, and the 15-profile audit matches 26 of 30 document decisions.
+The four remaining controls are incomplete. The 575 PDF/A-2b XMP
+documents and the 12 PDF/A-3b attachment documents retain complete
+agreement in their targeted checks.
+
+Focused synthetic comparisons record differences where Greenfield
+converts used font names through a Java string, coalesces identical
+inline structure elements or resource-dependent colour links, or
+omits the colour space under an uncoloured Pattern. For replacement
+text it treats a Form as a separate marked-content scope. The pdfv
+model uses original PDF name bytes and the context of the Form call.
+
 ## Release Blockers
 
-- The audit of the 15 profiles still has six incomplete document decisions
+- The audit of the 15 profiles still has four incomplete document decisions
   in its 30 controls. See
   [step 4](../../specs/29-rule-check-completion-impl-plan.md#work-order).
 - The focused XPath function and identification cases still need

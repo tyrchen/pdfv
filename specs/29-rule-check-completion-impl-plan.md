@@ -92,10 +92,10 @@ extension resource. Annotation rules resolve the appearance entries and
 inherited widget type. All 12 upstream attachment fixtures now agree
 at document level with zero incomplete results and zero unsupported checks.
 
-The broader audit sampled all 15 built-in profiles. Twenty-four of its 30
-whole-document decisions agree and six remain incomplete, with zero
+The broader audit sampled all 15 built-in profiles. Twenty-six of its 30
+whole-document decisions agree and four remain incomplete, with zero
 false-compliant and zero false-invalid decisions. The checked-in 8-row
-and expanded supplemental 19-row release checks agree.
+and expanded supplemental 31-row release checks agree.
 
 The dedicated XMP audit now agrees on all 575 PDF/A-2b document decisions.
 Property rules use individual qualified RDF properties, predefined or
@@ -111,6 +111,12 @@ Signature rules now use AcroForm signature field values, their
 structured PKCS#7 evidence. The six supplemental PDF/A-2b permissions
 fixtures match the document decisions and all 30 targeted rule counts.
 [Signature review](../docs/reviews/m9-live-conformance-review.md#digital-signatures-and-document-permissions)
+
+The PDF/A UTF-8 rule now checks names from font, colourant, and structure
+use sites. PDF/A-2a and PDF/A-3a bind private-use mappings to each glyph
+and check its ActualText context. The ten PDF/A-2a glyph fixtures and
+two PDF/A-2b name fixtures agree on all 22 rule comparisons.
+[Name and glyph review](../docs/reviews/m9-live-conformance-review.md#utf-8-names-and-glyph-replacement-text)
 
 ## Implementation constraints
 

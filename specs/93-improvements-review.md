@@ -19,9 +19,9 @@ of the current implementation phase.
   within the existing syntax budget. Feed the exact RDF value to PDF/A
   `conformance` checks alongside the normalized claim used for detection.
   See [the XMP audit](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation).
-- **P1.** The 15-profile audit found six incomplete decisions. Scope UTF-8
-  name checks to font, colourant, and structure names. Resolve the
-  remaining CIDSet, glyph-width, and glyph Unicode evidence. The
+- **P1.** The 15-profile audit has four incomplete decisions in PDF/A-1a
+  and PDF/A-2u. Resolve the remaining font subset coverage, glyph-width,
+  and glyph Unicode evidence. The
   [live audit](../docs/reviews/m9-live-conformance-review.md#pdfa-3-associated-files-and-profile-audit)
   records the rule IDs and representative fixtures.
 - **P1.** Embedded PDF conformance checks `isValidPDFA12` and
@@ -80,3 +80,7 @@ of the current implementation phase.
   signature references, physical Contents spans, and DER SignedData.
   The remaining false-invalid decision in the 15-profile audit is resolved.
   See [the permission and signature audit](../docs/reviews/m9-live-conformance-review.md#digital-signatures-and-document-permissions).
+- **P1.** UTF-8 names are checked at their font, colourant, and structure
+  use sites, and private-use glyphs check their scoped replacement text.
+  The twelve upstream fixtures agree on all 22 targeted rule counts.
+  See [the name and glyph audit](../docs/reviews/m9-live-conformance-review.md#utf-8-names-and-glyph-replacement-text).

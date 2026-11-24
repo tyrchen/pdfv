@@ -279,9 +279,10 @@ pub(super) struct GraphicsState {
     stroke: Option<Device>,
     fill_pattern: bool,
     stroke_pattern: bool,
-    text_mode: Option<u8>,
+    pub(super) text_mode: Option<u8>,
     transparency: Option<BlendingSpace>,
     pub(super) device_n_state: Option<super::device_n::ColourUseState>,
+    pub(super) unicode_colour_names: [Option<usize>; 2],
 }
 
 impl GraphicsState {
@@ -295,6 +296,7 @@ impl GraphicsState {
             text_mode: (!is_form).then_some(0),
             transparency: None,
             device_n_state: None,
+            unicode_colour_names: [None; 2],
         }
     }
 

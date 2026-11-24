@@ -15,6 +15,7 @@ use crate::{
     CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument, PdfName,
     PropertyName, Result, ValidationError,
     content::{ContentStreamSummary, MarkedContentSpan, MarkedTextProperties, OperatorFact},
+    pdf_text::PuaSource,
 };
 
 pub(super) const MARKED: &str = "taggedContentSequence";
@@ -38,6 +39,14 @@ pub(super) struct Context {
     tags: Arc<Vec<PdfName>>,
     parent: Option<StructureParent>,
     marked_language: bool,
+    marked_actual_text: bool,
+    replacement_parent: Option<ObjectKey>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct ContentContexts {
+    pub(super) invocations: BTreeMap<u64, Context>,
+    pub(super) replacement_offsets: BTreeSet<u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,6 +107,26 @@ struct Scan<'a> {
 }
 
 impl Scan<'_> {
+    fn has_actual_text(&self, context: &Context) -> Result<bool> {
+        if context.marked_actual_text {
+            return Ok(true);
+        }
+        let Some(parent) = context
+            .replacement_parent
+            .filter(|_| !context.tags.is_empty())
+        else {
+            return Ok(false);
+        };
+        let actual_text = self
+            .graph
+            .document
+            .objects
+            .get(&parent)
+            .and_then(|object| object.object.as_dictionary())
+            .and_then(|dictionary| dictionary.get("ActualText"));
+        has_text_string(self.graph, actual_text)
+    }
+
     fn parent(&self, mcid: Option<i64>) -> Result<Option<StructureParent>> {
         let Some(key) = self.graph.accessibility_graph()?.content_parent(
             self.graph.document,
@@ -173,12 +202,27 @@ impl Scan<'_> {
         }
         Arc::make_mut(&mut context.tags).push(span.tag.clone());
         if mcid.is_some() {
-            context.parent = self.parent(mcid)?.or(context.parent);
+            let parent = self.parent(mcid)?;
+            context.replacement_parent = parent.map(|parent| parent.key);
+            context.parent = parent.or(context.parent);
         }
         let attributes = properties.map_or(span.inline_text, MarkedTextProperties::from_dictionary);
         let inherited_language =
             before.marked_language || context.parent.is_some_and(|parent| parent.language);
         context.marked_language = inherited_language || attributes.language;
+        if self.graph.materializes(super::glyphs::PUA_FAMILY) && !context.marked_actual_text {
+            context.marked_actual_text = if let Some(dictionary) = properties {
+                has_text_string(self.graph, dictionary.get("ActualText"))?
+            } else {
+                match span.inline_actual_text {
+                    Some(PuaSource::Direct(_)) => true,
+                    Some(PuaSource::Reference(key)) => {
+                        has_text_string(self.graph, Some(&CosObject::Reference(key)))?
+                    }
+                    None => false,
+                }
+            };
+        }
         Ok(Evidence {
             context,
             marked: Some(attributes),
@@ -260,19 +304,26 @@ fn has_language(document: &ParsedDocument, value: Option<&CosObject>) -> bool {
     )
 }
 
+fn has_text_string(graph: &ModelGraph<'_>, value: Option<&CosObject>) -> Result<bool> {
+    Ok(matches!(
+        semantic_names::resolve_reference(graph.document, value, graph.limits.max_object_depth)?,
+        Some((_, CosObject::String(_)))
+    ))
+}
+
 pub(super) fn append<'a>(
     content: &ContentStreamModel<'_>,
     graph: &ModelGraph<'a>,
     summary: &ContentStreamSummary,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
-) -> Result<BTreeMap<u64, Context>> {
-    let Some(mut current) = content
-        .initial_tag_context
-        .clone()
-        .or_else(|| (!content.is_form).then(Context::default))
-    else {
-        return Ok(BTreeMap::new());
+) -> Result<ContentContexts> {
+    let Some(mut current) = content.initial_tag_context.clone().or_else(|| {
+        (!content.is_form
+            || (content.page_key.is_some() && graph.materializes(super::glyphs::PUA_FAMILY)))
+        .then(Context::default)
+    }) else {
+        return Ok(ContentContexts::default());
     };
     if summary.scoped_operands_truncated {
         return Err(ValidationError::LimitExceeded {
@@ -288,7 +339,7 @@ pub(super) fn append<'a>(
             .and_then(|key| page_dictionary(graph.document, key))
     };
     let Some(owner) = owner else {
-        return Ok(BTreeMap::new());
+        return Ok(ContentContexts::default());
     };
     let resources = content.effective_resources(graph.document)?;
     let mut scan = Scan {
@@ -298,10 +349,23 @@ pub(super) fn append<'a>(
         catalog_language: has_language(graph.document, catalog_value(graph.document, "Lang")),
         invocations: BTreeMap::new(),
     };
-    current.parent = scan.parent(None)?.or(current.parent);
+    let parent = scan.parent(None)?;
+    current.replacement_parent = parent
+        .map(|parent| parent.key)
+        .or(current.replacement_parent);
+    current.parent = parent.or(current.parent);
     let mut scopes = Vec::new();
     let mut spans = summary.marked_content.iter();
+    let check_replacement = graph.materializes(super::glyphs::PUA_FAMILY);
+    let mut replacement_offsets = BTreeSet::new();
     for fact in &summary.facts {
+        if check_replacement
+            && let OperatorFact::TextShow { location, .. } = fact
+            && let Some(offset) = location.offset
+            && scan.has_actual_text(&current)?
+        {
+            replacement_offsets.insert(offset);
+        }
         match fact {
             OperatorFact::MarkedContent { op, .. } if matches!(op.as_str(), "BMC" | "BDC") => {
                 let sequence = spans.next().ok_or(ValidationError::SubsystemUnavailable {
@@ -341,7 +405,10 @@ pub(super) fn append<'a>(
             _ => {}
         }
     }
-    Ok(scan.invocations)
+    Ok(ContentContexts {
+        invocations: scan.invocations,
+        replacement_offsets,
+    })
 }
 
 fn emit<'a>(

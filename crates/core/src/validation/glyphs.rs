@@ -30,6 +30,7 @@ use crate::{
 pub(crate) const WIDTH_FAMILY: &str = "glyphWidth";
 pub(crate) const CID_SET_FAMILY: &str = "usedCidSet";
 pub(crate) const UNICODE_FAMILY: &str = unicode::FAMILY;
+pub(crate) const PUA_FAMILY: &str = unicode::PUA_FAMILY;
 
 #[derive(Clone, Copy, Debug)]
 enum Measurement {
@@ -61,6 +62,7 @@ pub(super) enum Evidence {
     CidSet(CidSet),
     UnresolvedCidFont,
     Unicode(unicode::Mapping),
+    ActualText(Option<bool>),
     TrueTypeProgram(sfnt::ProgramEvidence),
 }
 
@@ -106,9 +108,13 @@ impl Evidence {
             (Self::Unicode(mapping), "hasForbiddenUnicode") => Ok(ModelValue::Bool(matches!(
                 mapping,
                 unicode::Mapping::Mapped {
-                    contains_forbidden: true
+                    contains_forbidden: true,
+                    ..
                 }
             ))),
+            (Self::ActualText(Some(value)), "hasRequiredActualText") => {
+                Ok(ModelValue::Bool(*value))
+            }
             (Self::TrueTypeProgram(program), _) => program.property(name),
             _ => unknown_property(name),
         }
@@ -129,8 +135,8 @@ enum FontId {
     Direct(ObjectKey, u64),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum ProgramFontId {
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) enum ProgramFontId {
     Indirect(ObjectKey),
     Direct(usize),
 }
@@ -143,6 +149,17 @@ pub(super) struct FontSelection {
 }
 
 impl FontSelection {
+    pub(super) fn object_key(&self) -> Option<ObjectKey> {
+        match self.id {
+            FontId::Indirect(key) => Some(key),
+            FontId::Direct(..) => None,
+        }
+    }
+
+    pub(super) fn dictionary_identity(&self) -> ProgramFontId {
+        self.program_id
+    }
+
     pub(super) fn identity(&self) -> String {
         format!("{:?}", self.id)
     }
@@ -342,10 +359,12 @@ pub(super) fn inspect<'a>(
     content: &ContentStreamModel<'_>,
     graph: &ModelGraph<'a>,
     summary: &ContentStreamSummary,
+    replacement_offsets: &BTreeSet<u64>,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
 ) -> Result<BTreeMap<u64, TextState>> {
-    if content.is_form && content.initial_text_state.is_none() {
+    let scoped_only = content.object_type.as_str() == super::language::CONTENT_FAMILY;
+    if content.is_form && content.initial_text_state.is_none() && !scoped_only {
         return Ok(BTreeMap::new());
     }
     let resources = content.effective_resources(graph.document)?;
@@ -355,28 +374,45 @@ pub(super) fn inspect<'a>(
         &resources,
         summary,
         graph.limits,
-        if graph.materializes(TRUE_TYPE_PROGRAM) {
+        if graph.materializes(TRUE_TYPE_PROGRAM) || super::unicode_name::enabled(graph) {
             ShowScope::Operators
         } else {
             ShowScope::Glyphs
         },
     )?;
     let mut cid_audit = graph.cid_audit_mut()?;
-    if graph.materializes(CID_SET_FAMILY) && uses.unresolved.is_some() {
+    if !scoped_only && graph.materializes(CID_SET_FAMILY) && uses.unresolved.is_some() {
         cid_audit
             .unresolved
             .get_or_insert_with(|| content.context_prefix.clone());
     }
     if let Some(sample) = uses.unresolved.filter(|sample| sample.has_glyphs()) {
-        push_unresolved_glyph(content, graph, sample, objects, max)?;
+        push_unresolved_glyph(content, graph, sample, replacement_offsets, objects, max)?;
     }
     for (font, samples) in uses.fonts.values() {
         if let Some(dictionary) = font.dictionary(graph.document) {
-            let has_glyphs = samples.iter().any(|sample| sample.has_glyphs());
-            if graph.materializes(UNICODE_FAMILY) && has_glyphs {
-                unicode::inspect(content, graph, dictionary, samples, objects, max)?;
+            if super::unicode_name::enabled(graph) && content.page_key.is_some() {
+                super::unicode_name::append_used_font(
+                    graph, font, dictionary, content, objects, max,
+                )?;
             }
-            if has_glyphs
+            let has_glyphs = samples.iter().any(|sample| sample.has_glyphs());
+            if (graph.materializes(PUA_FAMILY)
+                || (!scoped_only && graph.materializes(UNICODE_FAMILY)))
+                && has_glyphs
+            {
+                unicode::inspect(
+                    content,
+                    graph,
+                    dictionary,
+                    samples,
+                    replacement_offsets,
+                    objects,
+                    max,
+                )?;
+            }
+            if !scoped_only
+                && has_glyphs
                 && cmap::FAMILIES
                     .iter()
                     .any(|family| graph.materializes(family))
@@ -392,9 +428,11 @@ pub(super) fn inspect<'a>(
                     max,
                 )?;
             }
-            if graph.materializes(TRUE_TYPE_PROGRAM)
-                || (has_glyphs
-                    && (graph.materializes(WIDTH_FAMILY) || graph.materializes(CID_SET_FAMILY)))
+            if !scoped_only
+                && (graph.materializes(TRUE_TYPE_PROGRAM)
+                    || (has_glyphs
+                        && (graph.materializes(WIDTH_FAMILY)
+                            || graph.materializes(CID_SET_FAMILY))))
             {
                 inspect_font(
                     content,
@@ -408,7 +446,7 @@ pub(super) fn inspect<'a>(
                 )?;
             }
         } else if let Some(sample) = samples.iter().copied().find(|sample| sample.has_glyphs()) {
-            push_unresolved_glyph(content, graph, sample, objects, max)?;
+            push_unresolved_glyph(content, graph, sample, replacement_offsets, objects, max)?;
         }
     }
     Ok(uses.invocations)
@@ -418,10 +456,12 @@ fn push_unresolved_glyph<'a>(
     content: &ContentStreamModel<'_>,
     graph: &ModelGraph<'a>,
     sample: Sample<'_>,
+    replacement_offsets: &BTreeSet<u64>,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
 ) -> Result<()> {
-    if graph.materializes(WIDTH_FAMILY) {
+    let scoped_only = content.object_type.as_str() == super::language::CONTENT_FAMILY;
+    if !scoped_only && graph.materializes(WIDTH_FAMILY) {
         push_width(
             objects,
             graph.document,
@@ -432,12 +472,27 @@ fn push_unresolved_glyph<'a>(
             max,
         )?;
     }
-    if graph.materializes(UNICODE_FAMILY) {
+    if !scoped_only && graph.materializes(UNICODE_FAMILY) {
         unicode::push(
             content,
             graph.document,
             sample,
             unicode::Mapping::Unavailable,
+            objects,
+            max,
+        )?;
+    }
+    if graph.materializes(PUA_FAMILY) {
+        let replacement = sample
+            .location
+            .offset
+            .is_some_and(|offset| replacement_offsets.contains(&offset));
+        unicode::push_private_use(
+            content,
+            graph.document,
+            sample,
+            unicode::Mapping::Unavailable,
+            replacement,
             objects,
             max,
         )?;

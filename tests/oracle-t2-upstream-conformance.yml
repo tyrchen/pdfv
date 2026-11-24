@@ -299,3 +299,207 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-pass-a
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-pass-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-pass-b
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-pass-b.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-pass-c
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-pass-c.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-pass-d
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-pass-d.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-pass-e
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-pass-e.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-fail-a
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-fail-b
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-fail-b.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-fail-c
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-fail-c.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-fail-d
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-fail-d.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2a-6-2-11-7-3-t01-fail-e
+    path: "PDF_A-2a/6.2 Graphics/6.2.11 Fonts/6.2.11.7 Unicode character maps/6.2.11.7.3 Level A conformance/veraPDF test suite 6-2-11-7-3-t01-fail-e.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: a
+    expectedFeatures:
+      - font
+      - structure
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: tagged
+    license: redistributable
+  - id: pdfa-2b-6-1-8-t01-fail-a
+    path: "PDF_A-2b/6.1 File structure/6.1.8 Name objects/veraPDF test suite 6-1-8-t01-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: b
+    expectedFeatures:
+      - color
+      - resource
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-2b-6-1-8-t01-fail-b
+    path: "PDF_A-2b/6.1 File structure/6.1.8 Name objects/veraPDF test suite 6-1-8-t01-fail-b.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 2
+        conformance: b
+    expectedFeatures:
+      - color
+      - resource
+      - unicode
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable

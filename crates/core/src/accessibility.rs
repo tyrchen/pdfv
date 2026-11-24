@@ -183,6 +183,8 @@ pub(crate) struct AccessibilityNode {
     pub key: Option<ObjectKey>,
     /// Original role from `/S`.
     pub role: String,
+    /// UTF-8 validity of the original role bytes when `/S` is a name.
+    pub(crate) role_is_utf8: Option<bool>,
     /// Role after deterministic `/RoleMap` normalization.
     pub normalized_role: String,
     /// Parent node when known from traversal.
@@ -574,7 +576,12 @@ fn traverse_structure_tree(
                 .push(warning("structure tree cycle detected"));
             continue;
         }
-        let role = role_name(document, dictionary).unwrap_or_default();
+        let raw_role = resolved_value(document, dictionary.get("S"));
+        let role_is_utf8 = match raw_role {
+            Some(CosObject::Name(name)) => Some(std::str::from_utf8(name.as_bytes()).is_ok()),
+            _ => None,
+        };
+        let role = raw_role.and_then(name_value).unwrap_or_default();
         if u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX) >= limits.max_structure_nodes {
             graph.truncated = true;
             graph.warnings.push(warning("structure node cap reached"));
@@ -595,6 +602,7 @@ fn traverse_structure_tree(
             id,
             key,
             role,
+            role_is_utf8,
             normalized_role: mapped.name,
             parent: item.parent,
             namespace_url: namespace_url(document, dictionary),
@@ -1612,10 +1620,6 @@ fn catalog_marked(document: &ParsedDocument, catalog: &Dictionary) -> bool {
     dictionary_from_value(document, catalog.get("MarkInfo"))
         .and_then(|mark_info| mark_info.get("Marked"))
         .is_some_and(|value| matches!(value, CosObject::Boolean(true)))
-}
-
-fn role_name(document: &ParsedDocument, dictionary: &Dictionary) -> Option<String> {
-    name_value(resolved_value(document, dictionary.get("S"))?)
 }
 
 fn is_mcr(dictionary: &Dictionary) -> bool {

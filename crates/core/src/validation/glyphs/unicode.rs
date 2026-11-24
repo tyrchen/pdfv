@@ -9,7 +9,7 @@ use super::{
     simple_font_differences,
 };
 use crate::{
-    CosObject, Dictionary, ParsedDocument, Result,
+    CosObject, Dictionary, ParsedDocument, Result, pdf_text,
     validation::{
         cmap::{self, CMap, Code, UnicodeLookup, UnicodeMap},
         descendant_font_dictionary, font_program_dictionary, font_program_stream, push_linked,
@@ -18,10 +18,14 @@ use crate::{
 };
 
 pub(in crate::validation) const FAMILY: &str = "glyphUnicode";
+pub(in crate::validation) const PUA_FAMILY: &str = "glyphPrivateUse";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::validation) enum Mapping {
-    Mapped { contains_forbidden: bool },
+    Mapped {
+        contains_forbidden: bool,
+        contains_private_use: bool,
+    },
     Unmapped,
     Unavailable,
 }
@@ -33,6 +37,7 @@ impl From<UnicodeLookup> for Mapping {
                 contains_forbidden: text
                     .chars()
                     .any(|ch| matches!(ch, '\0' | '\u{FFFE}' | '\u{FEFF}')),
+                contains_private_use: text.chars().any(pdf_text::is_pua),
             },
             UnicodeLookup::Invalid | UnicodeLookup::Missing => Self::Unmapped,
             UnicodeLookup::Unavailable => Self::Unavailable,
@@ -280,6 +285,7 @@ pub(super) fn inspect<'a>(
     graph: &ModelGraph<'a>,
     font: &Dictionary,
     samples: &[Sample<'_>],
+    replacement_offsets: &BTreeSet<u64>,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
 ) -> Result<()> {
@@ -289,15 +295,37 @@ pub(super) fn inspect<'a>(
         .is_some_and(|name| name.matches("Type1C"));
     let program = font_bytes(font_program_stream(document, font), is_cff, graph.limits)?;
     let map = GlyphMap::read(graph, font, program.as_deref())?;
+    let check_unicode = graph.materializes(FAMILY)
+        && content.object_type.as_str() != crate::validation::language::CONTENT_FAMILY;
     let mut seen = BTreeSet::new();
+    let mut private_use = BTreeSet::new();
     for sample in samples {
+        if !sample.has_glyphs() {
+            continue;
+        }
+        let replacement = sample
+            .location
+            .offset
+            .is_some_and(|offset| replacement_offsets.contains(&offset));
+        let decode_seen = |scope| (scope, sample.mode, sample.marked_content, replacement);
         let Some(text) = sample.text else {
-            if seen.insert(None) {
+            if check_unicode && seen.insert(None) {
                 push(
                     content,
                     document,
                     *sample,
                     Mapping::Unavailable,
+                    objects,
+                    max,
+                )?;
+            }
+            if graph.materializes(PUA_FAMILY) && private_use.insert(decode_seen(None)) {
+                push_private_use(
+                    content,
+                    document,
+                    *sample,
+                    Mapping::Unavailable,
+                    replacement,
                     objects,
                     max,
                 )?;
@@ -308,7 +336,7 @@ pub(super) fn inspect<'a>(
             let mut bytes = string.as_bytes();
             while !bytes.is_empty() {
                 let Some((code, cid)) = map.source.next(&mut bytes) else {
-                    if seen.insert(None) {
+                    if check_unicode && seen.insert(None) {
                         push(
                             content,
                             document,
@@ -318,17 +346,38 @@ pub(super) fn inspect<'a>(
                             max,
                         )?;
                     }
+                    if graph.materializes(PUA_FAMILY) && private_use.insert(decode_seen(None)) {
+                        push_private_use(
+                            content,
+                            document,
+                            *sample,
+                            Mapping::Unavailable,
+                            replacement,
+                            objects,
+                            max,
+                        )?;
+                    }
                     break;
                 };
-                if seen.insert(Some((code, sample.mode))) {
-                    push(
-                        content,
-                        document,
-                        *sample,
-                        map.lookup(code, cid),
-                        objects,
-                        max,
-                    )?;
+                let unicode = check_unicode && seen.insert(Some((code, sample.mode)));
+                let pua =
+                    graph.materializes(PUA_FAMILY) && private_use.insert(decode_seen(Some(code)));
+                if unicode || pua {
+                    let mapping = map.lookup(code, cid);
+                    if unicode {
+                        push(content, document, *sample, mapping, objects, max)?;
+                    }
+                    if pua {
+                        push_private_use(
+                            content,
+                            document,
+                            *sample,
+                            mapping,
+                            replacement,
+                            objects,
+                            max,
+                        )?;
+                    }
                 }
             }
         }
@@ -344,14 +393,64 @@ pub(super) fn push<'a>(
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
 ) -> Result<()> {
+    push_evidence(
+        content,
+        document,
+        sample,
+        FAMILY,
+        Evidence::Unicode(mapping),
+        objects,
+        max,
+    )
+}
+
+pub(super) fn push_private_use<'a>(
+    content: &ContentStreamModel<'_>,
+    document: &'a ParsedDocument,
+    sample: Sample<'_>,
+    mapping: Mapping,
+    replacement: bool,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max: usize,
+) -> Result<()> {
+    let allowed = match (replacement, mapping) {
+        (true, _) | (false, Mapping::Unmapped) => Some(true),
+        (
+            false,
+            Mapping::Mapped {
+                contains_private_use,
+                ..
+            },
+        ) => Some(!contains_private_use),
+        (false, Mapping::Unavailable) => None,
+    };
+    push_evidence(
+        content,
+        document,
+        sample,
+        PUA_FAMILY,
+        Evidence::ActualText(allowed),
+        objects,
+        max,
+    )
+}
+
+fn push_evidence<'a>(
+    content: &ContentStreamModel<'_>,
+    document: &'a ParsedDocument,
+    sample: Sample<'_>,
+    family: &'static str,
+    evidence: Evidence,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max: usize,
+) -> Result<()> {
     let path = sample
         .location
         .path
         .as_ref()
         .map_or(content.context_prefix.as_str(), crate::BoundedText::as_str);
     let ordinal = objects.len();
-    let ModelObjectRef::Generic(mut evidence) =
-        model(document, FAMILY, Evidence::Unicode(mapping), ordinal, path)
+    let ModelObjectRef::Generic(mut evidence) = model(document, family, evidence, ordinal, path)
     else {
         return Err(crate::ValidationError::SubsystemUnavailable {
             subsystem: "glyphUnicode",

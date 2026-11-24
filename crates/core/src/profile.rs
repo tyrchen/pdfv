@@ -2806,6 +2806,11 @@ impl XmlRuleBuilder {
         if self.source_is_glyph && source_test.as_str().contains("widthFromFontProgram") {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::WIDTH_FAMILY);
         }
+        if self.source_is_glyph
+            && source_test.as_str() == "unicodePUA == false || actualTextPresent == true"
+        {
+            object_type = ObjectTypeName::unchecked(crate::validation::glyphs::PUA_FAMILY);
+        }
         if self.source_is_cid_font
             && id.0.as_str().starts_with("iso-19005-1-")
             && source_test.as_str().contains("cidSetListsAllGlyphs")
@@ -2839,6 +2844,9 @@ impl XmlRuleBuilder {
             })
         };
         match object_type.as_str() {
+            crate::validation::glyphs::PUA_FAMILY => {
+                test = property_expr("hasRequiredActualText")?;
+            }
             crate::validation::file_spec::EMBEDDED_FILE => {
                 test = property_expr("hasValidMimeType")?;
             }
@@ -3221,7 +3229,7 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "CosTextString" => Some(crate::validation::scoped_pua::TEXT_STRING),
         "CosActualText" => Some(crate::validation::scoped_pua::ACTUAL_TEXT),
         "CosAlt" => Some(crate::validation::scoped_pua::ALT),
-        "CosUnicodeName" => Some("object"),
+        "CosUnicodeName" => Some(crate::validation::unicode_name::FAMILY),
         "GFCosMetadata"
         | "PDMetadata"
         | "Metadata"

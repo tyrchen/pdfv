@@ -375,6 +375,7 @@ pub(crate) struct MarkedContentSpan {
     pub(crate) associated_file_property: Option<PdfName>,
     /// Presence of the text and language entries in a direct property list.
     pub inline_text: MarkedTextProperties,
+    pub(crate) inline_actual_text: Option<crate::pdf_text::PuaSource>,
     pub(crate) inline_properties_offset: Option<u64>,
     /// Language value declared in a direct marked-content property list.
     pub inline_language: Option<InlineLanguage>,
@@ -849,6 +850,9 @@ fn classify_operator(
                         MarkedTextProperties::default,
                         MarkedTextProperties::from_dictionary,
                     ),
+                    inline_actual_text: (operands.len() == 2)
+                        .then_some(replacement_text.actual_text)
+                        .flatten(),
                     inline_language: inline.as_ref().and_then(|dictionary| {
                         match dictionary.get("Lang") {
                             Some(CosObject::String(text)) => {
