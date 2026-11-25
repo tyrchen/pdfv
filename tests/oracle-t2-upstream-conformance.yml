@@ -567,3 +567,48 @@ rows:
     encryption: unencrypted
     tagging: unknown
     license: redistributable
+  - id: pdfa-4-6-9-t03-pass-a
+    path: "PDF_A-4/6.9 Embedded files/veraPDF test suite 6-9-t03-pass-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 4
+        conformance: none
+    expectedFeatures:
+      - embeddedFiles
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-4-6-9-t03-fail-a
+    path: "PDF_A-4/6.9 Embedded files/veraPDF test suite 6-9-t03-fail-a.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 4
+        conformance: none
+    expectedFeatures:
+      - embeddedFiles
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable
+  - id: pdfa-4-6-9-t03-fail-b
+    path: "PDF_A-4/6.9 Embedded files/veraPDF test suite 6-9-t03-fail-b.pdf"
+    tier: t2PublicConformance
+    profilePolicy:
+      kind: explicit
+      flavour:
+        family: pdfa
+        part: 4
+        conformance: none
+    expectedFeatures:
+      - embeddedFiles
+    sizeBucket: small
+    encryption: unencrypted
+    tagging: unknown
+    license: redistributable

@@ -943,10 +943,29 @@ impl StreamObject {
             .map(|decoded| decoded.bytes)
     }
 
+    pub(crate) fn fully_decoded_bytes(
+        &self,
+        limits: &ResourceLimits,
+        work_left: Option<&mut u64>,
+    ) -> std::result::Result<Vec<u8>, ParseError> {
+        self.decode_stream_data(limits, default_decoder_registry(), true, work_left)
+            .map(|decoded| decoded.bytes)
+    }
+
     fn decoded_bytes_with_registry(
         &self,
         limits: &ResourceLimits,
         registry: &DecoderRegistry,
+    ) -> std::result::Result<DecodedStream, ParseError> {
+        self.decode_stream_data(limits, registry, false, None)
+    }
+
+    fn decode_stream_data(
+        &self,
+        limits: &ResourceLimits,
+        registry: &DecoderRegistry,
+        require_payload: bool,
+        mut work_left: Option<&mut u64>,
     ) -> std::result::Result<DecodedStream, ParseError> {
         let mut current = self.raw_bytes()?.to_vec();
         let mut facts = Vec::new();
@@ -958,9 +977,18 @@ impl StreamObject {
                     filter: BoundedText::unchecked(String::from_utf8_lossy(filter.as_bytes())),
                 })?;
             let input_len = checked_u64_len(current.len(), "stream filter input length")?;
-            let output = decoder.decode(&current, &params, limits)?;
+            let output = if let Some(available) = work_left.as_deref_mut() {
+                decode_under_budget(decoder.as_ref(), &current, &params, limits, available)?
+            } else {
+                decoder.decode(&current, &params, limits)?
+            };
             let output_len = checked_u64_len(output.bytes.len(), "stream filter output length")?;
             enforce_decoded_len(output_len, limits.max_stream_decode_bytes)?;
+            if output.metadata_mode && require_payload {
+                return Err(ParseError::UnsupportedFilter {
+                    filter: BoundedText::unchecked(String::from_utf8_lossy(filter.as_bytes())),
+                });
+            }
             let filter = filter_identifier(filter)?;
             facts.push(if output.metadata_mode {
                 StreamFact::FilterMetadataMode {
@@ -983,6 +1011,30 @@ impl StreamObject {
             facts,
         })
     }
+}
+
+fn decode_under_budget(
+    decoder: &dyn StreamDecoder,
+    input: &[u8],
+    params: &DecodeParams,
+    limits: &ResourceLimits,
+    work_left: &mut u64,
+) -> std::result::Result<DecoderOutput, ParseError> {
+    if *work_left == 0 {
+        return Err(ParseError::LimitExceeded {
+            limit: "embedded PDF filter output work",
+        });
+    }
+    let mut stage_limits = limits.clone();
+    stage_limits.max_stream_decode_bytes = limits.max_stream_decode_bytes.min(*work_left);
+    // Charge the reservation if the decoder fails without returning its partial output.
+    *work_left = work_left.saturating_sub(stage_limits.max_stream_decode_bytes);
+    let output = decoder.decode(input, params, &stage_limits)?;
+    let used = checked_u64_len(output.bytes.len(), "stream filter output length")?;
+    enforce_decoded_len(used, stage_limits.max_stream_decode_bytes)?;
+    let unused = stage_limits.max_stream_decode_bytes.saturating_sub(used);
+    *work_left = work_left.saturating_add(unused);
+    Ok(output)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1678,11 +1730,11 @@ impl<'a> ByteParser<'a> {
         key: ObjectKey,
         stream: &StreamObject,
     ) -> std::result::Result<DecodedStream, ParseError> {
-        let decoded = if let Some(registry) = &self.decoder_registry {
-            stream.decoded_bytes_with_registry(&self.limits, registry)?
-        } else {
-            stream.decoded_bytes_with_registry(&self.limits, default_decoder_registry())?
-        };
+        let registry = self
+            .decoder_registry
+            .as_ref()
+            .unwrap_or_else(|| default_decoder_registry());
+        let decoded = stream.decode_stream_data(&self.limits, registry, true, None)?;
         for fact in &decoded.facts {
             self.push_fact(ParseFact::Stream {
                 object: key,

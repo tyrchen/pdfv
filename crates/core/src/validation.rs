@@ -46,7 +46,7 @@ use crate::{
     },
     content::{ContentStreamSummary, MarkedContentSpan, OperatorFact, ResourceFamily, ResourceUse},
     profile::DefaultRuleEvaluator,
-    xmp::{FlavourDetector, parse_document_xmp},
+    xmp::{FlavourDetector, XmpParseResult, parse_document_xmp},
 };
 
 const CATALOG_DIRECT_PROPERTIES: &[&str] = &[
@@ -1285,8 +1285,6 @@ const STREAM_PROPERTIES: &[&str] = &[
     "discoveredLength",
     "streamKeywordCRLFCompliant",
     "endstreamKeywordEOLCompliant",
-    "isValidPDFA12",
-    "isValidPDFA124",
     "Type",
     "Subtype",
     "Filter",
@@ -1648,9 +1646,7 @@ impl Validator {
                 self.profiles.profiles_for(&self.options.flavour)?
             }
         };
-        drop(xmp.packet);
-        parsed.parse_facts.extend(xmp.parse_facts);
-        parsed.warnings.extend(xmp.warnings);
+        append_validation_xmp(&mut parsed, limits, &profiles, xmp)?;
         if profiles.is_empty() {
             return base_report(
                 source_summary,
@@ -1660,23 +1656,22 @@ impl Validator {
                 started.elapsed(),
             );
         }
-        object_xmp::append(
-            &mut parsed,
-            limits,
-            &profiles,
-            &xmp.catalog_schemas,
-            xmp.decoded_bytes,
-        )?;
         let mut session = ValidationSession::new(
             parsed,
             self.options.resource_limits.clone(),
             self.options.max_failed_assertions_per_rule.get(),
             self.options.record_passed_assertions,
+            file_spec::embedded_pdf::Audit::for_profiles(&profiles),
         );
+        let mut embeddings = file_spec::embedded_pdf::Context::new(limits);
         let text_content_mode = scoped_pua::ContentMode::for_profiles(&profiles);
         let mut profile_reports = Vec::with_capacity(profiles.len());
         for profile in &profiles {
-            profile_reports.push(session.validate_profile(profile, text_content_mode)?);
+            profile_reports.push(session.validate_profile(
+                profile,
+                text_content_mode,
+                &mut embeddings,
+            )?);
         }
         let mut status = if profile_reports
             .iter()
@@ -1759,6 +1754,24 @@ impl Validator {
     }
 }
 
+fn append_validation_xmp(
+    document: &mut ParsedDocument,
+    limits: &ResourceLimits,
+    profiles: &[crate::ValidationProfile],
+    xmp: XmpParseResult,
+) -> Result<()> {
+    drop(xmp.packet);
+    document.parse_facts.extend(xmp.parse_facts);
+    document.warnings.extend(xmp.warnings);
+    object_xmp::append(
+        document,
+        limits,
+        profiles,
+        &xmp.catalog_schemas,
+        xmp.decoded_bytes,
+    )
+}
+
 /// Mutable validation state for one input.
 #[derive(Debug)]
 pub struct ValidationSession {
@@ -1766,6 +1779,7 @@ pub struct ValidationSession {
     limits: ResourceLimits,
     max_failed_assertions_per_rule: u32,
     record_passed_assertions: bool,
+    attachment_audit: file_spec::embedded_pdf::Audit,
 }
 
 impl ValidationSession {
@@ -1774,12 +1788,14 @@ impl ValidationSession {
         limits: ResourceLimits,
         max_failed_assertions_per_rule: u32,
         record_passed_assertions: bool,
+        attachment_audit: file_spec::embedded_pdf::Audit,
     ) -> Self {
         Self {
             document,
             limits,
             max_failed_assertions_per_rule,
             record_passed_assertions,
+            attachment_audit,
         }
     }
 
@@ -1787,6 +1803,7 @@ impl ValidationSession {
         &mut self,
         profile: &crate::ValidationProfile,
         text_content_mode: scoped_pua::ContentMode,
+        embeddings: &mut file_spec::embedded_pdf::Context,
     ) -> Result<ProfileReport> {
         let index = RuleIndex::new(&profile.rules);
         let graph = ModelGraph::for_rules(
@@ -1849,14 +1866,23 @@ impl ValidationSession {
             })?;
         }
         let budget = remaining_object_budget(&self.limits, visited.len(), 0)?;
-        for object in attachments.models(&graph, budget)? {
+        let attachment_validation = RefCell::new(file_spec::AttachmentContext {
+            audit: &mut self.attachment_audit,
+            context: embeddings,
+            limits: &self.limits,
+        });
+        let mut deferred_attachments = Vec::new();
+        for object in attachments.models(&graph, budget, &attachment_validation)? {
             apply_model_rules(
                 &object,
                 index.rules_for(&object),
                 &mut state,
                 &mut evaluator,
-                &mut deferred,
+                &mut deferred_attachments,
             )?;
+        }
+        for (object, rule) in deferred_attachments {
+            state.apply_rule(&object, rule, &mut evaluator)?;
         }
         for (mut object, rule) in deferred {
             file_spec::association::finalize(&graph, &mut object)?;
@@ -2470,7 +2496,7 @@ impl ModelRegistry {
             family(file_spec::FAMILY, file_spec::PROPERTIES, EMPTY_LINK_NAMES),
             family(
                 file_spec::EMBEDDED_FILE,
-                &["hasValidMimeType"],
+                file_spec::EMBEDDED_PROPERTIES,
                 EMPTY_LINK_NAMES,
             ),
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
@@ -10745,6 +10771,7 @@ pub struct GenericModel<'a> {
     tagged_content: Option<tagged_content::Evidence>,
     primitive: Option<CosPrimitive<'a>>,
     file_spec: Option<file_spec::Evidence<'a>>,
+    attachment: Option<file_spec::AttachmentEvidence<'a>>,
     language_operator: Option<(ObjectKey, u64, bool)>,
     context: String,
     ordinal: usize,
@@ -10790,6 +10817,7 @@ impl<'a> GenericModel<'a> {
             tagged_content: None,
             primitive: None,
             file_spec: None,
+            attachment: None,
             language_operator: None,
             context: context.into(),
             ordinal,
@@ -10826,6 +10854,7 @@ impl<'a> GenericModel<'a> {
             tagged_content: None,
             primitive: None,
             file_spec: None,
+            attachment: None,
             language_operator: None,
             context: context.into(),
             ordinal,
@@ -10858,6 +10887,7 @@ impl<'a> GenericModel<'a> {
             tagged_content: None,
             primitive: Some(primitive),
             file_spec: None,
+            attachment: None,
             language_operator: None,
             context: format!("root/{family}[{}]", origin.ordinal),
             ordinal: origin.ordinal,
@@ -10938,10 +10968,8 @@ impl<'a> GenericModel<'a> {
         {
             return self.direct_value.clone().map(Ok);
         }
-        if self.object_type.as_str() == file_spec::EMBEDDED_FILE
-            && name.as_str() == "hasValidMimeType"
-        {
-            return self.direct_value.clone().map(Ok);
+        if let Some(attachment) = self.attachment {
+            return Some(attachment.property(name));
         }
         self.primitive
             .map(|primitive| primitive.property(name))
@@ -11316,9 +11344,6 @@ impl<'a> GenericModel<'a> {
                 &self.dictionary,
                 "Supplement",
             ))),
-            ("embeddedFontFile", "isValidPDFA12" | "isValidPDFA124") => {
-                Some(unknown_property(name))
-            }
             ("contentStream", "operatorCount" | "markedContentCount") => {
                 Some(Ok(ModelValue::Number(0.0)))
             }
@@ -12816,11 +12841,15 @@ impl ProfileState {
         let outcome = match evaluator.evaluate(object.clone(), rule) {
             Ok(outcome) => outcome,
             Err(PdfvError::Profile(error)) => {
+                let reason = match error {
+                    crate::ProfileError::UnsupportedRule { reason } => reason,
+                    error => BoundedText::new(error.to_string(), 512)?,
+                };
                 self.unsupported_rules.push(UnsupportedRule {
                     profile_id: self.profile.id.clone(),
                     rule_id: rule.id.clone(),
                     expression_fragment: Some(BoundedText::unchecked(format!("{:?}", rule.test))),
-                    reason: BoundedText::new(error.to_string(), 512)?,
+                    reason,
                     references: rule.references.clone(),
                 });
                 return Ok(());
@@ -16011,8 +16040,13 @@ trailer
     #[test]
     fn test_should_redact_content_strings_from_feature_report() -> crate::Result<()> {
         let document = Parser::default().parse(Cursor::new(m6_model_pdf()))?;
-        let session =
-            super::ValidationSession::new(document, crate::ResourceLimits::default(), 100, false);
+        let session = super::ValidationSession::new(
+            document,
+            crate::ResourceLimits::default(),
+            100,
+            false,
+            super::file_spec::embedded_pdf::Audit::default(),
+        );
         let action_family = crate::ObjectTypeName::new("action")?;
         let report = session.extract_features(&super::FeatureSelection::Families {
             families: vec![action_family.clone()],
@@ -16285,7 +16319,13 @@ trailer
             max_objects: 1,
             ..crate::ResourceLimits::default()
         };
-        let session = super::ValidationSession::new(document, limits, 100, false);
+        let session = super::ValidationSession::new(
+            document,
+            limits,
+            100,
+            false,
+            super::file_spec::embedded_pdf::Audit::default(),
+        );
         let report = session.extract_features(&super::FeatureSelection::All)?;
 
         assert!(report.truncated);
@@ -16490,8 +16530,13 @@ trailer
         }
         assert!(saw_annotation_object_property);
 
-        let session =
-            super::ValidationSession::new(document, crate::ResourceLimits::default(), 100, false);
+        let session = super::ValidationSession::new(
+            document,
+            crate::ResourceLimits::default(),
+            100,
+            false,
+            super::file_spec::embedded_pdf::Audit::default(),
+        );
         let report = session.extract_features(&super::FeatureSelection::All)?;
         let has_metadata = PropertyName::new("hasMetadata")?;
         let contains_structure = PropertyName::new("containsStructTreeRoot")?;
@@ -16627,7 +16672,13 @@ trailer
             max_objects: 64,
             ..crate::ResourceLimits::default()
         };
-        let session = super::ValidationSession::new(document, limits, 100, false);
+        let session = super::ValidationSession::new(
+            document,
+            limits,
+            100,
+            false,
+            super::file_spec::embedded_pdf::Audit::default(),
+        );
         let report = session.extract_features(&super::FeatureSelection::All)?;
         let families = report
             .objects

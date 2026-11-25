@@ -184,6 +184,7 @@ pub(crate) struct XmpParseResult {
     pub warnings: Vec<ValidationWarning>,
     pub(crate) catalog_schemas: CatalogSchemas,
     pub(crate) decoded_bytes: u64,
+    pub(crate) decoding_unavailable: bool,
 }
 
 /// Profile selector backed by XMP identification claims.
@@ -1452,7 +1453,7 @@ fn read_xmp_stream(
 ) -> Result<XmpParseResult> {
     let mut xmp_limits = limits.clone();
     xmp_limits.max_stream_decode_bytes = limits.max_stream_decode_bytes.min(limits.max_xmp_bytes);
-    let bytes = match stream.decoded_bytes(&xmp_limits) {
+    let bytes = match stream.fully_decoded_bytes(&xmp_limits, None) {
         Ok(bytes) => bytes,
         Err(error @ (ParseError::StreamDecode { .. } | ParseError::UnsupportedFilter { .. })) => {
             let reason = BoundedText::new(error.to_string(), 512)
@@ -1469,6 +1470,7 @@ fn read_xmp_stream(
             return Ok(XmpParseResult {
                 parse_facts,
                 warnings,
+                decoding_unavailable: matches!(error, ParseError::UnsupportedFilter { .. }),
                 ..XmpParseResult::default()
             });
         }
@@ -1500,6 +1502,7 @@ fn read_xmp_stream(
                 warnings,
                 catalog_schemas,
                 decoded_bytes,
+                decoding_unavailable: false,
             })
         }
         Err(PdfvError::Parse(ParseError::LimitExceeded { limit })) => {

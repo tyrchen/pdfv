@@ -129,6 +129,11 @@ mixed section types, repeated hybrid supplements, linearized revision order,
 and encrypted xref streams.
 [Xref review](../docs/reviews/m9-live-conformance-review.md#active-cross-reference-entries)
 
+PDF/A-2 and base PDF/A-4 resolve the actual `/EF` payload and validate its
+declared PDF/A profile within a shared nesting and decoding budget. The
+twelve upstream attachment cases match Greenfield 1.30.4.
+[Embedded PDF review](../docs/reviews/m9-live-conformance-review.md#embedded-pdf-conformance)
+
 ## Implementation constraints
 
 Use a family for each rule scope and preserve context in assertions. A shared

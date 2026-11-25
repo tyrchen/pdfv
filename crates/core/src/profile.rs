@@ -2206,7 +2206,10 @@ fn unsupported_property_reason(
     Ok(None)
 }
 
-fn collect_property_paths<'a>(expr: &'a RuleExpr, properties: &mut Vec<&'a PropertyPath>) {
+pub(crate) fn collect_property_paths<'a>(
+    expr: &'a RuleExpr,
+    properties: &mut Vec<&'a PropertyPath>,
+) {
     match expr {
         RuleExpr::Property { path } => properties.push(path),
         RuleExpr::Unary { expr, .. } => collect_property_paths(expr, properties),
@@ -2847,7 +2850,9 @@ impl XmlRuleBuilder {
             crate::validation::glyphs::PUA_FAMILY => {
                 test = property_expr("hasRequiredActualText")?;
             }
-            crate::validation::file_spec::EMBEDDED_FILE => {
+            crate::validation::file_spec::EMBEDDED_FILE
+                if is_embedded_mime_test(source_test.as_str()) =>
+            {
                 test = property_expr("hasValidMimeType")?;
             }
             "cosInteger" if test == signed_32_bit_range()? => {
@@ -2897,15 +2902,14 @@ fn imported_rule_family(object: &str, test: &str) -> Option<&'static str> {
     if object == "image" && test.starts_with("isMask == true || BitsPerComponent == null") {
         return Some(crate::validation::image_mask::INVOKED_IMAGE);
     }
-    if object == "embeddedFontFile"
-        && test.split_once("&&").is_some_and(|(presence, syntax)| {
-            presence.trim() == "Subtype != null"
-                && syntax.trim() == r"/^[-\w+\.]+\/[-\w+\.]+$/.test(Subtype)"
-        })
-    {
-        return Some(crate::validation::file_spec::EMBEDDED_FILE);
-    }
     None
+}
+
+fn is_embedded_mime_test(test: &str) -> bool {
+    test.split_once("&&").is_some_and(|(presence, syntax)| {
+        presence.trim() == "Subtype != null"
+            && syntax.trim() == r"/^[-\w+\.]+\/[-\w+\.]+$/.test(Subtype)"
+    })
 }
 
 fn imported_language_property(test: &str) -> Option<&'static str> {
@@ -3260,7 +3264,7 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDCMap" => Some("cMap"),
         "PDReferencedCMap" => Some("referencedCMap"),
         "CMapFile" => Some("cMapFile"),
-        "EmbeddedFile" => Some("embeddedFontFile"),
+        "EmbeddedFile" => Some(crate::validation::file_spec::EMBEDDED_FILE),
         "PDAnnotation"
         | "Annotation"
         | "PDAnnot"

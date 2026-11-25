@@ -25,10 +25,6 @@ of the current implementation phase.
   and its companion with an explicit Encoding still exercises the font
   embedding applicability gap. See the
   [font model](../crates/core/src/validation/glyphs/unicode.rs).
-- **P1.** Embedded PDF conformance checks `isValidPDFA12` and
-  `isValidPDFA124` still need evidence from `/EF` stream traversal and
-  bounded nested validation. Reuse the MIME rule's
-  [attachment selection](../crates/core/src/validation/file_spec.rs).
 - **P2.** Correct the Standard security handler password padding for revisions
   2–4. Append the first bytes of the standard padding after a short password.
   Update the fixture generators and verify both user and owner passwords with
@@ -42,6 +38,10 @@ of the current implementation phase.
 
 ## Resolved M9 Findings
 
+- **P1.** Embedded PDF conformance uses the MIME rule's `/EF` stream
+  selection and the attached document's own PDF/A profile. Nested
+  validation shares resource limits and preserves undecidable results.
+  [Embedded PDF review](../docs/reviews/m9-live-conformance-review.md#embedded-pdf-conformance)
 - **P1.** Linked xref entries select the active generation and byte offset or
   object-stream member. The object store honours deletions, hybrid precedence,
   and linearized section order. See

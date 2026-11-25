@@ -1,8 +1,13 @@
 //! File specification checks with physical COS and embedded-file name-tree scope.
 
 pub(super) mod association;
+pub(super) mod embedded_pdf;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, HashMap, HashSet},
+    fmt::Debug,
+};
 
 use super::{
     GenericModel, ModelGraph, ModelObjectRef, catalog_dictionary_value,
@@ -13,11 +18,17 @@ use super::{
 };
 use crate::{
     BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument,
-    PropertyName, Result, ValidationError, pdf_text,
+    PdfName, PropertyName, ResourceLimits, Result, StreamObject, ValidationError, pdf_text,
 };
 
 pub(crate) const FAMILY: &str = "cosFileSpecification";
 pub(crate) const EMBEDDED_FILE: &str = "embeddedAttachment";
+pub(super) const EMBEDDED_PROPERTIES: &[&str] = &[
+    "Subtype",
+    "hasValidMimeType",
+    embedded_pdf::PDFA12,
+    embedded_pdf::PDFA124,
+];
 pub(super) const PROPERTIES: &[&str] = &[
     "containsEF",
     "containsDesc",
@@ -34,6 +45,82 @@ pub(super) struct Evidence<'a> {
     pub(super) dictionary: &'a Dictionary,
     pub(super) in_name_tree: bool,
     pub(super) associated: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct AttachmentEvidence<'a> {
+    document: &'a ParsedDocument,
+    stream: &'a StreamObject,
+    key: ObjectKey,
+    validation: &'a dyn AttachmentValidation,
+    max_reference_depth: u32,
+}
+
+trait AttachmentValidation: Debug {
+    fn check(
+        &self,
+        key: ObjectKey,
+        stream: &StreamObject,
+    ) -> Result<Option<embedded_pdf::Conformance>>;
+}
+
+#[derive(Debug)]
+pub(super) struct AttachmentContext<'a> {
+    pub(super) audit: &'a mut embedded_pdf::Audit,
+    pub(super) context: &'a mut embedded_pdf::Context,
+    pub(super) limits: &'a ResourceLimits,
+}
+
+impl AttachmentValidation for RefCell<AttachmentContext<'_>> {
+    fn check(
+        &self,
+        key: ObjectKey,
+        stream: &StreamObject,
+    ) -> Result<Option<embedded_pdf::Conformance>> {
+        let mut state =
+            self.try_borrow_mut()
+                .map_err(|_| ValidationError::SubsystemUnavailable {
+                    subsystem: "embedded PDF validation",
+                })?;
+        let AttachmentContext {
+            audit,
+            context,
+            limits,
+        } = &mut *state;
+        audit.check(context, key, stream, limits)
+    }
+}
+
+impl<'a> AttachmentEvidence<'a> {
+    pub(super) fn property(self, name: &PropertyName) -> Result<ModelValue> {
+        match name.as_str() {
+            "Subtype" => Ok(self.subtype()?.map_or(ModelValue::Null, |name| {
+                ModelValue::from(CosObject::Name(name.clone()))
+            })),
+            "hasValidMimeType" => Ok(ModelValue::Bool(
+                self.subtype()?
+                    .is_some_and(|name| has_mime_type(name.as_bytes())),
+            )),
+            embedded_pdf::PDFA12 | embedded_pdf::PDFA124 => self
+                .validation
+                .check(self.key, self.stream)?
+                .map_or_else(|| unknown_property(name), |pdf| pdf.property(name)),
+            _ => unknown_property(name),
+        }
+    }
+
+    fn subtype(self) -> Result<Option<&'a PdfName>> {
+        Ok(
+            match resolve_reference(
+                self.document,
+                self.stream.dictionary.get("Subtype"),
+                self.max_reference_depth,
+            )? {
+                Some((_, CosObject::Name(name))) => Some(name),
+                _ => None,
+            },
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -73,6 +160,7 @@ impl Attachments {
         &self,
         graph: &ModelGraph<'a>,
         budget: usize,
+        validation: &'a RefCell<AttachmentContext<'_>>,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         if self.0.len() > budget {
             return Err(ValidationError::LimitExceeded {
@@ -89,20 +177,23 @@ impl Attachments {
             let CosObject::Stream(stream) = &object.object else {
                 continue;
             };
-            let valid_mime = matches!(
-                resolve_reference(document, stream.dictionary.get("Subtype"), graph.limits.max_object_depth)?,
-                Some((_, CosObject::Name(name))) if has_mime_type(name.as_bytes())
-            );
-            let mut model = GenericModel::new_value(
+            let mut model = GenericModel::new(
                 document,
                 EMBEDDED_FILE,
-                ModelValue::Bool(valid_mime),
+                Some(*key),
+                Some(object.offset),
+                &Dictionary::default(),
                 ordinal,
                 format!("root/{EMBEDDED_FILE}[{}]", object_key_text(*key)),
             );
-            model.key = Some(*key);
-            model.offset = Some(object.offset);
             model.supertypes.clear();
+            model.attachment = Some(AttachmentEvidence {
+                document,
+                stream,
+                key: *key,
+                validation,
+                max_reference_depth: graph.limits.max_object_depth,
+            });
             models.push(ModelObjectRef::Generic(model));
         }
         Ok(models)

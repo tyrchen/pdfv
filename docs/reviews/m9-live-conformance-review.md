@@ -570,6 +570,34 @@ The 15-profile audit retains 30 matching outcomes and zero incomplete
 decisions. The PDF/A-2b XMP and PDF/A-3b attachment corpus replays agree on
 all 587 document outcomes and 1,809 selected rule counts.
 
+## Embedded PDF Conformance
+
+PDF/A-2 rule `6.8-5` accepts embedded PDFs conforming to part 1 or 2.
+Base PDF/A-4 rule `6.9-3` also accepts part 4. Both use the same
+`/EF` selectors as the MIME rule. Each physical stream contributes one
+assertion even when multiple names or file specifications refer to it.
+The child is decoded and validated against its own XMP-declared profile.
+An invalid descendant fails the containing attachment check.
+[PDF/A-2 profile](../../crates/core/src/generated_profiles/PDFA-2B.xml#L1683) ·
+[PDF/A-4 profile](../../crates/core/src/generated_profiles/PDFA-4.xml#L1248)
+
+Validation starts when the rule reads the PDF/A property. Each parent
+document caches the result by stream identity. The validation tree shares
+a maximum depth of eight and a maximum of 64 embedded documents, further
+constrained by the configured object and depth limits. The file-byte
+limit bounds both total encoded inputs and decoded payloads. The total
+filter-output work budget is twice the file-byte limit and includes
+intermediate stages and failed reservations. Budget exhaustion and
+unsupported decoding produce an unverified rule with the available cause.
+
+The 12 upstream attachment samples agree with Greenfield 1.30.4 on
+document status and 48 rule comparisons. Three focused base PDF/A-4
+samples now run in the upstream T2 manifest. Of 58 synthetic comparisons,
+54 agree with Greenfield 1.30.4. The four differences accept conforming
+PDF/A-2u, PDF/A-4e, and PDF/A-4f children within the allowed parts. Upstream
+subsequently widened its child-profile allowlist to include these variants.
+[Upstream embedded-file conformance fix](https://github.com/veraPDF/veraPDF-validation/commit/dd7b9a9a6d167a002eb75711956a80d4bb8fa395)
+
 ## Release Blockers
 
 - The focused XPath function and identification cases still need
