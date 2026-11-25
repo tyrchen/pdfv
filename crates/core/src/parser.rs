@@ -521,8 +521,12 @@ impl ParsedDocument {
             .unwrap_or_default()
     }
 
+    pub(crate) fn encryption_entry(&self) -> Option<&CosObject> {
+        encryption_reference(self.active_trailers())
+    }
+
     pub(crate) fn has_encryption(&self) -> bool {
-        encryption_reference(self.active_trailers()).is_some()
+        self.encryption_entry().is_some()
     }
 
     /// Returns true when the document declares encryption and still needs decryption.

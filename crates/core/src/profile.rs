@@ -2881,6 +2881,7 @@ impl XmlRuleBuilder {
             }
             _ => {}
         }
+        lower_annotation_checks(&id, &mut test)?;
         let message = self.message.unwrap_or_else(|| description.clone());
         Ok(Rule {
             id,
@@ -2892,6 +2893,44 @@ impl XmlRuleBuilder {
             error: ErrorTemplate { message },
             references: self.references,
         })
+    }
+}
+
+fn lower_annotation_checks(id: &RuleId, test: &mut RuleExpr) -> Result<()> {
+    if id.0.as_str().starts_with("iso-14289-1-7-18-") {
+        let flag_mask = RuleExpr::Binary {
+            op: BinaryOp::BitAnd,
+            left: Box::new(property_expr("F")?),
+            right: Box::new(RuleExpr::Number { value: 2.0 }),
+        };
+        let comparison = RuleExpr::Binary {
+            op: BinaryOp::Eq,
+            left: Box::new(flag_mask),
+            right: Box::new(RuleExpr::Number { value: 2.0 }),
+        };
+        replace_annotation_hidden_test(test, &comparison, &property_expr("isHidden")?);
+    }
+    if id.0.as_str() == "iso-14289-1-7-18-1-3" {
+        // Clause 7.18.1 requires the field's description only for a Widget
+        // associated with a form field.
+        *test = RuleExpr::Binary {
+            op: BinaryOp::Or,
+            left: Box::new(RuleExpr::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(property_expr("isFieldWidget")?),
+            }),
+            right: Box::new(test.clone()),
+        };
+    }
+    Ok(())
+}
+
+fn replace_annotation_hidden_test(test: &mut RuleExpr, comparison: &RuleExpr, hidden: &RuleExpr) {
+    if test == comparison {
+        *test = hidden.clone();
+    } else if let RuleExpr::Binary { left, right, .. } = test {
+        replace_annotation_hidden_test(left, comparison, hidden);
+        replace_annotation_hidden_test(right, comparison, hidden);
     }
 }
 
@@ -3287,11 +3326,7 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDAnnotation"
         | "Annotation"
         | "PDAnnot"
-        | "PDWidgetAnnot"
-        | "PDLinkAnnot"
         | "PDMarkupAnnot"
-        | "PDTrapNetAnnot"
-        | "PDPrinterMarkAnnot"
         | "PDWatermarkAnnot"
         | "PDSoundAnnot"
         | "PDScreenAnnot"
@@ -3302,11 +3337,15 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         | "PDRichMediaAnnot"
         | "PD3DAnnot"
         | "PDInkAnnot" => Some("annotation"),
+        "PDWidgetAnnot" | "PDLinkAnnot" | "PDTrapNetAnnot" | "PDPrinterMarkAnnot" => {
+            crate::validation::annotation::source_family(value)
+        }
         "PDAction" | "PDNamedAction" | "PDGoToAction" | "PDAdditionalActions" => Some("action"),
         "PDAcroForm" => Some("acroForm"),
         "PDFormField" | "PDTextField" => Some("formField"),
         "OutputIntents" | "OutputIntent" | "PDOutputIntent" => Some("outputIntent"),
-        "PDXObject" | "PD3DStream" | "PDMediaClip" | "PDRichMedia" => Some("xObject"),
+        "PDXObject" | "PD3DStream" | "PDRichMedia" => Some("xObject"),
+        "PDMediaClip" => Some(crate::validation::annotation::MEDIA_CLIP),
         "PDXForm" => Some("formXObject"),
         "PDMaskImage" => Some(crate::validation::image_mask::FAMILY),
         "PDXImage" | "JPEG2000" => Some("image"),
@@ -3336,7 +3375,7 @@ fn map_verapdf_object_type(value: &str) -> Result<(ObjectTypeName, Option<Bounde
         "PDSignature" => Some(crate::validation::signature::FIELD_VALUE),
         "PDSigRef" => Some(crate::validation::signature::REFERENCE),
         "PKCSDataObject" => Some(crate::validation::signature::PKCS),
-        "PDEncryption" => Some("security"),
+        "PDEncryption" => Some("encryptionDictionary"),
         _ => crate::validation::structure_roles::rule_family(value),
     };
     if let Some(mapped) = mapped {

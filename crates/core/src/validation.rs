@@ -1,5 +1,6 @@
 //! End-to-end validation session and validation model graph.
 
+pub(crate) mod annotation;
 mod cmap;
 mod cos;
 mod device_color;
@@ -41,8 +42,9 @@ use crate::{
     RuleId, RuleOutcome, TaskDuration, UnsupportedRule, ValidationError, ValidationFlavour,
     ValidationOptions, ValidationReport, ValidationStatus,
     accessibility::{
-        AccessibilityArtifact, AccessibilityGraph, AccessibilityMarkedContent, AccessibilityNode,
-        AccessibilityNodeId, AccessibilityObjectReference,
+        AccessibilityArtifact, AccessibilityContentItem, AccessibilityGraph,
+        AccessibilityMarkedContent, AccessibilityNode, AccessibilityNodeId,
+        AccessibilityObjectReference,
     },
     content::{ContentStreamSummary, MarkedContentSpan, OperatorFact, ResourceFamily, ResourceUse},
     profile::DefaultRuleEvaluator,
@@ -841,7 +843,6 @@ const XOBJECT_PROPERTIES: &[&str] = &[
     "containsSMask",
     "containsPS",
     "containsRef",
-    "hasCorrectAlt",
 ];
 const FORM_XOBJECT_PROPERTIES: &[&str] = &[
     "Type",
@@ -938,6 +939,7 @@ const ANNOTATION_PROPERTIES: &[&str] = &[
     "structParentType",
     "structParentStandardType",
     "isOutsideCropBox",
+    "isHidden",
     "Name",
     "Contents",
     "Alt",
@@ -2479,6 +2481,11 @@ impl ModelRegistry {
                 EMPTY_LINK_NAMES,
             ),
             family("annotation", ANNOTATION_PROPERTIES, ANNOTATION_LINKS),
+            family(
+                annotation::MEDIA_CLIP,
+                annotation::MEDIA_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("action", ACTION_PROPERTIES, ACTION_LINKS),
             family("formField", FORM_FIELD_PROPERTIES, FORM_FIELD_LINKS),
             family("fileSpec", FILE_SPEC_PROPERTIES, EMPTY_LINK_NAMES),
@@ -2614,6 +2621,11 @@ impl ModelRegistry {
                 EMPTY_LINK_NAMES,
             ),
             family("security", SECURITY_PROPERTIES, EMPTY_LINK_NAMES),
+            family(
+                "encryptionDictionary",
+                SECURITY_DIRECT_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
             family("outputIntent", OUTPUT_INTENT_PROPERTIES, EMPTY_LINK_NAMES),
             family("stream", STREAM_PROPERTIES, EMPTY_LINK_NAMES),
             family("object", OBJECT_PROPERTIES, EMPTY_LINK_NAMES),
@@ -2677,7 +2689,13 @@ impl ModelRegistry {
         let mut all_properties = BTreeSet::new();
         let role_families = structure_roles::families()
             .map(|role| family(role, STRUCTURE_ELEMENT_PROPERTIES, STRUCTURE_ELEMENT_LINKS));
-        for family in families.into_iter().chain(role_families) {
+        let annotation_families = annotation::families()
+            .map(|name| family(name, ANNOTATION_PROPERTIES, ANNOTATION_LINKS));
+        for family in families
+            .into_iter()
+            .chain(role_families)
+            .chain(annotation_families)
+        {
             for property in family.property_schema() {
                 all_properties.insert(property.name.clone());
             }
@@ -2711,6 +2729,9 @@ impl ModelRegistry {
             && family.as_str() != file_spec::FAMILY
             && family.as_str() != file_spec::EMBEDDED_FILE
             && family.as_str() != device_n::FAMILY
+            && family.as_str() != annotation::MEDIA_CLIP
+            && family.as_str() != "encryptionDictionary"
+            && !annotation::families().any(|name| family.as_str() == name)
             && !matches!(
                 family.as_str(),
                 image_mask::FAMILY | image_mask::INVOKED_IMAGE
@@ -3575,6 +3596,7 @@ pub struct ModelGraph<'a> {
     inline_colour_spaces: RefCell<BTreeMap<(ObjectKey, u64), Arc<crate::CosObject>>>,
     initial_gray_resources: RefCell<Vec<device_n::GrayResources>>,
     device_n_visits: Cell<u64>,
+    media_clip_nodes_remaining: Cell<u64>,
     unicode_names: RefCell<unicode_name::Scope>,
 }
 
@@ -3725,6 +3747,7 @@ impl<'a> ModelGraph<'a> {
             inline_colour_spaces: RefCell::default(),
             initial_gray_resources: RefCell::default(),
             device_n_visits: Cell::default(),
+            media_clip_nodes_remaining: Cell::new(limits.max_objects),
             text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
             unicode_names: RefCell::default(),
@@ -3749,6 +3772,7 @@ impl<'a> ModelGraph<'a> {
             inline_colour_spaces: RefCell::default(),
             initial_gray_resources: RefCell::default(),
             device_n_visits: Cell::default(),
+            media_clip_nodes_remaining: Cell::new(limits.max_objects),
             text_bytes: Cell::new(limits.max_file_bytes),
             character_resources: RefCell::new(BTreeMap::new()),
             unicode_names: RefCell::default(),
@@ -3906,7 +3930,17 @@ impl<'a> ModelGraph<'a> {
         page: &PageModel<'a>,
         max_objects: usize,
     ) -> Result<Vec<AnnotationModel<'a>>> {
-        AnnotationModel::from_page(self.document, page, max_objects)
+        let mut annotations = AnnotationModel::from_page(self.document, page, max_objects)?;
+        if self
+            .active_flavour
+            .as_ref()
+            .is_some_and(|flavour| matches!(flavour.family.as_str(), "pdfua" | "wtpdf"))
+        {
+            for annotation in &mut annotations {
+                annotation.parent = annotation::StructureParent::read(self, annotation.dictionary)?;
+            }
+        }
+        Ok(annotations)
     }
 
     fn output_intents(
@@ -4618,6 +4652,7 @@ impl ModelObject for DocumentModel<'_> {
         }
         object_xmp::link_models(graph, &mut objects, max_objects)?;
         signature::append(graph, &mut objects, max_objects)?;
+        append_encryption_dictionary(graph, &mut objects, max_objects)?;
         if language::enabled(graph) {
             language::append_form_fields(graph, &mut objects, max_objects)?;
         }
@@ -4645,6 +4680,38 @@ impl ModelObject for DocumentModel<'_> {
         }
         Ok(objects)
     }
+}
+
+fn append_encryption_dictionary<'a>(
+    graph: &ModelGraph<'a>,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max: usize,
+) -> Result<()> {
+    if !graph.materializes("encryptionDictionary") {
+        return Ok(());
+    }
+    let document = graph.document;
+    if let Some((key, crate::CosObject::Dictionary(dictionary))) =
+        semantic_names::resolve_reference(
+            document,
+            document.encryption_entry(),
+            graph.limits.max_object_depth,
+        )?
+    {
+        let offset = key.and_then(|key| document.objects.get(&key).map(|object| object.offset));
+        let mut model = GenericModel::new(
+            document,
+            "encryptionDictionary",
+            key,
+            offset,
+            dictionary,
+            0,
+            "root/encryption",
+        );
+        model.supertypes.clear();
+        push_linked(objects, ModelObjectRef::Generic(model), max)?;
+    }
+    Ok(())
 }
 
 /// Catalog model wrapper.
@@ -5593,7 +5660,18 @@ impl ModelObject for PageModel<'_> {
             "hasResources" => Ok(ModelValue::Bool(
                 inherited_page_value(self.document, self.key, "Resources", self.limits)?.is_some(),
             )),
-            "containsAnnotations" => Ok(ModelValue::Bool(self.dictionary.get("Annots").is_some())),
+            "containsAnnotations" => Ok(ModelValue::Bool(
+                array_values(semantic_names::resolve(
+                    self.document,
+                    self.dictionary.get("Annots"),
+                ))
+                .any(|value| {
+                    matches!(
+                        semantic_names::resolve(self.document, Some(value)),
+                        Some(crate::CosObject::Dictionary(_))
+                    )
+                }),
+            )),
             "containsAA" => Ok(ModelValue::Bool(self.dictionary.get("AA").is_some())),
             "containsPresSteps" => Ok(ModelValue::Bool(self.dictionary.get("PresSteps").is_some())),
             "containsGroupCS" => Ok(ModelValue::Bool(self.dictionary.get("Group").is_some_and(
@@ -6034,6 +6112,7 @@ pub struct AnnotationModel<'a> {
     key: Option<ObjectKey>,
     offset: Option<u64>,
     dictionary: &'a crate::Dictionary,
+    parent: Option<annotation::StructureParent<'a>>,
     object_type: ObjectTypeName,
     supertypes: Vec<ObjectTypeName>,
     links: Vec<LinkName>,
@@ -6080,7 +6159,8 @@ impl<'a> AnnotationModel<'a> {
                     offset,
                     dictionary,
                     object_type: ObjectTypeName::unchecked("annotation"),
-                    supertypes: vec![ObjectTypeName::unchecked("object")],
+                    parent: None,
+                    supertypes: annotation::supertypes(document, dictionary),
                     links: ANNOTATION_LINKS
                         .iter()
                         .map(|(name, _target)| LinkName(Identifier::unchecked(*name)))
@@ -6181,6 +6261,25 @@ impl<'a> AnnotationModel<'a> {
         })
     }
 
+    fn widget_field(&self) -> Result<Option<&'a crate::Dictionary>> {
+        if self
+            .resolve(self.dictionary.get("T"))?
+            .is_some_and(|value| matches!(value, crate::CosObject::String(_)))
+        {
+            return Ok(Some(self.dictionary));
+        }
+        if let Some(parent) = self
+            .resolve(self.dictionary.get("Parent"))?
+            .and_then(crate::CosObject::as_dictionary)
+        {
+            return Ok(Some(parent));
+        }
+        let field_type = self.resolved_name(self.dictionary.get("FT"))?;
+        Ok(field_type
+            .filter(|name| matches!(name.as_bytes(), b"Btn" | b"Tx" | b"Ch" | b"Sig"))
+            .map(|_| self.dictionary))
+    }
+
     fn dimension(&self, axis: usize) -> Result<ModelValue> {
         let Some(crate::CosObject::Array(rect)) = self.resolve(self.dictionary.get("Rect"))? else {
             return Ok(ModelValue::Null);
@@ -6246,26 +6345,55 @@ impl ModelObject for AnnotationModel<'_> {
             "containsFS" => Ok(ModelValue::Bool(self.dictionary.get("FS").is_some())),
             "containsRC" => Ok(ModelValue::Bool(self.dictionary.get("RC").is_some())),
             "containsLbl" => Ok(ModelValue::Bool(self.dictionary.get("Lbl").is_some())),
-            "Name" | "Contents" | "Alt" | "AFRelationship" | "RC" | "TU" => Ok(self
+            "Name" | "AFRelationship" | "RC" => Ok(self
                 .dictionary
                 .get(name.as_str())
                 .cloned()
                 .map_or(ModelValue::Null, ModelValue::from)),
-            "containsLang" => Ok(ModelValue::Bool(self.dictionary.get("Lang").is_some())),
-            "gContainsCatalogLang" => Ok(ModelValue::Bool(
-                catalog_value(self.document, "Lang").is_some(),
-            )),
+            "gContainsCatalogLang" => Ok(ModelValue::Bool(matches!(
+                semantic_names::resolve(self.document, catalog_value(self.document, "Lang")),
+                Some(crate::CosObject::String(_))
+            ))),
             "differentTargetAnnotObjectKey" => {
                 annotation_target_mismatch(self.document, self.dictionary, self.key)
             }
-            "gOutputCS" | "structParentType" | "structParentStandardType" => Ok(ModelValue::Null),
+            "Contents" => Ok(annotation::text_value(
+                self.document,
+                self.dictionary.get("Contents"),
+            )),
+            "TU" => Ok(annotation::text_value(
+                self.document,
+                self.widget_field()?.and_then(|field| field.get("TU")),
+            )),
+            "Alt" | "structParentType" | "structParentStandardType" => {
+                Ok(self.parent.as_ref().map_or(ModelValue::Null, |parent| {
+                    parent.value(self.document, name.as_str())
+                }))
+            }
+            "containsLang" | "isArtifact" => Ok(self
+                .parent
+                .as_ref()
+                .map_or(ModelValue::Bool(false), |parent| {
+                    parent.value(self.document, name.as_str())
+                })),
+            "gOutputCS" => Ok(ModelValue::Null),
             "N_type" => self.normal_appearance_type(),
             "width" => self.dimension(0),
             "height" => self.dimension(1),
-            "isArtifact" | "isOutsideCropBox" => Ok(ModelValue::Bool(false)),
+            "isOutsideCropBox" => annotation::outside_crop(self),
+            "isHidden" => Ok(ModelValue::Bool(
+                self.resolve(self.dictionary.get("F"))?
+                    .and_then(cos_integer)
+                    .is_some_and(|flags| flags & 2 != 0),
+            )),
+            "F" => optional_i64_model_value(
+                self.resolve(self.dictionary.get("F"))?
+                    .and_then(cos_integer),
+            ),
             "isFieldWidget" => Ok(ModelValue::Bool(
                 self.resolved_name(self.dictionary.get("Subtype"))?
-                    .is_some_and(|name| name.matches("Widget")),
+                    .is_some_and(|name| name.matches("Widget"))
+                    && self.widget_field()?.is_some(),
             )),
             _ => dictionary_property(self.dictionary, name, ANNOTATION_DIRECT_PROPERTIES),
         }
@@ -8089,7 +8217,22 @@ fn structure_element_pdfua_property(
         ))),
         "noteID" => Ok(optional_string_model_value(node.id_text.clone())),
         "hasOneInteractiveChild" => {
-            widget_annotation_count(document, graph, node).map(|count| ModelValue::Bool(count == 1))
+            let [
+                AccessibilityContentItem::Object {
+                    object: Some(key), ..
+                },
+            ] = node.content_items.as_slice()
+            else {
+                return Some(Ok(ModelValue::Bool(false)));
+            };
+            let subtype = document
+                .objects
+                .get(key)
+                .and_then(|object| object.object.as_dictionary())
+                .and_then(|dictionary| semantic_names::name(document, dictionary.get("Subtype")));
+            Ok(ModelValue::Bool(
+                node.children.is_empty() && subtype.is_some_and(|name| name.matches("Widget")),
+            ))
         }
         "usesH" => Ok(ModelValue::Bool(node.normalized_role == "H")),
         "usesHn" => Ok(ModelValue::Bool(heading_level(&node.normalized_role) > 0.0)),
@@ -10144,18 +10287,6 @@ fn name_key_model_value(dictionary: &crate::Dictionary, key: &str) -> ModelValue
         })
 }
 
-fn media_clip_alt_is_valid(dictionary: &crate::Dictionary) -> bool {
-    let Some(crate::CosObject::Array(values)) = dictionary.get("Alt") else {
-        return false;
-    };
-    if values.len() % 2 != 0 {
-        return false;
-    }
-    values.iter().enumerate().all(|(index, value)| {
-        matches!(value, crate::CosObject::String(text) if index % 2 == 0 || !text.as_bytes().is_empty())
-    })
-}
-
 fn object_key_text(key: ObjectKey) -> String {
     format!("{} {} R", key.number.get(), key.generation)
 }
@@ -11366,9 +11497,7 @@ impl<'a> GenericModel<'a> {
                 Some(Ok(ModelValue::Bool(self.dictionary.get("Ref").is_some())))
             }
             ("formXObject", "isUniqueSemanticParent") => Some(Ok(ModelValue::Bool(true))),
-            ("xObject", "hasCorrectAlt") => Some(Ok(ModelValue::Bool(media_clip_alt_is_valid(
-                &self.dictionary,
-            )))),
+            (annotation::MEDIA_CLIP, _) => annotation::media_property(self, name).map(Ok),
             _ => None,
         }
     }
@@ -12272,6 +12401,7 @@ fn action_linked_objects<'a>(
         &model.context,
         max_objects,
     )?;
+    annotation::append_media_clips(model, graph, &mut objects, max_objects)?;
     if let Some(file_spec) = file_spec_model_from_value(
         graph.document,
         model
@@ -12507,7 +12637,7 @@ fn family_direct_properties(family: &str) -> &'static [&'static str] {
         "structureTreeRoot" => STRUCTURE_DIRECT_PROPERTIES,
         "structureElement" => STRUCTURE_ELEMENT_PROPERTIES,
         "signature" => SIGNATURE_DIRECT_PROPERTIES,
-        "security" => SECURITY_DIRECT_PROPERTIES,
+        "security" | "encryptionDictionary" => SECURITY_DIRECT_PROPERTIES,
         "pageTree" => PAGE_TREE_PROPERTIES,
         _ => DIRECT_PROPERTY_NAMES,
     }

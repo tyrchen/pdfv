@@ -323,11 +323,36 @@ selection. [PDF/UA-1 Unicode requirements](https://taggedpdfschool.pdfa.org/matt
 All five original font negatives now match Greenfield at document level
 with conclusive failures. Glyph presence counts agree for 52 of 53
 PDF/UA-1 controls. The remaining control contains a symbol mapping to
-an out-of-range glyph ID that Greenfield counts as present. The original
-45 controls agree on 42 document outcomes. The remaining two incomplete
-reports and one outcome difference involve annotations. Seven controls
-still have different Unicode assertion counts across evidence scopes.
+an out-of-range glyph ID that Greenfield counts as present. All 45
+original controls now agree on the document outcome after the
+annotation fixes. Seven controls still have different Unicode
+assertion counts across evidence scopes.
 [Open findings](../../specs/93-improvements-review.md#open-m9-findings)
+
+## PDF/UA-1 Annotations and Media
+
+Annotation rule scope follows the resolved subtype. Missing flags leave
+the annotation visible. The viewport uses the inherited CropBox clipped
+to the MediaBox, with MediaBox as the fallback. ParentTree supplies the
+enclosing tag, normalized role, alternate text, and language. Widget
+tooltips come from the merged field or its parent. The Form structure
+rule checks its immediate object-reference child.
+[Matterhorn Protocol checkpoint 28](https://pdfa.org/download-area/publications/Matterhorn-Protocol-1-1.pdf)
+
+Media clip rules follow Rendition actions, selector choices, and clip
+sections to each reachable media clip data dictionary. Greenfield's
+direct rendition traversal produces different counts for selector
+renditions and clip sections. The encryption permission rule uses the
+active trailer's Encrypt dictionary. This excludes linearization hint
+streams with Filter and V entries from the permission check.
+[ISO 32000-1 sections 7.6 and 13.2](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)
+
+All 624 annotation and annotation-language rule-count comparisons agree
+across 48 pinned upstream PDF/UA-1 fixtures. The whole-document result
+agrees on 46 of the 48. The remaining cases involve heading order and
+CIDSet evidence. The three original annotation reproducers agree on
+all 39 targeted counts and on each document outcome.
+[Upstream annotation fixtures](https://github.com/veraPDF/veraPDF-corpus/tree/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_UA-1)
 
 ## PDF/A-3 Associated Files and Profile Audit
 

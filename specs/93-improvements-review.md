@@ -7,11 +7,11 @@ of the current implementation phase.
 
 ## Open M9 Findings
 
-- **P2.** Audit PDF/UA-1 annotation rule applicability in the three
-  `scope-appearance`, `scope-also-appearance`, and `scope-unused-form`
-  controls. Two report unavailable annotation properties. The third
-  fails both `7.18.6.2` checks, which Greenfield leaves untested.
-  [Annotation traversal](../crates/core/src/validation.rs)
+- **P2.** Resolve the two whole-document differences in the official
+  PDF/UA-1 annotation corpus. Heading nesting `7.4.2-1` needs heading
+  order across sibling structure elements. CIDSet `7.21.4.2-2` needs the
+  embedded CIDFont subset inventory.
+  [Annotation corpus results](../docs/reviews/m9-live-conformance-review.md#pdfua-1-annotations-and-media)
 - **P2.** Use the selected glyph for the separate `.notdef` prohibition,
   including explicit `.notdef` in invisible text. Audit the assertion
   identity for the PDF/UA-1 Unicode rules across marked content, pages,
@@ -21,6 +21,13 @@ of the current implementation phase.
 
 ## Resolved M9 Findings
 
+- **P2.** PDF/UA-1 annotation rules distinguish subtypes and resolve
+  effective visibility, the enclosing structure element, and the
+  form field's tooltip. Rendition actions supply media clip data.
+  The active trailer supplies the encryption dictionary. All three
+  original annotation reproducers and all 624 targeted checks across
+  48 official annotation fixtures agree with Greenfield.
+  [Annotation corpus results](../docs/reviews/m9-live-conformance-review.md#pdfua-1-annotations-and-media)
 - **P2.** Rendered glyph checks read the selected glyph from the embedded
   program or Type 3 character procedures. Symbolic TrueType codes without
   a Unicode mapping fail the Unicode coverage rule. Five PDF/UA-1
