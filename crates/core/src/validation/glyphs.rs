@@ -28,7 +28,8 @@ use super::{
 };
 use crate::{
     BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ObjectTypeName,
-    ParsedDocument, PdfName, PdfString, PropertyName, ResourceLimits, Result, ValidationError,
+    ParsedDocument, PdfName, PdfString, PropertyName, ResourceLimits, Result, StreamObject,
+    ValidationError,
     content::{MarkedContentSpan, TextOperand},
 };
 
@@ -54,6 +55,24 @@ enum Coverage {
     Verified,
     Missing,
     Unavailable,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Presence {
+    Defined,
+    Missing,
+    NoProgram,
+    Unavailable,
+}
+
+impl From<bool> for Presence {
+    fn from(defined: bool) -> Self {
+        if defined {
+            Self::Defined
+        } else {
+            Self::Missing
+        }
+    }
 }
 
 impl Coverage {
@@ -106,8 +125,25 @@ impl FontUse {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct WidthEvidence {
     mode: Option<u8>,
+    presence: Presence,
     program: Measurement,
     dictionary: Measurement,
+}
+
+impl WidthEvidence {
+    fn without_selection(sample: Sample<'_>, presence: Presence) -> Self {
+        let program = if sample.text.is_some() && matches!(presence, Presence::NoProgram) {
+            Measurement::Absent
+        } else {
+            Measurement::Unavailable
+        };
+        Self {
+            mode: sample.mode,
+            presence,
+            program,
+            dictionary: Measurement::Unavailable,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -154,6 +190,12 @@ impl Evidence {
                 |mode| Ok(ModelValue::Number(f64::from(mode))),
             ),
             (Self::Width(evidence), "widthFromFontProgram") => measurement(evidence.program, name),
+            (Self::Width(evidence), "isGlyphPresent") => match evidence.presence {
+                Presence::Defined => Ok(ModelValue::Bool(true)),
+                Presence::Missing => Ok(ModelValue::Bool(false)),
+                Presence::NoProgram => Ok(ModelValue::Null),
+                Presence::Unavailable => unknown_property(name),
+            },
             (Self::Width(evidence), "widthFromDictionary") => {
                 measurement(evidence.dictionary, name)
             }
@@ -913,12 +955,13 @@ fn inspect_selected_font<'a>(
         )?;
     }
     if content.font_use_only() {
+        let simple_program = SimpleProgram::read(graph, font)?;
         inspect_font(
             content,
             graph,
             selection,
             font,
-            &SimpleProgram::Unavailable,
+            &simple_program,
             samples,
             audit,
             objects,
@@ -1106,8 +1149,7 @@ fn push_unresolved_glyph<'a>(
             objects,
             graph.document,
             sample,
-            Measurement::Unavailable,
-            Measurement::Unavailable,
+            WidthEvidence::without_selection(sample, Presence::Unavailable),
             content,
             max,
         )?;
@@ -1402,12 +1444,12 @@ fn font_selection(
 #[derive(Debug)]
 enum Encoding {
     WinAnsi,
-    MacRoman(simple::Encoding),
+    TrueTypeNamed(simple::Encoding),
     TrueTypeBuiltin,
     CffSimple(simple::Encoding),
     Type1(simple::Encoding),
     CffCid(CidEncoding),
-    Type3(BTreeMap<u8, PdfName>),
+    Type3(simple::Encoding),
     CidTrueType(CidEncoding, CidToGid),
     Unsupported,
 }
@@ -1478,8 +1520,9 @@ fn encoding(
         );
     }
     if subtype.is_some_and(|subtype| subtype.matches("Type3")) {
-        let differences = simple_font_differences(document, font);
-        return Ok(differences.map_or(Encoding::Unsupported, Encoding::Type3));
+        return Ok(
+            simple::Encoding::read(document, font).map_or(Encoding::Unsupported, Encoding::Type3)
+        );
     }
     if subtype.is_some_and(|subtype| subtype.matches("TrueType"))
         && let Some(descriptor) = font_descriptor_dictionary(document, font)
@@ -1493,10 +1536,9 @@ fn encoding(
             return Ok(Encoding::WinAnsi);
         }
         if !sfnt::is_symbolic(document, descriptor)
-            && let Some(encoding) = simple::Encoding::read(document, font)
-            && encoding.base == simple::Base::MacRoman
+            && let Some(names) = simple::Encoding::read(document, font)
         {
-            return Ok(Encoding::MacRoman(encoding));
+            return Ok(Encoding::TrueTypeNamed(names));
         }
     }
     if !subtype.is_some_and(|subtype| subtype.matches("CIDFontType2")) {
@@ -1530,14 +1572,16 @@ fn cid_encoding(
     limits: &ResourceLimits,
 ) -> Result<Option<CidEncoding>> {
     let encoding = font.get("Encoding");
-    if semantic_names::name(document, encoding).is_some_and(|name| name.matches("Identity-H")) {
+    if semantic_names::name(document, encoding)
+        .is_some_and(|name| name.matches("Identity-H") || name.matches("Identity-V"))
+    {
         return Ok(Some(CidEncoding::Identity));
     }
     let Some(stream) = stream_from_value(document, encoding) else {
         return Ok(None);
     };
     Ok(cmap::load(stream, limits)?
-        .filter(CMap::supports_horizontal_cids)
+        .filter(CMap::supports_cids)
         .map(|cmap| CidEncoding::Embedded(Box::new(cmap))))
 }
 
@@ -1569,19 +1613,11 @@ fn simple_font_differences(
 fn type3_width(
     document: &ParsedDocument,
     font: &Dictionary,
-    glyph: Option<&PdfName>,
+    glyph: Option<&[u8]>,
     audit: &mut CidAudit,
     limits: &ResourceLimits,
 ) -> Result<Option<f64>> {
-    let Some(glyph) = glyph else { return Ok(None) };
-    let Some(procedures) = super::resolve_dictionary_value(document, font.get("CharProcs")) else {
-        return Ok(None);
-    };
-    let procedure = procedures
-        .iter()
-        .find(|(name, _)| *name == glyph)
-        .map(|(_, value)| value);
-    let Some(stream) = stream_from_value(document, procedure) else {
+    let Some(stream) = type3_program(document, font, glyph) else {
         return Ok(None);
     };
     if audit.type3_procedures >= limits.max_type3_charproc_streams {
@@ -1605,6 +1641,25 @@ fn type3_width(
         Err(error @ crate::ParseError::LimitExceeded { .. }) => Err(error.into()),
         Err(_) => Ok(None),
     }
+}
+
+fn type3_program<'a>(
+    document: &'a ParsedDocument,
+    font: &'a Dictionary,
+    glyph: Option<&[u8]>,
+) -> Option<&'a StreamObject> {
+    let procedures = resolve_dictionary_value(document, font.get("CharProcs"))?;
+    let glyph = glyph?;
+    let procedure = std::str::from_utf8(glyph).ok().map_or_else(
+        || {
+            procedures
+                .iter()
+                .find(|(name, _)| name.as_bytes() == glyph)
+                .map(|(_, value)| value)
+        },
+        |name| procedures.get(name),
+    );
+    stream_from_value(document, procedure)
 }
 
 #[derive(Debug)]
@@ -1636,7 +1691,7 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
                 }),
             ),
             Encoding::WinAnsi
-            | Encoding::MacRoman(_)
+            | Encoding::TrueTypeNamed(_)
             | Encoding::TrueTypeBuiltin
             | Encoding::CidTrueType(..)
             | Encoding::Unsupported => (bytes.and_then(sfnt::Metrics::read), None),
@@ -1670,11 +1725,15 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
 
     fn glyph(&self, code: u16) -> Option<u16> {
         match self.encoding {
-            Encoding::WinAnsi => self
-                .sfnt
-                .as_ref()?
-                .unicode_gid(sfnt::win_ansi_unicode(u8::try_from(code).ok()?)?),
-            Encoding::MacRoman(encoding) => {
+            Encoding::WinAnsi => {
+                let code = u8::try_from(code).ok()?;
+                let metrics = self.sfnt.as_ref()?;
+                sfnt::win_ansi_unicode(code)
+                    .and_then(|unicode| metrics.unicode_gid(unicode))
+                    .filter(|gid| metrics.has_glyph(*gid))
+                    .or_else(|| metrics.named_gid(simple::base_name(simple::Base::WinAnsi, code)?))
+            }
+            Encoding::TrueTypeNamed(encoding) => {
                 let name = std::str::from_utf8(encoding.name(u8::try_from(code).ok()?)?).ok()?;
                 self.sfnt.as_ref()?.named_gid(name)
             }
@@ -1718,6 +1777,56 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
             .map(|present| present && (cid == 0 || gid != Some(0)))
     }
 
+    fn presence(
+        &self,
+        code: u16,
+        gid: Option<u16>,
+        exact: bool,
+        unavailable: Presence,
+    ) -> Presence {
+        if matches!(unavailable, Presence::NoProgram) {
+            return unavailable;
+        }
+        match self.encoding {
+            Encoding::TrueTypeBuiltin => match (self.sfnt.as_ref(), u8::try_from(code)) {
+                (Some(metrics), Ok(code)) => metrics.builtin_presence(code),
+                _ => unavailable,
+            },
+            Encoding::Type3(encoding) => type3_program(
+                self.document,
+                self.dictionary,
+                u8::try_from(code).ok().and_then(|code| encoding.name(code)),
+            )
+            .is_some()
+            .into(),
+            Encoding::Type1(encoding) => match (self.type1, u8::try_from(code)) {
+                (Some(program), Ok(code)) => {
+                    let name = program.glyph_name(encoding, code);
+                    program.contains(name).into()
+                }
+                _ => unavailable,
+            },
+            Encoding::WinAnsi | Encoding::TrueTypeNamed(_) => {
+                let Ok(code) = u8::try_from(code) else {
+                    return unavailable;
+                };
+                let name = match self.encoding {
+                    Encoding::TrueTypeNamed(encoding) => encoding.name(code),
+                    _ => simple::base_name(simple::Base::WinAnsi, code).map(str::as_bytes),
+                };
+                match (self.sfnt.as_ref(), name) {
+                    (Some(metrics), Some(name)) => std::str::from_utf8(name)
+                        .map_or(Presence::Missing, |name| metrics.named_presence(name)),
+                    _ => unavailable,
+                }
+            }
+            Encoding::Unsupported => unavailable,
+            _ => self.contains_gid(gid).map_or(unavailable, |present| {
+                (exact && present && gid != Some(0)).into()
+            }),
+        }
+    }
+
     fn width(
         &self,
         code: u16,
@@ -1725,13 +1834,11 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
         audit: &mut CidAudit,
         limits: &ResourceLimits,
     ) -> Result<Measurement> {
-        let measured = if let Encoding::Type3(differences) = self.encoding {
+        let measured = if let Encoding::Type3(encoding) = self.encoding {
             type3_width(
                 self.document,
                 self.dictionary,
-                u8::try_from(code)
-                    .ok()
-                    .and_then(|code| differences.get(&code)),
+                u8::try_from(code).ok().and_then(|code| encoding.name(code)),
                 audit,
                 limits,
             )?
@@ -1759,7 +1866,7 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
     fn expected(&self, code: u16) -> Measurement {
         let expected = match self.encoding {
             Encoding::WinAnsi
-            | Encoding::MacRoman(_)
+            | Encoding::TrueTypeNamed(_)
             | Encoding::TrueTypeBuiltin
             | Encoding::Type3(_)
             | Encoding::CffSimple(_)
@@ -1770,6 +1877,37 @@ impl<'a, 'program> FontMetrics<'a, 'program> {
             Encoding::Unsupported => None,
         };
         expected.map_or(Measurement::Unavailable, Measurement::Known)
+    }
+
+    fn observe(
+        &self,
+        sample: Sample<'_>,
+        selected: Option<(u16, Option<u16>, bool)>,
+        explicit_cid_fallback: bool,
+        unavailable: Presence,
+        audit: &mut CidAudit,
+        limits: &ResourceLimits,
+    ) -> Result<WidthEvidence> {
+        let mut evidence = WidthEvidence::without_selection(sample, unavailable);
+        if let Some((code, gid, exact)) = selected {
+            evidence.presence =
+                self.presence(code, gid, exact || explicit_cid_fallback, unavailable);
+            if exact || explicit_cid_fallback {
+                if !matches!(unavailable, Presence::NoProgram) {
+                    evidence.program = self.width(code, gid, audit, limits)?;
+                }
+                evidence.dictionary = self.expected(code);
+            } else if matches!(evidence.presence, Presence::Missing) {
+                // A substituted CID has no advance for the requested glyph.
+                evidence.program = Measurement::Absent;
+            }
+        }
+        if matches!(evidence.presence, Presence::Missing)
+            && matches!(self.encoding, Encoding::Type3(_))
+        {
+            evidence.program = Measurement::Absent;
+        }
+        Ok(evidence)
     }
 }
 
@@ -1799,17 +1937,13 @@ fn font_declares_program(document: &ParsedDocument, font: &Dictionary) -> bool {
     })
 }
 
-fn unavailable_program(
-    document: &ParsedDocument,
-    font: &Dictionary,
-    sample: Sample<'_>,
-) -> Measurement {
-    let type3 = semantic_names::name(document, font.get("Subtype"))
+fn unavailable_presence(document: &ParsedDocument, font: &Dictionary, rejected: bool) -> Presence {
+    let inline_program = semantic_names::name(document, font.get("Subtype"))
         .is_some_and(|name| name.matches("Type3"));
-    if sample.text.is_some() && !type3 && !font_declares_program(document, font) {
-        Measurement::Absent
+    if rejected || (!inline_program && !font_declares_program(document, font)) {
+        Presence::NoProgram
     } else {
-        Measurement::Unavailable
+        Presence::Unavailable
     }
 }
 
@@ -1881,8 +2015,7 @@ fn inspect_font<'a>(
         && is_true_type
         && embedded.is_some();
     let check_sfnt = expects_sfnt && graph.materializes(USED_FONT);
-    let compare_glyphs = !content.font_use_only()
-        && (graph.materializes(WIDTH_FAMILY) || graph.materializes(CID_SET_FAMILY))
+    let compare_glyphs = (graph.materializes(WIDTH_FAMILY) || graph.materializes(CID_SET_FAMILY))
         && samples.iter().any(|sample| sample.has_glyphs());
     if !(program || compare_glyphs || check_sfnt) {
         return Ok(false);
@@ -1975,11 +2108,7 @@ fn measure_used_glyphs<'a>(
         .is_some_and(|flavour| flavour.family.as_str() == "pdfua" && flavour.part.get() == 1)
         .then(|| WidthScope::read(content, document));
     let check_widths = graph.materializes(WIDTH_FAMILY);
-    let missing_width = if rejected_program {
-        Measurement::Absent
-    } else {
-        Measurement::Unavailable
-    };
+    let unavailable = unavailable_presence(document, font, rejected_program);
     for sample in samples.iter().filter(|sample| sample.has_glyphs()) {
         let text = sample
             .text
@@ -1987,17 +2116,11 @@ fn measure_used_glyphs<'a>(
         let Some(text) = text else {
             coverage = coverage.include(Coverage::Unavailable);
             if check_widths && seen_widths.insert((sample.mode, sample.marked_content, 0, false)) {
-                let width = if sample.text.is_some() && rejected_program {
-                    Measurement::Absent
-                } else {
-                    unavailable_program(document, font, *sample)
-                };
                 push_width(
                     objects,
                     document,
                     *sample,
-                    width,
-                    Measurement::Unavailable,
+                    WidthEvidence::without_selection(*sample, unavailable),
                     content,
                     max,
                 )?;
@@ -2035,17 +2158,25 @@ fn measure_used_glyphs<'a>(
                 seen_widths.insert((sample.mode, sample.marked_content, code, exact))
             };
             if first_observation {
-                let width = if exact && !rejected_program {
-                    measurements.width(code, gid, audit, graph.limits)?
-                } else {
-                    missing_width
-                };
-                let expected = if exact {
-                    measurements.expected(code)
-                } else {
-                    Measurement::Unavailable
-                };
-                push_width(objects, document, *sample, width, expected, content, max)?;
+                let has_fallback = matches!(
+                    decoded,
+                    Some((
+                        _,
+                        CharacterCode::Cid(CidSelection {
+                            preferred: None,
+                            fallback: 1..
+                        })
+                    ))
+                );
+                let evidence = measurements.observe(
+                    *sample,
+                    selection_result,
+                    has_fallback && code != 0,
+                    unavailable,
+                    audit,
+                    graph.limits,
+                )?;
+                push_width(objects, document, *sample, evidence, content, max)?;
             }
         }
     }
@@ -2232,8 +2363,7 @@ fn push_width<'a>(
     objects: &mut Vec<ModelObjectRef<'a>>,
     document: &'a ParsedDocument,
     sample: Sample<'_>,
-    program: Measurement,
-    dictionary: Measurement,
+    evidence: WidthEvidence,
     content: &ContentStreamModel<'_>,
     max: usize,
 ) -> Result<()> {
@@ -2246,11 +2376,6 @@ fn push_width<'a>(
         format!("{path}/fontState[{}]", inherited.identity())
     } else {
         path.to_owned()
-    };
-    let evidence = WidthEvidence {
-        mode: sample.mode,
-        program,
-        dictionary,
     };
     push_linked(
         objects,

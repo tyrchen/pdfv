@@ -2504,6 +2504,7 @@ impl ModelRegistry {
                 glyphs::WIDTH_FAMILY,
                 &[
                     "renderingMode",
+                    "isGlyphPresent",
                     "widthFromFontProgram",
                     "widthFromDictionary",
                 ],

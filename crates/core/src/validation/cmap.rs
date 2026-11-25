@@ -127,10 +127,6 @@ impl CMap {
         (!self.inherits || self.maximal_cid > u32::from(u16::MAX)).then_some(self.maximal_cid)
     }
 
-    pub(super) fn supports_horizontal_cids(&self) -> bool {
-        self.writing_mode == 0 && self.supports_cids()
-    }
-
     pub(super) fn supports_cids(&self) -> bool {
         !self.unicode && !self.inherits && !self.spaces.is_empty()
     }
@@ -791,7 +787,7 @@ endcmap",
                 subsystem: "testCmap",
             },
         )?;
-        assert!(!map.supports_horizontal_cids());
+        assert!(!map.supports_cids());
         assert_eq!(map.writing_mode(), 1);
         assert_eq!(map.maximal_cid(), None);
         let map = parse(

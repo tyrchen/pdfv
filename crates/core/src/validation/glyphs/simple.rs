@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use read_fonts::ps::PredefinedEncoding;
 
-use super::{font_declares_program, simple_font_differences};
+use super::{font_declares_program, font_descriptor_dictionary, sfnt, simple_font_differences};
 use crate::{
     CosObject, Dictionary, ParsedDocument, PdfName,
     validation::{STANDARD_14_FONT_NAMES, resolve_dictionary_value, semantic_names},
@@ -40,8 +40,8 @@ impl Encoding {
                 b"MacExpertEncoding" => Base::MacExpert,
                 _ => return None,
             },
-            Some(CosObject::Null) => default_base(document, font),
-            None if base_value.is_none() => default_base(document, font),
+            Some(CosObject::Null) => default_base(document, font, dictionary.is_some()),
+            None if base_value.is_none() => default_base(document, font, dictionary.is_some()),
             _ => return None,
         };
         let differences =
@@ -62,11 +62,20 @@ impl Encoding {
     }
 }
 
-fn default_base(document: &ParsedDocument, font: &Dictionary) -> Base {
-    if !semantic_names::name(document, font.get("Subtype"))
-        .is_some_and(|name| name.matches("Type1"))
-        || font_declares_program(document, font)
+fn default_base(
+    document: &ParsedDocument,
+    font: &Dictionary,
+    has_encoding_dictionary: bool,
+) -> Base {
+    let subtype = semantic_names::name(document, font.get("Subtype"));
+    if has_encoding_dictionary
+        && subtype.is_some_and(|name| name.matches("TrueType"))
+        && font_descriptor_dictionary(document, font)
+            .is_some_and(|descriptor| !sfnt::is_symbolic(document, descriptor))
     {
+        return Base::Standard;
+    }
+    if !subtype.is_some_and(|name| name.matches("Type1")) || font_declares_program(document, font) {
         return Base::Embedded;
     }
     let Some(name) = semantic_names::name(document, font.get("BaseFont")) else {
@@ -85,7 +94,7 @@ fn default_base(document: &ParsedDocument, font: &Dictionary) -> Base {
     }
 }
 
-fn base_name(base: Base, code: u8) -> Option<&'static str> {
+pub(super) fn base_name(base: Base, code: u8) -> Option<&'static str> {
     match base {
         Base::Embedded => None,
         Base::Standard => Some(PredefinedEncoding::Standard.name(code)),

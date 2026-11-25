@@ -2806,7 +2806,7 @@ impl XmlRuleBuilder {
         let source_test = self.test.ok_or(ProfileError::InvalidXml {
             reason: BoundedText::unchecked("rule test is missing"),
         })?;
-        if self.source_is_glyph && source_test.as_str().contains("widthFromFontProgram") {
+        if self.source_is_glyph && is_used_glyph_test(source_test.as_str()) {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::WIDTH_FAMILY);
         }
         if self.source_is_glyph
@@ -2893,6 +2893,11 @@ impl XmlRuleBuilder {
             references: self.references,
         })
     }
+}
+
+fn is_used_glyph_test(test: &str) -> bool {
+    test.contains("widthFromFontProgram")
+        || test == "renderingMode == 3 || isGlyphPresent == null || isGlyphPresent == true"
 }
 
 fn imported_rule_family(object: &str, test: &str) -> Option<&'static str> {

@@ -300,10 +300,33 @@ OpenType program fails `7.21.4.1-1`. Its absent program width satisfies
 the null-width branch of `7.21.5-1`. An unsupported stream filter
 preserves unavailable evidence.
 
-The original 45 controls still have five incomplete document reports.
-Three lack decisive Unicode evidence for readable TrueType programs.
-Two hit unavailable annotation properties. Three further controls
-differ at document level because of glyph presence or annotation rules.
+## Used Glyph Presence and TrueType Unicode
+
+The glyph presence rule checks the selected glyph at each text use.
+Symbolic TrueType uses the Windows symbol subtable when present and
+otherwise Macintosh Roman. Named TrueType glyphs use the applicable
+Unicode or Macintosh subtable and can resolve through the `post`
+table. A selected glyph ID must be within the font's glyph inventory.
+The subtable parser enforces its declared length. An unreadable or
+unsupported selected subtable preserves unavailable evidence.
+Type 3 uses its encoding and the matching CharProc, including inside
+another invoked Type 3 procedure. Composite fonts also support vertical
+CID lookup. Rendering mode 3 exempts glyph presence.
+[ISO 32000-1 section 9.6.6](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf?from=20423&from_column=20423)
+
+Unicode coverage is independent of glyph presence. When a symbolic
+TrueType code has neither a ToUnicode entry for that code nor an
+applicable named encoding fallback, the Unicode mapping rule fails.
+Private code positions in a Windows symbol subtable describe glyph
+selection. [PDF/UA-1 Unicode requirements](https://taggedpdfschool.pdfa.org/matterhorn?check=31-027)
+
+All five original font negatives now match Greenfield at document level
+with conclusive failures. Glyph presence counts agree for 52 of 53
+PDF/UA-1 controls. The remaining control contains a symbol mapping to
+an out-of-range glyph ID that Greenfield counts as present. The original
+45 controls agree on 42 document outcomes. The remaining two incomplete
+reports and one outcome difference involve annotations. Seven controls
+still have different Unicode assertion counts across evidence scopes.
 [Open findings](../../specs/93-improvements-review.md#open-m9-findings)
 
 ## PDF/A-3 Associated Files and Profile Audit

@@ -10,13 +10,14 @@ use read_fonts::ps::agl;
 
 use super::{
     ContentStreamModel, Evidence, ModelGraph, ModelObjectRef, Sample, SimpleProgram, cff, model,
-    simple, type1,
+    sfnt, simple, type1,
 };
 use crate::{
     CosObject, Dictionary, ParsedDocument, Result, pdf_text,
     validation::{
         cmap::{self, CMap, Code, UnicodeLookup, UnicodeMap},
-        descendant_font_dictionary, push_linked, resolve_dictionary_value, semantic_names,
+        descendant_font_dictionary, font_descriptor_dictionary, push_linked,
+        resolve_dictionary_value, semantic_names,
     },
 };
 
@@ -126,12 +127,18 @@ impl<'a> SimpleMap<'a> {
         require_listed_name: bool,
         program_rejected: bool,
     ) -> Self {
+        let subtype = semantic_names::name(document, font.get("Subtype"));
+        let symbolic_truetype = subtype.is_some_and(|name| name.matches("TrueType"))
+            && font_descriptor_dictionary(document, font)
+                .is_some_and(|descriptor| sfnt::is_symbolic(document, descriptor));
         Self {
             encoding: simple::Encoding::read(document, font),
             cff: program.cff(),
             type1: program.type1(),
             require_listed_name,
             no_builtin_names: program_rejected
+                || subtype.is_some_and(|name| name.matches("Type3"))
+                || symbolic_truetype
                 || (super::is_type1(document, font)
                     && !super::font_declares_program(document, font)),
         }

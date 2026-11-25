@@ -1,16 +1,21 @@
 //! SFNT metrics and PDF TrueType character-code mapping.
 
-use std::{cell::OnceCell, fmt};
+use std::{cell::OnceCell, collections::BTreeMap, fmt};
 
 use read_fonts::{
-    FontRef, ReadError, TableProvider,
+    FontRead, FontRef, ReadError, TableProvider,
     ps::agl,
-    tables::cmap::{Cmap, CmapSubtable, ConstantMapGroup, PlatformId, SequentialMapGroup},
-    types::{GlyphId, GlyphId16, Tag},
+    tables::cmap::{
+        Cmap, CmapSubtable, ConstantMapGroup, EncodingRecord, PlatformId, SequentialMapGroup,
+    },
+    types::{GlyphId, Tag},
 };
 
-use super::super::{
-    cos_integer, resolve_dictionary_value, semantic_names, stream_from_value, unknown_property,
+use super::{
+    super::{
+        cos_integer, resolve_dictionary_value, semantic_names, stream_from_value, unknown_property,
+    },
+    Presence,
 };
 use crate::{
     Dictionary, ModelValue, ParseError, ParsedDocument, PropertyName, ResourceLimits, Result,
@@ -99,6 +104,7 @@ pub(super) struct Metrics<'data> {
     glyphs: u16,
     units_per_em: u16,
     builtin_widths: [OnceCell<Option<f64>>; 256],
+    post_names: OnceCell<Option<BTreeMap<&'data str, u16>>>,
 }
 
 impl fmt::Debug for Metrics<'_> {
@@ -122,6 +128,7 @@ impl<'data> Metrics<'data> {
             glyphs,
             units_per_em,
             builtin_widths: [const { OnceCell::new() }; 256],
+            post_names: OnceCell::new(),
         })
     }
 
@@ -142,12 +149,12 @@ impl<'data> Metrics<'data> {
     }
 
     pub(super) fn unicode_gid(&self, unicode: u32) -> Option<u16> {
-        let cmap = self.font.cmap().ok()?;
+        let cmap = self.cmap().ok()??;
         let records = cmap.encoding_records();
         let record = records.iter().find(|record| {
             record.platform_id() == PlatformId::Windows && record.encoding_id() == 1
         })?;
-        let table = record.subtable(cmap.offset_data()).ok()?;
+        let table = bounded_subtable(&cmap, *record).ok()?;
         mapped_gid(&table, unicode).filter(|gid| *gid != 0)
     }
 
@@ -167,19 +174,77 @@ impl<'data> Metrics<'data> {
                 .find(|record| {
                     record.platform_id() == PlatformId::Macintosh && record.encoding_id() == 0
                 })
-                .and_then(|record| record.subtable(cmap.offset_data()).ok())
+                .and_then(|record| bounded_subtable(cmap, *record).ok())
                 .and_then(|table| mapped_gid(&table, u32::from(code)))
                 .filter(|gid| *gid != 0 && self.has_glyph(*gid))
         {
             return Some(gid);
         }
-        let post = self.font.post().ok();
-        if let Some(gid) = post.as_ref().and_then(|table| {
-            (0..self.glyphs).find(|gid| table.glyph_name(GlyphId16::new(*gid)) == Some(name))
-        }) {
+        if let Some(gid) = self.post_gid(name) {
             return Some(gid);
         }
         cmap.is_some().then_some(0)
+    }
+
+    fn post_gid(&self, name: &str) -> Option<u16> {
+        self.post_names
+            .get_or_init(|| {
+                let post = self.font.post().ok()?;
+                let mut names = BTreeMap::new();
+                for (gid, name) in post
+                    .glyph_names()
+                    .take_while(|(gid, _)| gid.to_u32() < u32::from(self.glyphs))
+                {
+                    if let Ok(gid) = u16::try_from(gid.to_u32()) {
+                        names.entry(name).or_insert(gid);
+                    }
+                }
+                Some(names)
+            })
+            .as_ref()?
+            .get(name)
+            .copied()
+    }
+
+    pub(super) fn named_presence(&self, name: &str) -> Presence {
+        let selected = self.named_cmap_gid(name);
+        if selected
+            .as_ref()
+            .is_ok_and(|gid| gid.is_some_and(|gid| gid != 0 && self.has_glyph(gid)))
+            || self.post_gid(name).is_some_and(|gid| gid != 0)
+        {
+            Presence::Defined
+        } else if selected.is_err()
+            || (self.has_table(Tag::new(b"post")) && self.font.post().is_err())
+        {
+            Presence::Unavailable
+        } else {
+            Presence::Missing
+        }
+    }
+
+    fn named_cmap_gid(&self, name: &str) -> std::result::Result<Option<u16>, ReadError> {
+        let Some(cmap) = self.cmap()? else {
+            return Ok(None);
+        };
+        let (platform, encoding, code) = if cmap_record(&cmap, PlatformId::Windows, 1).is_some() {
+            (
+                PlatformId::Windows,
+                1,
+                agl::name_to_char(name).map(u32::from),
+            )
+        } else {
+            (
+                PlatformId::Macintosh,
+                0,
+                super::simple::mac_os_code(name).map(u32::from),
+            )
+        };
+        let Some((record, code)) = cmap_record(&cmap, platform, encoding).zip(code) else {
+            return Ok(None);
+        };
+        let table = bounded_subtable(&cmap, record)?;
+        Ok(mapped_gid(&table, code))
     }
 
     pub(super) fn builtin_width(&self, code: u8) -> Option<f64> {
@@ -187,6 +252,32 @@ impl<'data> Metrics<'data> {
             .builtin_widths
             .get(usize::from(code))?
             .get_or_init(|| self.measure_builtin_width(code))
+    }
+
+    pub(super) fn builtin_presence(&self, code: u8) -> Presence {
+        let cmap = match self.cmap() {
+            Ok(Some(cmap)) => cmap,
+            Ok(None) => return Presence::Missing,
+            Err(_) => return Presence::Unavailable,
+        };
+        let record = cmap_record(&cmap, PlatformId::Windows, 0)
+            .or_else(|| cmap_record(&cmap, PlatformId::Macintosh, 0));
+        let Some(record) = record else {
+            return Presence::Missing;
+        };
+        let Ok(table) = bounded_subtable(&cmap, record) else {
+            return Presence::Unavailable;
+        };
+        let mut code = u32::from(code);
+        if record.platform_id() == PlatformId::Windows {
+            let Some(prefix) = first_code(&table).and_then(symbol_prefix) else {
+                return Presence::Missing;
+            };
+            code |= prefix;
+        }
+        mapped_gid(&table, code)
+            .is_some_and(|gid| gid != 0 && self.has_glyph(gid))
+            .into()
     }
 
     fn measure_builtin_width(&self, code: u8) -> Option<f64> {
@@ -218,26 +309,100 @@ impl<'data> Metrics<'data> {
 
     fn cmap(&self) -> std::result::Result<Option<Cmap<'data>>, ReadError> {
         match self.font.cmap() {
-            Ok(cmap) => Ok(Some(cmap)),
-            Err(error)
-                if self
-                    .font
-                    .table_directory()
-                    .table_records()
-                    .iter()
-                    .any(|record| record.tag() == Tag::new(b"cmap")) =>
-            {
-                Err(error)
+            Ok(cmap) if cmap.encoding_records().len() != usize::from(cmap.num_tables()) => {
+                Err(ReadError::InvalidArrayLen)
             }
+            Ok(cmap) => Ok(Some(cmap)),
+            Err(error) if self.has_table(Tag::new(b"cmap")) => Err(error),
             Err(_) => Ok(None),
         }
+    }
+
+    fn has_table(&self, tag: Tag) -> bool {
+        self.font
+            .table_directory()
+            .table_records()
+            .iter()
+            .any(|record| record.tag() == tag)
+    }
+}
+
+fn cmap_record(cmap: &Cmap<'_>, platform: PlatformId, encoding: u16) -> Option<EncodingRecord> {
+    cmap.encoding_records()
+        .iter()
+        .find(|record| record.platform_id() == platform && record.encoding_id() == encoding)
+        .copied()
+}
+
+fn bounded_subtable<'a>(
+    cmap: &Cmap<'a>,
+    record: EncodingRecord,
+) -> std::result::Result<CmapSubtable<'a>, ReadError> {
+    let offset =
+        usize::try_from(record.subtable_offset().to_u32()).map_err(|_| ReadError::OutOfBounds)?;
+    let records_end = usize::from(cmap.num_tables())
+        .saturating_mul(8)
+        .saturating_add(4);
+    if offset < records_end {
+        return Err(ReadError::OutOfBounds);
+    }
+    let data = cmap
+        .offset_data()
+        .split_off(offset)
+        .ok_or(ReadError::OutOfBounds)?;
+    let format = data.read_at::<u16>(0)?;
+    let length = match format {
+        0 | 4 | 6 => usize::from(data.read_at::<u16>(2)?),
+        10 | 12 | 13 => {
+            usize::try_from(data.read_at::<u32>(4)?).map_err(|_| ReadError::OutOfBounds)?
+        }
+        _ => return Err(ReadError::InvalidFormat(i64::from(format))),
+    };
+    // Reading a subtable must not consume fields belonging to the next record.
+    let table = CmapSubtable::read(data.slice(..length).ok_or(ReadError::OutOfBounds)?)?;
+    if !has_complete_mapping(&table) {
+        return Err(ReadError::InvalidArrayLen);
+    }
+    Ok(table)
+}
+
+fn has_complete_mapping(table: &CmapSubtable<'_>) -> bool {
+    match table {
+        CmapSubtable::Format0(table) => table.glyph_id_array().len() == 256,
+        CmapSubtable::Format4(table) => {
+            let count = table.seg_count_x2();
+            let segments = usize::from(count / 2);
+            count > 0
+                && count.is_multiple_of(2)
+                && [
+                    table.start_code().len(),
+                    table.end_code().len(),
+                    table.id_range_offsets().len(),
+                    table.id_delta().len(),
+                ]
+                .into_iter()
+                .all(|len| len == segments)
+        }
+        CmapSubtable::Format6(table) => {
+            table.glyph_id_array().len() == usize::from(table.entry_count())
+        }
+        CmapSubtable::Format10(table) => {
+            u32::try_from(table.glyph_id_array().len()) == Ok(table.num_chars())
+        }
+        CmapSubtable::Format12(table) => {
+            u32::try_from(table.groups().len()) == Ok(table.num_groups())
+        }
+        CmapSubtable::Format13(table) => {
+            u32::try_from(table.groups().len()) == Ok(table.num_groups())
+        }
+        _ => false,
     }
 }
 
 fn builtin_gid(cmap: &Cmap<'_>, code: u8) -> Option<u16> {
     let tables = || {
         cmap.encoding_records().iter().filter_map(|record| {
-            let table = record.subtable(cmap.offset_data()).ok()?;
+            let table = bounded_subtable(cmap, *record).ok()?;
             first_code(&table)?;
             Some((record.platform_id(), record.encoding_id(), table))
         })
@@ -371,10 +536,10 @@ mod tests {
     use read_fonts::{FontData, FontRead, tables::cmap::Cmap};
     use rstest::rstest;
 
-    use super::{Metrics, builtin_gid};
+    use super::{Metrics, Presence, builtin_gid};
     use crate::{
-        FlavourSelection, InputName, MaxDisplayedFailures, ValidationFlavour, ValidationOptions,
-        Validator,
+        FlavourSelection, InputName, MaxDisplayedFailures, ProfileReport, ValidationFlavour,
+        ValidationOptions, Validator,
     };
 
     type TestResult = Result<(), Box<dyn Error>>;
@@ -413,6 +578,23 @@ mod tests {
         let malformed = Metrics::read(&malformed_cmap).ok_or("test font metrics")?;
         assert_eq!(absent.builtin_width(1), Some(0.0));
         assert_eq!(malformed.builtin_width(1), None);
+        assert!(matches!(absent.builtin_presence(1), Presence::Missing));
+        assert!(matches!(
+            malformed.builtin_presence(1),
+            Presence::Unavailable
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_keep_cmap_lookups_inside_the_declared_subtable() -> TestResult {
+        let truncated = [0, 6, 0, 10, 0, 0, 0xf0, 1, 0, 1];
+        let mac = format6(1, 1);
+        let mapping = cmap(&[(3, 0, &truncated), (1, 0, &mac)])?;
+        let font = sfnt(Some(&mapping))?;
+        let metrics = Metrics::read(&font).ok_or("test font metrics")?;
+        assert!(matches!(metrics.builtin_presence(1), Presence::Unavailable));
+        assert_eq!(metrics.builtin_width(1), Some(620.0));
         Ok(())
     }
 
@@ -433,22 +615,94 @@ mod tests {
         let mac = format6(1, 1);
         let mapping = cmap(&[(1, 0, &mac)])?;
         let font = sfnt(Some(&mapping))?;
+        let profile = validate_truetype(text, width, font, false)?;
+        assert_check(&profile, "iso-14289-1-7-21-5-1", width_checks);
+        assert_check(&profile, "iso-14289-1-7-21-6-4", program_checks);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(1, false, false, (1, 0), (0, 1))]
+    #[case(0, false, false, (0, 1), (0, 1))]
+    #[case(0, true, false, (0, 1), (1, 0))]
+    #[case(0, false, true, (1, 0), (0, 1))]
+    #[case(2, true, false, (0, 1), (1, 0))]
+    fn test_should_check_glyph_presence_independently_of_width_and_unicode(
+        #[case] glyph: u16,
+        #[case] to_unicode: bool,
+        #[case] invisible: bool,
+        #[case] presence: (usize, usize),
+        #[case] unicode: (usize, usize),
+    ) -> TestResult {
+        let win = format6(0xf001, glyph);
+        let mac = format6(1, 1);
+        let cmap = cmap(&[(1, 0, &mac), (3, 0, &win)])?;
+        let font = sfnt(Some(&cmap))?;
+        let text = if invisible {
+            "/F 10 Tf 3 Tr <01> Tj"
+        } else {
+            "/F 10 Tf <01> Tj"
+        };
+        let width = if glyph == 2 { 500 } else { 620 };
+        let profile = validate_truetype(text, width, font, to_unicode)?;
+        assert_check(&profile, "iso-14289-1-7-21-5-1", (1, 0));
+        assert_check(&profile, "iso-14289-1-7-21-4-1-2", presence);
+        assert_check(&profile, "iso-14289-1-7-21-7-1", unicode);
+        assert_check(&profile, "iso-14289-1-7-21-7-2", (1, 0));
+        Ok(())
+    }
+
+    fn assert_check(profile: &ProfileReport, rule: &str, expected: (usize, usize)) {
+        let passed = profile
+            .passed_assertions
+            .iter()
+            .filter(|item| item.rule_id.0.as_str() == rule);
+        let failed = profile
+            .failed_assertions
+            .iter()
+            .filter(|item| item.rule_id.0.as_str() == rule);
+        assert_eq!((passed.count(), failed.count()), expected, "{rule}");
+        assert!(
+            !profile
+                .unsupported_rules
+                .iter()
+                .any(|item| item.rule_id.0.as_str() == rule)
+        );
+    }
+
+    fn validate_truetype(
+        text: &str,
+        width: u16,
+        font: Vec<u8>,
+        to_unicode: bool,
+    ) -> Result<ProfileReport, Box<dyn Error>> {
         let content = format!("BT {text} ET");
+        let to_unicode_ref = if to_unicode { "/ToUnicode 9 0 R" } else { "" };
         let mut pdf = format!(
             "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type \
              /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R \
              /MediaBox [0 0 120 120] /Contents 4 0 R /Resources << /Font << /F 5 0 R >> >> \
              >>\nendobj\n4 0 obj\n<< /Length {} >>\nstream\n{content}\nendstream\nendobj\n5 0 \
              obj\n<< /Type /Font /Subtype /TrueType /BaseFont /Sample /FirstChar 1 /LastChar 1 \
-             /Widths [{width}] /FontDescriptor 6 0 R >>\nendobj\n6 0 obj\n<< /Type \
-             /FontDescriptor /FontName /Sample /Flags 8 0 R /FontFile2 7 0 R >>\nendobj\n8 0 \
-             obj\n6\nendobj\n7 0 obj\n<< /Length {} >>\nstream\n",
+             /Widths [{width}] /FontDescriptor 6 0 R {to_unicode_ref} >>\nendobj\n6 0 obj\n<< \
+             /Type /FontDescriptor /FontName /Sample /Flags 8 0 R /FontFile2 7 0 R >>\nendobj\n8 \
+             0 obj\n6\nendobj\n7 0 obj\n<< /Length {} >>\nstream\n",
             content.len(),
             font.len()
         )
         .into_bytes();
         pdf.extend(font);
-        pdf.extend(b"\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        pdf.extend(b"\nendstream\nendobj\n");
+        if to_unicode {
+            let map = "begincmap 1 begincodespacerange <00> <ff> endcodespacerange 1 beginbfchar \
+                       <01> <0041> endbfchar endcmap";
+            let stream = format!(
+                "9 0 obj\n<< /Length {} >>\nstream\n{map}\nendstream\nendobj\n",
+                map.len()
+            );
+            pdf.extend(stream.as_bytes());
+        }
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
         let flavour = ValidationFlavour::new("pdfua", NonZeroU32::MIN, "none")?;
         let options = ValidationOptions::builder()
             .flavour(FlavourSelection::Explicit { flavour })
@@ -457,31 +711,11 @@ mod tests {
             .build();
         let report =
             Validator::new(options)?.validate_reader(Cursor::new(pdf), InputName::memory())?;
-        let profile = report
+        report
             .profile_reports
-            .first()
-            .ok_or("missing PDF/UA profile")?;
-        for (rule, expected) in [
-            ("iso-14289-1-7-21-5-1", width_checks),
-            ("iso-14289-1-7-21-6-4", program_checks),
-        ] {
-            let passed = profile
-                .passed_assertions
-                .iter()
-                .filter(|item| item.rule_id.0.as_str() == rule);
-            let failed = profile
-                .failed_assertions
-                .iter()
-                .filter(|item| item.rule_id.0.as_str() == rule);
-            assert_eq!((passed.count(), failed.count()), expected, "{rule}");
-            assert!(
-                !profile
-                    .unsupported_rules
-                    .iter()
-                    .any(|item| item.rule_id.0.as_str() == rule)
-            );
-        }
-        Ok(())
+            .into_iter()
+            .next()
+            .ok_or_else(|| "missing PDF/UA profile".into())
     }
 
     fn format6(first: u16, gid: u16) -> [u8; 12] {

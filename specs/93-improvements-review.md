@@ -1,25 +1,31 @@
 # 93-improvements-review: Deferred Findings Backlog
 
-Status: draft · Owner: pdfv · Last updated: 2026-11-24
+Status: draft · Owner: pdfv · Last updated: 2026-11-25
 
 This backlog records valid review findings that are intentionally deferred out
 of the current implementation phase.
 
 ## Open M9 Findings
 
-- **P2.** PDF/UA-1 `7.21.4.1-2` still needs glyph presence evidence
-  from the selected glyph rather than the font dictionary. Three negative
-  controls also need conclusive Unicode fallback evidence for
-  `7.21.7-1` and `7.21.7-2` in an otherwise readable TrueType program.
-  [Glyph comparison and remaining differences](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths)
 - **P2.** Audit PDF/UA-1 annotation rule applicability in the three
   `scope-appearance`, `scope-also-appearance`, and `scope-unused-form`
   controls. Two report unavailable annotation properties. The third
   fails both `7.18.6.2` checks, which Greenfield leaves untested.
   [Annotation traversal](../crates/core/src/validation.rs)
+- **P2.** Use the selected glyph for the separate `.notdef` prohibition,
+  including explicit `.notdef` in invisible text. Audit the assertion
+  identity for the PDF/UA-1 Unicode rules across marked content, pages,
+  and Forms. Seven controls still differ on counts for both Unicode
+  rules while agreeing on pass or fail.
+  [Glyph and Unicode comparisons](../docs/reviews/m9-live-conformance-review.md#used-glyph-presence-and-truetype-unicode)
 
 ## Resolved M9 Findings
 
+- **P2.** Rendered glyph checks read the selected glyph from the embedded
+  program or Type 3 character procedures. Symbolic TrueType codes without
+  a Unicode mapping fail the Unicode coverage rule. Five PDF/UA-1
+  negatives now report Invalid with no unsupported rules.
+  [Glyph and Unicode comparisons](../docs/reviews/m9-live-conformance-review.md#used-glyph-presence-and-truetype-unicode)
 - **P2.** PDF/UA-1 width evidence combines equivalent glyphs across page
   and Form use sites. Rendering mode, marked content, structure context,
   and annotation appearance preserve distinct observations. A confirmed
