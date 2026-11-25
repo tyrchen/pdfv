@@ -8786,13 +8786,13 @@ fn document_info_value<'a>(
 }
 
 fn document_info_dictionary(document: &ParsedDocument) -> Option<&crate::Dictionary> {
-    let trailer = document.trailers.last()?;
+    let trailer = document.active_trailers().last()?;
     resolve_dictionary_value(document, trailer.dictionary.get("Info"))
 }
 
 fn last_trailer_id(document: &ParsedDocument) -> ModelValue {
     let Some(crate::CosObject::Array(values)) = document
-        .trailers
+        .active_trailers()
         .last()
         .and_then(|trailer| trailer.dictionary.get("ID"))
     else {

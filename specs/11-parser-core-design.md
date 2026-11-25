@@ -69,7 +69,22 @@ keeps these fixed-size observations even when the diagnostic fact cap is reached
 
 Stream parsing validates declared `/Length` against `endstream`; when invalid, it scans for `endstream` within bounded limits and records both declared and discovered lengths. This follows the veraPDF behaviour where stream parsing validates length and falls back to scanning (`vendors/veraPDF-parser/src/main/java/org/verapdf/parser/SeekableCOSParser.java:113`, `vendors/veraPDF-parser/src/main/java/org/verapdf/parser/SeekableCOSParser.java:124`, `vendors/veraPDF-parser/src/main/java/org/verapdf/parser/SeekableCOSParser.java:134`).
 
-Xref parsing supports classic xref tables in M0 and records unsupported xref stream facts rather than crashing. Xref streams land in M1 because many modern PDFs require them for broad coverage.
+The terminal `startxref` identifies the active classic table or xref stream.
+Follow primary `/Prev` links in revision order, including the forward link
+from a linearized first-page section. In a hybrid revision, consult the
+classic table, its `/XRefStm` supplement, and then the previous revision.
+The first entry for each object number determines its active identity.
+Free entries suppress earlier generations. An uncompressed entry selects
+the exact byte offset and generation. A compressed entry selects a
+generation-zero object by both its stream and member index.
+
+The parser preserves every parsed trailer dictionary. Catalog resolution,
+encryption, and validation read the primary chain in logical revision order.
+An unresolved entry in a linked chain is a parse failure. When no primary
+section can be located, the parser retains scan-based recovery and syntax
+observations. It reads xref streams before classifying encryption and
+expands selected object streams after decryption.
+[ISO 32000-1, sections 7.5.4–8 and Annex F](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)
 
 Encrypted PDFs are detected and reported as `ValidationStatus::Encrypted` unless password-capable parsing is active. Password-capable parsing is scoped by [14-password-decryption-design.md](./14-password-decryption-design.md): Phase 9 supports only the Standard security handler revisions 2-4 and keeps password storage in redacted secret wrappers per AGENTS.md Cryptography & Secrets.
 

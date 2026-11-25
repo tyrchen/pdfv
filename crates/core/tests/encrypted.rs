@@ -87,6 +87,58 @@ fn test_should_validate_aesv2_encrypted_fixture_with_owner_password() -> Result<
 }
 
 #[test]
+fn test_should_read_xref_stream_before_decrypting_aesv2_objects() -> Result<(), Box<dyn Error>> {
+    let mut bytes = encrypted_aesv2_fixture()?;
+    let find = |marker: &[u8]| {
+        bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .ok_or_else(|| std::io::Error::other("expected fixture marker"))
+    };
+    let offset = find(b"xref\n0 ")?;
+    let mut entries = vec![0, 0, 0, 0, 0, 255, 255];
+    for address in [
+        find(b"1 0 obj\n")?,
+        find(b"2 0 obj\n")?,
+        find(b"3 0 obj\n")?,
+        offset,
+    ] {
+        entries.push(1);
+        entries.extend(u32::try_from(address)?.to_be_bytes());
+        entries.extend([0, 0]);
+    }
+    bytes.truncate(offset);
+    let id = hex(DOCUMENT_ID);
+    bytes.extend_from_slice(
+        format!(
+            "4 0 obj\n<< /Type /XRef /Size 5 /W [1 4 2] /Root 1 0 R /Encrypt 3 0 R /ID [<{id}> \
+             <{id}>] /Length {} >>\nstream\n",
+            entries.len()
+        )
+        .as_bytes(),
+    );
+    bytes.extend(entries);
+    bytes
+        .extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{offset}\n%%EOF\n").as_bytes());
+
+    let parser = Parser::default();
+    assert!(parser.parse(Cursor::new(&bytes))?.is_encrypted());
+
+    let password = PasswordSecret::new("owner")?;
+    let mut options = ParseOptions::default();
+    options.password = Some(&password);
+    let document = parser.parse_with_options(Cursor::new(bytes), options)?;
+    assert!(document.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Encryption {
+            decrypted: true,
+            ..
+        }
+    )));
+    Ok(())
+}
+
+#[test]
 fn test_should_validate_r5_aesv3_fixture_with_user_password() -> Result<(), Box<dyn Error>> {
     let fixture = encrypted_aesv3_fixture(Revision::R5)?;
     let password = PasswordSecret::new("user")?;

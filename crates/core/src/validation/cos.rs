@@ -163,7 +163,7 @@ pub(super) fn walk_primitives<'a>(
         // Xref stream dictionaries also appear as logical trailers.
         .chain(
             document
-                .trailers
+                .active_trailers()
                 .iter()
                 .filter(|trailer| !xref_stream_offsets.contains(&trailer.offset))
                 .map(|trailer| {

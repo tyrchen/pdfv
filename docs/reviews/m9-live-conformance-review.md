@@ -543,6 +543,33 @@ One focused PDF/A-1 control differs. When a PDF omits its Encoding entry
 and declares an empty CharSet, pdfv checks the glyph name from the
 embedded encoding and fails its CharSet rule. Greenfield records a pass.
 
+## Active Cross-Reference Entries
+
+The parser builds the object store from the terminal `startxref` and linked
+sections. A new entry can free an object, advance its generation, or replace
+its storage with an object-stream member. Hybrid selection checks the current
+classic table before its supplemental stream and then follows the classic
+`/Prev`. Linearized files use the logical trailer order and ignore the
+first-page end marker when recording signed revisions.
+[ISO 32000-1, sections 7.5.4–8 and Annex F](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)
+
+All parsed trailer dictionaries remain available. Metadata, encryption, and
+validation read the primary chain even when a supplemental stream or an
+abandoned revision has its own dictionary.
+
+The parser reports a missing object when a live offset or compressed member
+index cannot be resolved. The compressed free-entry and mismatched-index
+controls expose Greenfield differences. It can retain the old object for a
+stream free entry and resolve a compressed member by number at the wrong index.
+The parser reads an unencrypted xref stream before looking up the active
+encryption dictionary. The AESV2 regression exercises password-based
+decryption and password-free detection through a stream trailer.
+
+All 43 decisions across the two public manifests match Greenfield 1.30.4.
+The 15-profile audit retains 30 matching outcomes and zero incomplete
+decisions. The PDF/A-2b XMP and PDF/A-3b attachment corpus replays agree on
+all 587 document outcomes and 1,809 selected rule counts.
+
 ## Release Blockers
 
 - The focused XPath function and identification cases still need

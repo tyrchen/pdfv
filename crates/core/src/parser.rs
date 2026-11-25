@@ -2,10 +2,11 @@
 
 #[cfg(feature = "decrypt")]
 mod encryption;
+mod xref;
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, btree_map},
+    collections::{BTreeMap, BTreeSet, btree_map},
     fmt,
     io::{Read, Seek, SeekFrom, Write},
     num::NonZeroU32,
@@ -16,6 +17,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
+use self::xref::{ClassicXref, XrefEntries, XrefEntry};
 use crate::{
     BoundedText, ConfigError, Identifier, ObjectKey, ObjectLocation, ParseError, ParseFact,
     PasswordSecret, PdfVersion, ResourceLimits, Result, StreamFact, ValidationWarning, XrefFact,
@@ -482,7 +484,7 @@ pub struct ParsedDocument {
     pub catalog: Option<ObjectKey>,
     /// Indirect object store.
     pub objects: ObjectStore,
-    /// Parsed trailers.
+    /// Parsed trailers, ending with the primary chain in revision order when resolved.
     pub trailers: Vec<Trailer>,
     /// Parser facts retained for validation.
     pub parse_facts: Vec<ParseFact>,
@@ -492,6 +494,8 @@ pub struct ParsedDocument {
     pub(crate) file_syntax: FileSyntax,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) signed_revision_ends: Vec<RangeInclusive<u64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_trailer_start: Option<usize>,
 }
 
 /// Fixed-size syntax observations used by conformance rules.
@@ -514,6 +518,12 @@ impl Default for FileSyntax {
 }
 
 impl ParsedDocument {
+    pub(crate) fn active_trailers(&self) -> &[Trailer] {
+        self.trailers
+            .get(self.active_trailer_start.unwrap_or(0)..)
+            .unwrap_or_default()
+    }
+
     /// Returns true when the document trailer declares encryption.
     #[must_use]
     pub fn is_encrypted(&self) -> bool {
@@ -552,6 +562,7 @@ impl ObjectStore {
         self.0.values()
     }
 
+    #[cfg(feature = "decrypt")]
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut IndirectObject> {
         self.0.values_mut()
     }
@@ -1008,15 +1019,10 @@ struct ByteParser<'a> {
     startxref: Option<u64>,
     startxref_marker: Option<usize>,
     revision_probe_budget: usize,
-    active_xref: Option<ActiveXrefSection>,
+    classic_xrefs: BTreeMap<u64, ClassicXref>,
+    active_trailer_start: Option<usize>,
     file_offsets: bool,
     signed_revision_ends: Vec<RangeInclusive<u64>>,
-}
-
-#[derive(Debug)]
-struct ActiveXrefSection {
-    offset: u64,
-    in_use: BTreeMap<ObjectKey, u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1025,19 +1031,17 @@ enum NumberToken {
     Real(f64),
 }
 
+enum RevisionContinuation {
+    LinearizedBody,
+    IncrementalUpdate,
+}
+
 #[derive(Debug)]
 struct XrefStreamSummary {
     decoded_bytes: usize,
     entries: u64,
     compressed_entries: u64,
-    in_use: BTreeMap<ObjectKey, u64>,
-}
-
-fn xref_in_use_key(number: u64, generation: u64) -> Option<ObjectKey> {
-    Some(ObjectKey::new(
-        NonZeroU32::try_from(u32::try_from(number).ok()?).ok()?,
-        u16::try_from(generation).ok()?,
-    ))
+    objects: XrefEntries,
 }
 
 pub(crate) fn parse_text_operand(
@@ -1122,7 +1126,8 @@ impl<'a> ByteParser<'a> {
             startxref: None,
             startxref_marker: None,
             revision_probe_budget,
-            active_xref: None,
+            classic_xrefs: BTreeMap::new(),
+            active_trailer_start: None,
             file_offsets: false,
             signed_revision_ends: Vec::new(),
         }
@@ -1136,20 +1141,26 @@ impl<'a> ByteParser<'a> {
             had_leading_bytes: header_offset != 0,
         });
 
-        let mut objects = ObjectStore::default();
+        let mut physical = BTreeMap::new();
         let mut trailers = Vec::new();
         self.file_offsets = true;
-        self.parse_top_level_objects(&mut objects, &mut trailers)?;
+        self.parse_top_level_objects(&mut physical, &mut trailers)?;
+        let active_xref = self.resolve_xref(&physical, &mut trailers)?;
+        let mut objects = xref::select_objects(physical, active_xref.as_ref())?;
 
-        let encrypted_catalog = trailers
+        let active_trailers = trailers
+            .get(self.active_trailer_start.unwrap_or(0)..)
+            .unwrap_or_default();
+        let catalog = active_trailers
             .iter()
             .rev()
             .find_map(|trailer| object_ref_from_dictionary(&trailer.dictionary, "Root"));
 
-        if encryption_reference(&trailers).is_some() {
-            let fact = encryption_fact(&objects, &trailers);
+        if encryption_reference(active_trailers).is_some() {
+            let fact = encryption_fact(&objects, active_trailers);
             #[cfg(feature = "decrypt")]
-            if let Err(error) = encryption::classify_encryption(&objects, &trailers, &self.limits)
+            if let Err(error) =
+                encryption::classify_encryption(&objects, active_trailers, &self.limits)
                 && !error.is_encrypted_status()
             {
                 return Err(error.into_parse_error().into());
@@ -1158,7 +1169,7 @@ impl<'a> ByteParser<'a> {
             if let Some(password) = self.options.password {
                 match encryption::decrypt_document(
                     &mut objects,
-                    &mut trailers,
+                    active_trailers,
                     &self.limits,
                     password,
                 ) {
@@ -1170,38 +1181,24 @@ impl<'a> ByteParser<'a> {
                             message: BoundedText::unchecked(error.safe_message()),
                         });
                         self.push_fact(error.into_fact(fact));
-                        return Ok(self.finish(version, encrypted_catalog, objects, trailers));
+                        return Ok(self.finish(version, catalog, objects, trailers));
                     }
                     Err(error) => return Err(error.into_parse_error().into()),
                 }
             } else if self.options.password.is_none() {
                 self.push_fact(fact);
-                return Ok(self.finish(version, encrypted_catalog, objects, trailers));
+                return Ok(self.finish(version, catalog, objects, trailers));
             }
 
             #[cfg(not(feature = "decrypt"))]
             {
                 self.push_fact(fact);
-                return Ok(self.finish(version, encrypted_catalog, objects, trailers));
+                return Ok(self.finish(version, catalog, objects, trailers));
             }
         }
 
-        self.materialize_stream_backed_structures(&mut objects, &mut trailers)?;
-        if let Some(section) = self
-            .active_xref
-            .take()
-            .filter(|section| Some(section.offset) == self.startxref)
-        {
-            for object in objects.values_mut() {
-                if section.in_use.get(&object.key) != Some(&object.offset) {
-                    object.spacing_compliant = None;
-                }
-            }
-        }
-        let catalog = trailers
-            .iter()
-            .rev()
-            .find_map(|trailer| object_ref_from_dictionary(&trailer.dictionary, "Root"));
+        self.materialize_object_streams(&mut objects, active_xref.as_ref())?;
+        xref::verify_compressed_entries(&objects, active_xref.as_ref())?;
 
         Ok(self.finish(version, catalog, objects, trailers))
     }
@@ -1222,19 +1219,29 @@ impl<'a> ByteParser<'a> {
             warnings: self.warnings,
             file_syntax: self.file_syntax,
             signed_revision_ends: self.signed_revision_ends,
+            active_trailer_start: self.active_trailer_start,
         }
     }
 
     fn parse_top_level_objects(
         &mut self,
-        objects: &mut ObjectStore,
+        objects: &mut BTreeMap<u64, IndirectObject>,
         trailers: &mut Vec<Trailer>,
     ) -> Result<()> {
+        let mut revision_sections = BTreeSet::new();
         while self.pos < self.end {
             self.skip_ws_and_comments();
             if self.starts_with(EOF_MARKER) {
-                if self.has_linked_revision(objects)? {
-                    if self.startxref.is_some_and(|offset| offset != 0) {
+                if let Some(offset) = self.startxref
+                    && (self.classic_xrefs.contains_key(&offset)
+                        || objects.get(&offset).and_then(xref::xref_stream).is_some())
+                {
+                    revision_sections.insert(offset);
+                }
+                if let Some(continuation) =
+                    self.revision_continuation(objects, &revision_sections)?
+                {
+                    if matches!(continuation, RevisionContinuation::IncrementalUpdate) {
                         self.record_signed_revision_end()?;
                     }
                     self.consume_bytes(EOF_MARKER)?;
@@ -1286,7 +1293,7 @@ impl<'a> ByteParser<'a> {
                         }
                         .into());
                     }
-                    objects.insert(object);
+                    objects.insert(object.offset, object);
                 }
                 None => {
                     self.pos = before.saturating_add(1);
@@ -1322,13 +1329,14 @@ impl<'a> ByteParser<'a> {
         Ok(())
     }
 
-    fn has_linked_revision(
+    fn revision_continuation(
         &mut self,
-        objects: &ObjectStore,
-    ) -> std::result::Result<bool, ParseError> {
-        let Some(previous) = self.startxref else {
-            return Ok(false);
-        };
+        objects: &BTreeMap<u64, IndirectObject>,
+        revision_sections: &BTreeSet<u64>,
+    ) -> std::result::Result<Option<RevisionContinuation>, ParseError> {
+        if self.startxref.is_none() {
+            return Ok(None);
+        }
         let eof_end = self.pos.saturating_add(EOF_MARKER.len());
         let mut cursor = eof_end;
         let mut examined = 0_u64;
@@ -1343,7 +1351,7 @@ impl<'a> ByteParser<'a> {
             let Some((section, eof)) = self.revision_marker(marker) else {
                 continue;
             };
-            if previous > 0 && (eof_end..marker).contains(&section) {
+            if !revision_sections.is_empty() && (eof_end..marker).contains(&section) {
                 if self
                     .revision_trailer(section, marker)?
                     .and_then(|dictionary| {
@@ -1351,18 +1359,17 @@ impl<'a> ByteParser<'a> {
                             .ok()
                             .flatten()
                     })
-                    == Some(previous)
+                    .is_some_and(|previous| revision_sections.contains(&previous))
                 {
-                    return Ok(true);
+                    return Ok(Some(RevisionContinuation::IncrementalUpdate));
                 }
-            } else if previous == 0
-                && section < self.pos
+            } else if section < self.pos
                 && self.closes_linearized_body(objects, section, marker, eof)?
             {
-                return Ok(true);
+                return Ok(Some(RevisionContinuation::LinearizedBody));
             }
         }
-        Ok(false)
+        Ok(None)
     }
 
     fn revision_marker(&self, marker: usize) -> Option<(usize, usize)> {
@@ -1395,14 +1402,14 @@ impl<'a> ByteParser<'a> {
 
     fn closes_linearized_body(
         &mut self,
-        objects: &ObjectStore,
+        objects: &BTreeMap<u64, IndirectObject>,
         section: usize,
         marker: usize,
         eof: usize,
     ) -> std::result::Result<bool, ParseError> {
         let Some(dictionary) = objects
-            .values()
-            .min_by_key(|object| object.offset)
+            .first_key_value()
+            .map(|(_, object)| object)
             .and_then(|object| object.object.as_dictionary())
         else {
             return Ok(false);
@@ -1489,8 +1496,8 @@ impl<'a> ByteParser<'a> {
         if offset_after_eol(&self.source, self.pos).is_none() {
             return Ok(None);
         }
-        let (well_formed, _, entries) = self.read_classic_xref_entries()?;
-        if !well_formed || entries == 0 || !self.starts_with(b"trailer") {
+        let (well_formed, _, has_subsection) = self.read_classic_xref_entries()?;
+        if !well_formed || !has_subsection || !self.starts_with(b"trailer") {
             return Ok(None);
         }
         self.consume_bytes(b"trailer")?;
@@ -1508,90 +1515,59 @@ impl<'a> ByteParser<'a> {
         Ok(())
     }
 
-    fn materialize_stream_backed_structures(
+    fn materialize_object_streams(
         &mut self,
         objects: &mut ObjectStore,
-        trailers: &mut Vec<Trailer>,
+        xref: Option<&XrefEntries>,
     ) -> std::result::Result<(), ParseError> {
-        let streams = objects
-            .values()
-            .filter_map(|object| match &object.object {
-                CosObject::Stream(stream) => Some((object.key, object.offset, stream.clone())),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let mut expanded_objects = Vec::new();
-        for (key, offset, stream) in streams {
-            if matches!(stream.dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("XRef"))
+        let mut expanded = ObjectStore::default();
+        for container in objects.values() {
+            let CosObject::Stream(stream) = &container.object else {
+                continue;
+            };
+            if !matches!(stream.dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("ObjStm"))
             {
-                let summary = self.parse_xref_stream(key, &stream)?;
-                if Some(offset) == self.startxref && stream.dictionary.get("Prev").is_none() {
-                    self.active_xref = Some(ActiveXrefSection {
-                        offset,
-                        in_use: summary.in_use,
-                    });
-                }
-                let decoded_len = u64::try_from(summary.decoded_bytes).map_err(|_| {
-                    ParseError::ArithmeticOverflow {
-                        context: "decoded xref stream length",
+                continue;
+            }
+            let decoded = self.decode_stream(container.key, stream)?;
+            self.push_fact(ParseFact::Stream {
+                object: container.key,
+                fact: StreamFact::Decoded {
+                    bytes: checked_u64_len(decoded.bytes.len(), "decoded stream length")?,
+                },
+            });
+            let parsed = self.parse_object_stream(container.key, stream, &decoded.bytes)?;
+            for (index, object) in parsed.into_iter().enumerate() {
+                if let Some(xref) = xref {
+                    let entry = XrefEntry::Compressed {
+                        stream: container.key,
+                        index: checked_u64_len(index, "object stream index")?,
+                    };
+                    if xref.get(&object.key.number) != Some(&entry) {
+                        continue;
                     }
-                })?;
-                self.push_fact(ParseFact::Stream {
-                    object: key,
-                    fact: StreamFact::Decoded { bytes: decoded_len },
-                });
-                trailers.push(Trailer {
-                    dictionary: stream.dictionary.clone(),
-                    offset,
-                });
-                self.push_xref_chain_facts(Some(key), offset, &stream.dictionary)?;
-                self.push_fact(ParseFact::Xref {
-                    section: ObjectLocation {
-                        object: Some(key),
-                        offset: Some(offset),
-                        path: None,
-                    },
-                    fact: XrefFact::XrefStreamParsed {
-                        entries: summary.entries,
-                        compressed_entries: summary.compressed_entries,
-                    },
-                });
-            }
-            if matches!(stream.dictionary.get("Type"), Some(CosObject::Name(name)) if name.matches("ObjStm"))
-            {
-                let decoded = self.decode_stream(key, &stream)?;
-                let decoded_len = checked_u64_len(decoded.bytes.len(), "decoded stream length")?;
-                self.push_fact(ParseFact::Stream {
-                    object: key,
-                    fact: StreamFact::Decoded { bytes: decoded_len },
-                });
-                let mut parsed_objects = self.parse_object_stream(key, &stream, &decoded.bytes)?;
-                expanded_objects.append(&mut parsed_objects);
-                self.push_fact(ParseFact::Xref {
-                    section: ObjectLocation {
-                        object: Some(key),
-                        offset: Some(offset),
-                        path: None,
-                    },
-                    fact: XrefFact::ObjectStreamParsed,
-                });
-            }
-        }
-        for object in expanded_objects {
-            if objects.get(&object.key).is_none() {
-                let next_count =
-                    u64::try_from(objects.len()).map_err(|_| ParseError::ArithmeticOverflow {
-                        context: "object count",
-                    })? + 1;
-                if next_count > self.limits.max_objects {
+                }
+                if objects.get(&object.key).is_some() || expanded.get(&object.key).is_some() {
+                    continue;
+                }
+                let count = objects.len().saturating_add(expanded.len());
+                if checked_u64_len(count, "object count")? >= self.limits.max_objects {
                     return Err(ParseError::LimitExceeded {
                         limit: "max_objects",
                     });
                 }
-                objects.insert(object);
+                expanded.insert(object);
             }
+            self.push_fact(ParseFact::Xref {
+                section: ObjectLocation {
+                    object: Some(container.key),
+                    offset: Some(container.offset),
+                    path: None,
+                },
+                fact: XrefFact::ObjectStreamParsed,
+            });
         }
-        trailers.sort_by_key(|trailer| trailer.offset);
+        objects.0.append(&mut expanded.0);
         Ok(())
     }
 
@@ -1645,7 +1621,7 @@ impl<'a> ByteParser<'a> {
 
         let mut pos = 0_usize;
         let mut compressed_entries = 0_u64;
-        let mut in_use = BTreeMap::new();
+        let mut objects = BTreeMap::new();
         for (first_object, count) in indexes {
             for index in 0..count {
                 let entry_type = if widths[0] == 0 {
@@ -1655,12 +1631,6 @@ impl<'a> ByteParser<'a> {
                 };
                 let field_two = read_be_uint(&decoded, &mut pos, widths[1])?;
                 let field_three = read_be_uint(&decoded, &mut pos, widths[2])?;
-                if entry_type == 1
-                    && let Some(number) = first_object.checked_add(index)
-                    && let Some(key) = xref_in_use_key(number, field_three)
-                {
-                    in_use.insert(key, field_two);
-                }
                 if entry_type == 2 {
                     compressed_entries = compressed_entries.checked_add(1).ok_or(
                         ParseError::ArithmeticOverflow {
@@ -1668,13 +1638,38 @@ impl<'a> ByteParser<'a> {
                         },
                     )?;
                 }
+                let number = first_object.checked_add(index).and_then(xref_object_number);
+                if let Some(number) = number {
+                    let entry = match entry_type {
+                        1 => {
+                            u16::try_from(field_three).map_or(XrefEntry::Malformed, |generation| {
+                                XrefEntry::Uncompressed {
+                                    offset: field_two,
+                                    generation,
+                                }
+                            })
+                        }
+                        2 => xref_object_number(field_two).map_or(XrefEntry::Malformed, |number| {
+                            XrefEntry::Compressed {
+                                stream: ObjectKey::new(number, 0),
+                                index: field_three,
+                            }
+                        }),
+                        _ => XrefEntry::Unavailable,
+                    };
+                    if objects.insert(number, entry).is_some() {
+                        return Err(ParseError::Malformed {
+                            message: bounded("duplicate object number in xref stream"),
+                        });
+                    }
+                }
             }
         }
         Ok(XrefStreamSummary {
             decoded_bytes: decoded.len(),
             entries: total_entries,
             compressed_entries,
-            in_use,
+            objects,
         })
     }
 
@@ -2360,7 +2355,9 @@ impl<'a> ByteParser<'a> {
             .and_then(|offset| self.source.byte(offset))
             .is_some_and(|byte| byte.is_ascii_digit());
         self.file_syntax.xref_keyword_eol_compliant &= keyword_eol_compliant;
-        let (entries_well_formed, in_use, _) = self.read_classic_xref_entries()?;
+        let entries_start = self.pos;
+        let (entries_well_formed, _, has_subsection) = self.read_classic_xref_entries()?;
+        let entries_end = self.pos;
         self.push_fact(ParseFact::Xref {
             section: ObjectLocation {
                 object: None,
@@ -2382,15 +2379,21 @@ impl<'a> ByteParser<'a> {
             let offset = self.offset()?;
             let dictionary = self.parse_dictionary(0)?;
             self.push_xref_chain_facts(None, offset, &dictionary)?;
-            if entries_well_formed
-                && !in_use.is_empty()
-                && dictionary.get("Prev").is_none()
-                && dictionary.get("XRefStm").is_none()
-            {
-                self.active_xref = Some(ActiveXrefSection {
-                    offset: section_offset,
-                    in_use,
-                });
+            if entries_well_formed && has_subsection {
+                if checked_u64_len(self.classic_xrefs.len(), "xref sections")?
+                    >= self.limits.max_objects
+                {
+                    return Err(ParseError::LimitExceeded {
+                        limit: "max_objects",
+                    });
+                }
+                self.classic_xrefs.insert(
+                    section_offset,
+                    ClassicXref {
+                        entries_range: entries_start..entries_end,
+                        trailer_index: trailers.len(),
+                    },
+                );
             }
             trailers.push(Trailer { dictionary, offset });
         }
@@ -2399,10 +2402,11 @@ impl<'a> ByteParser<'a> {
 
     fn read_classic_xref_entries(
         &mut self,
-    ) -> std::result::Result<(bool, BTreeMap<ObjectKey, u64>, u64), ParseError> {
+    ) -> std::result::Result<(bool, XrefEntries, bool), ParseError> {
         let mut compliant = true;
-        let mut in_use = BTreeMap::new();
+        let mut objects = BTreeMap::new();
         let mut parsed_entries = 0_u64;
+        let mut has_subsection = false;
         loop {
             self.skip_ws_and_comments();
             if self.pos >= self.end || self.starts_with(b"trailer") {
@@ -2427,6 +2431,7 @@ impl<'a> ByteParser<'a> {
                 self.skip_line();
                 continue;
             };
+            has_subsection = true;
             self.skip_line();
             for index in 0..count {
                 let next_line = next_line_start(&self.source, self.pos);
@@ -2442,10 +2447,21 @@ impl<'a> ByteParser<'a> {
                 {
                     compliant = false;
                 }
-                if let (Some(offset), Some(generation), Some(b'n')) = (offset, generation, marker) {
-                    let key =
-                        xref_in_use_key(u64::from(first_object) + u64::from(index), generation);
-                    compliant &= key.is_some_and(|key| in_use.insert(key, offset).is_none());
+                let number = u64::from(first_object) + u64::from(index);
+                if let (Some(offset), Some(generation), Some(marker)) = (offset, generation, marker)
+                    && let Ok(generation) = u16::try_from(generation)
+                {
+                    if let Some(number) = xref_object_number(number) {
+                        let entry = match marker {
+                            b'n' => XrefEntry::Uncompressed { offset, generation },
+                            _ => XrefEntry::Unavailable,
+                        };
+                        compliant &= objects.insert(number, entry).is_none();
+                    } else {
+                        compliant &= number == 0 && marker == b'f';
+                    }
+                } else {
+                    compliant = false;
                 }
                 parsed_entries =
                     parsed_entries
@@ -2461,7 +2477,7 @@ impl<'a> ByteParser<'a> {
                 self.pos = next_line.unwrap_or(self.end);
             }
         }
-        Ok((compliant, in_use, parsed_entries))
+        Ok((compliant, objects, has_subsection))
     }
 
     fn parse_post_eof_fact(&mut self) -> std::result::Result<(), ParseError> {
@@ -2861,6 +2877,10 @@ fn xref_widths(dictionary: &Dictionary) -> std::result::Result<[usize; 3], Parse
         *slot = width;
     }
     Ok(widths)
+}
+
+fn xref_object_number(number: u64) -> Option<NonZeroU32> {
+    NonZeroU32::new(u32::try_from(number).ok()?)
 }
 
 fn xref_indexes(
@@ -3804,7 +3824,7 @@ mod tests {
     use rstest::rstest;
 
     use super::{CosObject, ParsedDocument, Parser, StreamObject};
-    use crate::{ParseFact, ResourceLimits, StreamFact};
+    use crate::{ObjectKey, ParseError, ParseFact, PdfvError, ResourceLimits, StreamFact};
 
     fn minimal_pdf() -> Vec<u8> {
         br"%PDF-1.7
@@ -4201,6 +4221,219 @@ trailer
             !(linked && has_entries)
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_should_resolve_classic_revisions_by_offset_and_generation() -> crate::Result<()> {
+        let mut bytes = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".to_vec();
+        let original = bytes.len();
+        bytes.extend_from_slice(b"2 0 obj\n10\nendobj\n3 0 obj\n12\nendobj\n");
+        let base_xref = bytes.len();
+        let third = original + b"2 0 obj\n10\nendobj\n".len();
+        append_classic_xref(
+            &mut bytes,
+            &format!(
+                "0 4\n0000000000 65535 f\r\n0000000009 00000 n\r\n{original:010} 00000 \
+                 n\r\n{third:010} 00000 n\r\n"
+            ),
+            "/Root 1 0 R /Size 4",
+        );
+
+        bytes.extend_from_slice(b"2 0 obj\n99\nendobj\n");
+        let freed_xref = bytes.len();
+        append_classic_xref(
+            &mut bytes,
+            &format!("2 2\n{original:010} 00000 n\r\n0000000000 00001 f\r\n"),
+            &format!("/Size 4 /Prev {base_xref}"),
+        );
+        let parsed = Parser::default().parse(Cursor::new(&bytes))?;
+        assert_eq!(parsed.catalog, test_key(1, 0));
+        assert_eq!(integer_object(&parsed, 2, 0), Some(10));
+        assert_eq!(integer_object(&parsed, 3, 0), None);
+        let mut wrong_offset = bytes.clone();
+        append_classic_xref(
+            &mut wrong_offset,
+            &format!("2 1\n{:010} 00000 n\r\n", original + 1),
+            &format!("/Size 4 /Prev {freed_xref}"),
+        );
+        assert!(matches!(
+            Parser::default().parse(Cursor::new(wrong_offset)),
+            Err(PdfvError::Parse(ParseError::MissingObject { .. }))
+        ));
+
+        let reused = bytes.len();
+        bytes.extend_from_slice(b"2 1 obj\n11\nendobj\n");
+        let mut alternate = bytes.clone();
+        append_classic_xref(
+            &mut bytes,
+            &format!("2 1\n{reused:010} 00001 n\r\n"),
+            &format!("/Size 4 /Prev {freed_xref}"),
+        );
+        let parsed = Parser::default().parse(Cursor::new(&bytes))?;
+        assert_eq!(integer_object(&parsed, 2, 1), Some(11));
+        assert_eq!(integer_object(&parsed, 2, 0), None);
+        assert_eq!(integer_object(&parsed, 3, 0), None);
+
+        append_classic_xref(
+            &mut alternate,
+            &format!("2 1\n{reused:010} 00001 n\r\n"),
+            &format!("/Size 4 /Prev {base_xref}"),
+        );
+        let parsed = Parser::default().parse(Cursor::new(alternate))?;
+        assert_eq!(integer_object(&parsed, 2, 1), Some(11));
+        assert_eq!(integer_object(&parsed, 3, 0), Some(12));
+        assert_eq!(parsed.trailers.len(), 3);
+        assert_eq!(parsed.active_trailers().len(), 2);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(2, 0, false, false, Some(42))]
+    #[case(2, 0, false, true, Some(43))]
+    #[case(2, 1, false, false, None)]
+    #[case(0, 1, false, false, None)]
+    #[case(2, 0, true, false, Some(42))]
+    #[case(2, 0, true, true, None)]
+    fn test_should_use_linked_stream_entry_and_member_index(
+        #[case] entry_type: u8,
+        #[case] member_index: u16,
+        #[case] hybrid: bool,
+        #[case] classic_update: bool,
+        #[case] expected: Option<i64>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut bytes =
+            b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n2 0 obj\n10\nendobj\n".to_vec();
+        let root_end = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".len();
+        let base_xref = bytes.len();
+        append_classic_xref(
+            &mut bytes,
+            &format!("1 2\n0000000009 00000 n\r\n{root_end:010} 00000 n\r\n"),
+            "/Root 1 0 R /Size 3",
+        );
+        let container = u32::try_from(bytes.len())?;
+        bytes.extend_from_slice(
+            b"4 0 obj\n<< /Type /ObjStm /N 2 /First 8 /Length 13 >>\nstream\n2 0 3 3 42 44\nendstream\nendobj\n",
+        );
+        let stream_offset = u32::try_from(bytes.len())?;
+        let field_two = if entry_type == 2 { 4 } else { 0 };
+        let entries = xref_stream_data(&[
+            (entry_type, field_two, member_index),
+            (1, container, 0),
+            (1, stream_offset, 0),
+        ]);
+        let previous = if hybrid { 9 } else { base_xref };
+        bytes.extend_from_slice(
+            format!(
+                "5 0 obj\n<< /Type /XRef /Size 6 /W [1 4 2] /Index [2 1 4 2] /Prev {previous} \
+                 /Length {} >>\nstream\n",
+                entries.len()
+            )
+            .as_bytes(),
+        );
+        bytes.extend(entries);
+        bytes.extend_from_slice(b"\nendstream\nendobj\n");
+
+        if hybrid {
+            let hybrid_offset = bytes.len();
+            append_classic_xref(
+                &mut bytes,
+                "0 0\n",
+                &format!("/Size 6 /Prev {base_xref} /XRefStm {stream_offset}"),
+            );
+            if classic_update {
+                append_classic_xref(
+                    &mut bytes,
+                    "2 1\n0000000000 00001 f\r\n",
+                    &format!("/Size 6 /Prev {hybrid_offset} /XRefStm {stream_offset}"),
+                );
+            }
+        } else {
+            bytes.extend_from_slice(format!("startxref\n{stream_offset}\n%%EOF\n").as_bytes());
+            if classic_update {
+                let object = bytes.len();
+                bytes.extend_from_slice(b"2 0 obj\n43\nendobj\n");
+                append_classic_xref(
+                    &mut bytes,
+                    &format!("2 1\n{object:010} 00000 n\r\n"),
+                    &format!("/Size 6 /Prev {stream_offset}"),
+                );
+            }
+        }
+        let parsed = Parser::default().parse(Cursor::new(bytes));
+        if entry_type == 2 && member_index != 0 {
+            assert!(matches!(
+                parsed,
+                Err(PdfvError::Parse(ParseError::MissingObject { .. }))
+            ));
+            return Ok(());
+        }
+        let parsed = parsed?;
+        assert_eq!(parsed.catalog, test_key(1, 0));
+        assert_eq!(integer_object(&parsed, 2, 0), expected);
+        assert_eq!(integer_object(&parsed, 3, 0), None);
+        if hybrid {
+            assert_eq!(parsed.trailers.len(), parsed.active_trailers().len() + 1);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_follow_linearized_sections_and_ignore_first_page_eof() -> crate::Result<()> {
+        let (initial, main) = linearized_pdf(0, 0);
+        let (bytes, _) = linearized_pdf(initial.len(), main);
+        let parsed = Parser::default().parse(Cursor::new(bytes))?;
+        assert_eq!(parsed.catalog, test_key(1, 0));
+        assert_eq!(parsed.objects.len(), 2);
+        assert!(matches!(
+            parsed.trailers.last().and_then(|trailer| trailer.dictionary.get("Info")),
+            Some(CosObject::Reference(key)) if Some(*key) == test_key(8, 0)
+        ));
+        assert_eq!(parsed.signed_revision_ends.len(), 1);
+        Ok(())
+    }
+
+    fn linearized_pdf(length: usize, main_xref: usize) -> (Vec<u8>, usize) {
+        let mut bytes = format!("%PDF-1.7\n8 0 obj\n<< /Linearized 1 /L {length:010} >>\nendobj\n")
+            .into_bytes();
+        let first_xref = bytes.len();
+        bytes.extend_from_slice(
+            format!(
+                "xref\n8 1\n0000000009 00000 n\r\ntrailer\n<< /Size 9 /Root 1 0 R /Info 8 0 R \
+                 /Prev {main_xref:010} >>\nstartxref\n1\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        let root = bytes.len();
+        bytes.extend_from_slice(b"1 0 obj\n<< /Type /Catalog >>\nendobj\n");
+        let main_offset = bytes.len();
+        bytes.extend_from_slice(
+            format!(
+                "xref\n1 1\n{root:010} 00000 n\r\ntrailer\n<< /Size 9 \
+                 >>\nstartxref\n{first_xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        (bytes, main_offset)
+    }
+
+    fn append_classic_xref(bytes: &mut Vec<u8>, subsections: &str, trailer: &str) {
+        let start = bytes.len();
+        bytes.extend_from_slice(
+            format!("xref\n{subsections}trailer\n<< {trailer} >>\nstartxref\n{start}\n%%EOF\n")
+                .as_bytes(),
+        );
+    }
+
+    fn test_key(number: u32, generation: u16) -> Option<ObjectKey> {
+        NonZeroU32::new(number).map(|number| ObjectKey::new(number, generation))
+    }
+
+    fn integer_object(parsed: &ParsedDocument, number: u32, generation: u16) -> Option<i64> {
+        let value = &parsed.objects.get(&test_key(number, generation)?)?.object;
+        match value {
+            CosObject::Integer(value) => Some(*value),
+            _ => None,
+        }
     }
 
     #[test]

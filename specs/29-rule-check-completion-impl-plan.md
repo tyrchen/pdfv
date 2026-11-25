@@ -123,6 +123,12 @@ Type 1 subset coverage, and PDF/A-1 per-glyph Unicode checks resolve the
 four remaining incomplete controls. All 14 targeted rule counts agree.
 [Font review](../docs/reviews/m9-live-conformance-review.md#type-1-font-subsets-and-macintosh-character-maps)
 
+The active xref chain selects exact offsets and generations, honours free
+entries, and resolves compressed members by stream and index. Tests cover
+mixed section types, repeated hybrid supplements, linearized revision order,
+and encrypted xref streams.
+[Xref review](../docs/reviews/m9-live-conformance-review.md#active-cross-reference-entries)
+
 ## Implementation constraints
 
 Use a family for each rule scope and preserve context in assertions. A shared

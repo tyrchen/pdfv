@@ -29,15 +29,23 @@ of the current implementation phase.
   `isValidPDFA124` still need evidence from `/EF` stream traversal and
   bounded nested validation. Reuse the MIME rule's
   [attachment selection](../crates/core/src/validation/file_spec.rs).
-- **P1.** Resolve active object identity across incremental xref sections for
-  generation changes, free entries, and compressed replacements. Linked
-  revision detection identifies the current sections. The object store still
-  needs authoritative entry selection beyond sequential replacements. See
-  [the parser design](./11-parser-core-design.md) and
-  [the remaining audit](./29-rule-check-completion-impl-plan.md).
+- **P2.** Correct the Standard security handler password padding for revisions
+  2–4. Append the first bytes of the standard padding after a short password.
+  Update the fixture generators and verify both user and owner passwords with
+  independently generated files. See
+  [the password implementation](../crates/core/src/parser/encryption.rs#L1135).
+- **P2.** Support builds with default features disabled. Language validation
+  hashes strings in every build, so its existing `sha2` dependency must be
+  available without `decrypt`. Verify the parser's feature-disabled branch
+  with strict Clippy.
+  [Language validation](../crates/core/src/validation/language.rs#L313)
 
 ## Resolved M9 Findings
 
+- **P1.** Linked xref entries select the active generation and byte offset or
+  object-stream member. The object store honours deletions, hybrid precedence,
+  and linearized section order. See
+  [the xref review](../docs/reviews/m9-live-conformance-review.md#active-cross-reference-entries).
 - **P1.** Automatic fallback selects the generated conformance profile for the
   configured flavour. The public oracle covers absent XMP and unsupported XMP
   identification. See the [live conformance review](../docs/reviews/m9-live-conformance-review.md).

@@ -16,7 +16,7 @@ use subtle::ConstantTimeEq;
 
 use super::{
     CosObject, Dictionary, IndirectObject, ObjectKey, ObjectStore, ParseError, PdfName, PdfString,
-    StreamObject, Trailer, integer_from_dictionary,
+    StreamObject, Trailer, integer_from_dictionary, xref::xref_stream,
 };
 use crate::{BoundedText, Identifier, ParseFact, PasswordSecret, ResourceLimits};
 
@@ -212,7 +212,7 @@ impl DecryptionError {
 /// Decrypts supported encrypted documents in place.
 pub(crate) fn decrypt_document(
     objects: &mut ObjectStore,
-    trailers: &mut [Trailer],
+    trailers: &[Trailer],
     limits: &ResourceLimits,
     password: &PasswordSecret,
 ) -> Result<EncryptionSummary, DecryptionError> {
@@ -776,7 +776,7 @@ fn decrypt_objects(
     file_key: &[u8],
 ) -> Result<(), DecryptionError> {
     for object in objects.values_mut() {
-        if Some(object.key) == dictionary.object {
+        if Some(object.key) == dictionary.object || xref_stream(object).is_some() {
             continue;
         }
         decrypt_indirect_object(object, limits, dictionary, file_key)?;
