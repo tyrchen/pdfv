@@ -1133,10 +1133,12 @@ fn named_crypt_filter<'a>(
 }
 
 fn padded_password(password: &[u8]) -> [u8; 32] {
-    let mut padded = PASSWORD_PADDING;
-    let copy_len = password.len().min(32);
-    if let (Some(target), Some(source)) = (padded.get_mut(..copy_len), password.get(..copy_len)) {
-        target.copy_from_slice(source);
+    let mut padded = [0; PASSWORD_PADDING.len()];
+    for (target, byte) in padded
+        .iter_mut()
+        .zip(password.iter().chain(&PASSWORD_PADDING))
+    {
+        *target = *byte;
     }
     padded
 }
@@ -1235,5 +1237,23 @@ fn parse_to_decryption(error: &ParseError) -> DecryptionError {
     match error {
         ParseError::LimitExceeded { limit } => DecryptionError::LimitExceeded(limit),
         _ => DecryptionError::Malformed("decryption produced invalid object"),
+    }
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::{PASSWORD_PADDING, padded_password};
+
+    #[test]
+    fn test_should_append_padding_prefix_and_truncate_at_32_bytes() {
+        assert_eq!(padded_password(b""), PASSWORD_PADDING);
+
+        let short = padded_password(b"leaf");
+        assert_eq!(short.get(..4), Some(b"leaf".as_slice()));
+        assert_eq!(short.get(4..), PASSWORD_PADDING.get(..28));
+
+        let full = b"01234567890123456789012345678901";
+        assert_eq!(padded_password(full), *full);
+        assert_eq!(padded_password(b"01234567890123456789012345678901x"), *full);
     }
 }

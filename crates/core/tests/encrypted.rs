@@ -17,9 +17,10 @@ use md5::{Digest, Md5};
 use pdfv_core::{
     CosObject, FlavourSelection, InputName, MetadataRepairOptions, MetadataRepairer, ObjectKey,
     ParseFact, ParseOptions, Parser, PasswordSecret, RepairRefusal, RepairStatus, ResourceLimits,
-    ValidationOptions, ValidationStatus, Validator, XmpFact,
+    ValidationFlavour, ValidationOptions, ValidationStatus, Validator, XmpFact,
 };
 use rc4::{Rc4, StreamCipher};
+use rstest::rstest;
 use sha2::{Sha256, Sha384, Sha512};
 
 const PASSWORD_PADDING: [u8; 32] = [
@@ -33,6 +34,74 @@ const REVISION_6_HASH_MAX_ROUNDS: u16 = 288;
 
 type Aes128CbcEnc = cbc::Encryptor<Aes128>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
+
+#[rstest]
+#[case(2, include_bytes!("fixtures/legacy-qpdf-r2.pdf"))]
+#[case(3, include_bytes!("fixtures/legacy-qpdf-r3.pdf"))]
+#[case(4, include_bytes!("fixtures/legacy-qpdf-r4.pdf"))]
+fn test_should_decrypt_libqpdf_fixtures_with_short_passwords(
+    #[case] revision: u8,
+    #[case] fixture: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let parser = Parser::default();
+    for credential in ["leaf", "longer"] {
+        let password = PasswordSecret::new(credential)?;
+        let mut options = ParseOptions::default();
+        options.password = Some(&password);
+        let document = parser.parse_with_options(Cursor::new(fixture), options)?;
+
+        assert!(!document.is_encrypted());
+        assert!(document.parse_facts.iter().any(|fact| matches!(
+            fact,
+            ParseFact::Encryption { revision: Some(actual), decrypted: true, .. } if *actual == revision
+        )));
+        let title = document
+            .trailers
+            .last()
+            .and_then(|trailer| trailer.dictionary.get("Info"))
+            .and_then(|info| match info {
+                CosObject::Reference(key) => document.objects.get(key),
+                _ => None,
+            })
+            .and_then(|info| info.object.as_dictionary())
+            .and_then(|info| info.get("Title"));
+        assert!(matches!(
+            title,
+            Some(CosObject::String(title)) if title.as_bytes() == b"Independent encryption interoperability sample"
+        ));
+    }
+    Ok(())
+}
+
+#[rstest]
+#[case(0)]
+#[case(100_000)]
+fn test_should_still_fail_pdfa_encryption_rule_after_decryption(
+    #[case] fact_cap: usize,
+) -> Result<(), Box<dyn Error>> {
+    let fixture = encrypted_aesv2_fixture()?;
+    let mut limits = ResourceLimits::default();
+    limits.max_parse_facts = fact_cap;
+    let part = NonZeroU32::new(2).ok_or_else(|| std::io::Error::other("invalid PDF/A part"))?;
+    let options = ValidationOptions::builder()
+        .resource_limits(limits)
+        .password(Some(PasswordSecret::new("owner")?))
+        .flavour(FlavourSelection::Explicit {
+            flavour: ValidationFlavour::new("pdfa", part, "b")?,
+        })
+        .build();
+    let report =
+        Validator::new(options)?.validate_reader(Cursor::new(fixture), InputName::memory())?;
+
+    assert_eq!(report.status, ValidationStatus::Invalid);
+    assert!(report.profile_reports.iter().any(|profile| {
+        profile
+            .failed_assertions
+            .iter()
+            .any(|assertion| assertion.rule_id.0.as_str() == "iso-19005-2-6-1-3-2")
+    }));
+    Ok(())
+}
 
 #[test]
 fn test_should_validate_rc4_encrypted_fixture_with_user_password() -> Result<(), Box<dyn Error>> {
@@ -234,13 +303,24 @@ fn test_should_validate_r6_aesv3_fixture_with_owner_password() -> Result<(), Box
     Ok(())
 }
 
-#[test]
-fn test_should_return_encrypted_for_missing_or_wrong_password() -> Result<(), Box<dyn Error>> {
+#[rstest]
+#[case(0)]
+#[case(100_000)]
+fn test_should_return_encrypted_for_missing_or_wrong_password(
+    #[case] fact_cap: usize,
+) -> Result<(), Box<dyn Error>> {
     let fixture = encrypted_rc4_fixture()?;
-    let missing = Validator::new(ValidationOptions::default())?
-        .validate_reader(Cursor::new(fixture.clone()), InputName::memory())?;
+    let mut limits = ResourceLimits::default();
+    limits.max_parse_facts = fact_cap;
+    let missing = Validator::new(
+        ValidationOptions::builder()
+            .resource_limits(limits.clone())
+            .build(),
+    )?
+    .validate_reader(Cursor::new(fixture.clone()), InputName::memory())?;
     let wrong = Validator::new(
         ValidationOptions::builder()
+            .resource_limits(limits)
             .password(Some(PasswordSecret::new("wrong")?))
             .build(),
     )?
@@ -257,15 +337,21 @@ fn test_should_return_encrypted_for_missing_or_wrong_password() -> Result<(), Bo
     Ok(())
 }
 
-#[test]
-fn test_should_refuse_metadata_repair_for_decrypted_encrypted_input() -> Result<(), Box<dyn Error>>
-{
+#[rstest]
+#[case(0)]
+#[case(100_000)]
+fn test_should_refuse_metadata_repair_on_encrypted_input_with_password(
+    #[case] fact_cap: usize,
+) -> Result<(), Box<dyn Error>> {
     let temp = tempfile::tempdir()?;
     let input = temp.path().join("encrypted.pdf");
     let output_dir = temp.path().join("out");
     std::fs::create_dir(&output_dir)?;
     std::fs::write(&input, encrypted_rc4_fixture()?)?;
+    let mut limits = ResourceLimits::default();
+    limits.max_parse_facts = fact_cap;
     let options = ValidationOptions::builder()
+        .resource_limits(limits)
         .password(Some(PasswordSecret::new("user")?))
         .build();
     let repairer = MetadataRepairer::new(MetadataRepairOptions::new(options, &output_dir, "")?)?;
@@ -793,6 +879,7 @@ fn test_should_validate_rc4_crypt_filter_revision_four_fixture() -> Result<(), B
     Ok(())
 }
 
+#[cfg(feature = "flate")]
 #[test]
 fn test_should_compose_named_crypt_stream_filter_with_downstream_decode()
 -> Result<(), Box<dyn Error>> {
@@ -1022,6 +1109,7 @@ fn encrypted_xmp_metadata_fixture(encrypt_metadata: bool) -> Result<Vec<u8>, Box
     ))
 }
 
+#[cfg(feature = "flate")]
 fn encrypted_rc4_named_crypt_flate_stream_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
     use std::io::Write;
 
@@ -1521,10 +1609,12 @@ fn permissions_plaintext(encrypt_metadata: bool) -> [u8; 16] {
 }
 
 fn padded_password(password: &[u8]) -> [u8; 32] {
-    let mut padded = PASSWORD_PADDING;
-    let copy_len = password.len().min(32);
-    if let (Some(target), Some(source)) = (padded.get_mut(..copy_len), password.get(..copy_len)) {
-        target.copy_from_slice(source);
+    let mut padded = [0; PASSWORD_PADDING.len()];
+    for (target, byte) in padded
+        .iter_mut()
+        .zip(password.iter().chain(&PASSWORD_PADDING))
+    {
+        *target = *byte;
     }
     padded
 }

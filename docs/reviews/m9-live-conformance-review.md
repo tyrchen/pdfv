@@ -598,6 +598,35 @@ PDF/A-2u, PDF/A-4e, and PDF/A-4f children within the allowed parts. Upstream
 subsequently widened its child-profile allowlist to include these variants.
 [Upstream embedded-file conformance fix](https://github.com/veraPDF/veraPDF-validation/commit/dd7b9a9a6d167a002eb75711956a80d4bb8fa395)
 
+## Legacy PDF Passwords and Minimal Builds
+
+Standard security handler revisions 2–4 append the beginning of the padding
+sequence after short passwords and use the first 32 bytes of long passwords.
+This applies to both the user-password and owner-password authentication
+paths. Unit tests cover empty, short, exactly 32-byte, and longer inputs.
+[ISO 32000-1, sections 7.6.3.3 and 7.6.3.4](https://udp.adobe.io/document-services/docs/assets/35e4369068f86065372c18787171a17e/PDF_ISO_32000-1.pdf)
+
+The `legacy-qpdf-r2.pdf`, `legacy-qpdf-r3.pdf`, and `legacy-qpdf-r4.pdf`
+regressions were generated from `pdfa-2b-page-box-pass.pdf` using pikepdf
+10.18.2 and libqpdf 12.4.2. The fixture user and owner passwords are
+`leaf` and `longer`. The tests verify the decrypted document information
+title for both roles. An independent 20-case CLI check also covered R4 with
+plaintext metadata and encrypted object streams. The ten correct-password
+cases decrypted and the ten wrong-password or no-password cases reported
+`Encrypted`.
+
+Successful authentication makes the objects available for validation. The
+PDF/A encryption rule reads the active trailer's `/Encrypt` declaration
+and fails on the original encrypted file. Both the validation decision
+and metadata repair refusal remain available when the parse-fact cap is zero.
+Greenfield 1.30.4 agrees on the PDF/A-2b `6.1.3-2` failure in all five
+user-password controls.
+
+SHA-2 remains available to language validation in every feature combination.
+The `test-minimal` target verifies the feature-disabled core library, including
+the `Encrypted` status without decryption support and the unsupported-filter
+diagnostic without Flate.
+
 ## Release Blockers
 
 - The focused XPath function and identification cases still need

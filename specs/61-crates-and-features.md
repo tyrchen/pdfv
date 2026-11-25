@@ -44,7 +44,7 @@ Phase 0 decided that `apps/server` is removed until a network service is explici
 | AES | `aes` | 0.9.0 checked 2026-05-16 | AESV2/AESV3 block cipher. |
 | CBC mode | `cbc` | 0.2.0 checked 2026-05-16 | AES-CBC stream/string decryption. |
 | Cipher traits | `cipher` | 0.5.1 checked 2026-05-16 | Shared crypto trait imports. |
-| SHA-2 | `sha2` | 0.11.0 checked 2026-05-16 | Future Standard security handler revisions 5-6 implementation. |
+| SHA-2 | `sha2` | 0.11.0 checked 2026-05-16 | Language-value identity and Standard security handler revisions 5–6. |
 
 Avoid `serde_yaml` for new code because `cargo search` reports `0.9.34+deprecated`. Prefer `config` with a maintained YAML backend selected by that crate, or reassess with a dedicated dependency spike if direct YAML serialization is needed.
 
@@ -52,13 +52,16 @@ Avoid `serde_yaml` for new code because `cargo search` reports `0.9.34+deprecate
 
 `pdfv-core`:
 
-- `default = ["json", "flate"]`
+- `default = ["json", "flate", "decrypt"]`
 - `json` enables JSON report serialization.
 - `flate` enables FlateDecode support.
 - `custom-profiles` enables XML profile loading.
 - `decrypt` enables password-protected PDF decryption support and the crypto dependencies scoped by [14-password-decryption-design.md](./14-password-decryption-design.md).
 - `bench` enables benchmark-only helpers.
 - No feature may enable `unsafe` code.
+
+`make test-minimal` runs the core tests and strict Clippy with default
+features disabled. The standard gates include this check.
 
 `pdfv`:
 

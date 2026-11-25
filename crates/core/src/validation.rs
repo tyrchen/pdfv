@@ -4315,7 +4315,9 @@ impl<'a> DocumentModel<'a> {
                 .map(ModelValue::String)
                 .map_err(Into::into),
             ),
-            "encrypted" | "isEncrypted" => Some(Ok(ModelValue::Bool(self.document.is_encrypted()))),
+            "encrypted" | "isEncrypted" => {
+                Some(Ok(ModelValue::Bool(self.document.has_encryption())))
+            }
             "hasCatalog" => Some(Ok(ModelValue::Bool(self.document.catalog.is_some()))),
             "containsXRefStream" => Some(Ok(ModelValue::Bool(contains_xref_stream(self.document)))),
             "isLinearized" => Some(Ok(ModelValue::Bool(is_linearized(self.document)))),

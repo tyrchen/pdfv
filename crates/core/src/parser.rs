@@ -111,13 +111,8 @@ impl Parser {
             self.limits.memory_source_threshold_bytes,
         )?;
 
-        ByteParser::new(
-            storage,
-            self.limits.clone(),
-            self.decoder_registry.clone(),
-            options,
-        )
-        .parse_document()
+        ByteParser::new(storage, self.limits.clone(), self.decoder_registry.clone())
+            .parse_document(options)
     }
 }
 
@@ -496,6 +491,8 @@ pub struct ParsedDocument {
     pub(crate) signed_revision_ends: Vec<RangeInclusive<u64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     active_trailer_start: Option<usize>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    decrypted: bool,
 }
 
 /// Fixed-size syntax observations used by conformance rules.
@@ -524,19 +521,25 @@ impl ParsedDocument {
             .unwrap_or_default()
     }
 
-    /// Returns true when the document trailer declares encryption.
+    pub(crate) fn has_encryption(&self) -> bool {
+        encryption_reference(self.active_trailers()).is_some()
+    }
+
+    /// Returns true when the document declares encryption and still needs decryption.
     #[must_use]
     pub fn is_encrypted(&self) -> bool {
-        self.parse_facts.iter().any(|fact| {
-            matches!(
-                fact,
-                ParseFact::Encryption {
-                    encrypted: true,
-                    decrypted: false,
-                    ..
-                }
-            )
-        })
+        self.has_encryption()
+            && !self.decrypted
+            && !self.parse_facts.iter().any(|fact| {
+                matches!(
+                    fact,
+                    ParseFact::Encryption {
+                        encrypted: true,
+                        decrypted: true,
+                        ..
+                    }
+                )
+            })
     }
 }
 
@@ -676,6 +679,7 @@ impl Dictionary {
         self.0.iter()
     }
 
+    #[cfg(feature = "decrypt")]
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut CosObject> {
         self.0.values_mut()
     }
@@ -899,6 +903,7 @@ pub struct StreamObject {
 }
 
 impl StreamObject {
+    #[cfg(feature = "decrypt")]
     pub(crate) fn remove_crypt_filters(&mut self) {
         let mut next_filters = Vec::with_capacity(self.filters.len());
         let mut next_params = Vec::with_capacity(self.decode_params.len());
@@ -1058,11 +1063,10 @@ pub struct StreamRange {
     pub end: u64,
 }
 
-struct ByteParser<'a> {
+struct ByteParser {
     source: SourceStorage,
     limits: ResourceLimits,
     decoder_registry: Option<DecoderRegistry>,
-    options: ParseOptions<'a>,
     pos: usize,
     end: usize,
     parse_facts: Vec<ParseFact>,
@@ -1075,6 +1079,7 @@ struct ByteParser<'a> {
     active_trailer_start: Option<usize>,
     file_offsets: bool,
     signed_revision_ends: Vec<RangeInclusive<u64>>,
+    decrypted: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1105,7 +1110,6 @@ pub(crate) fn parse_text_operand(
         SourceStorage::Memory(Arc::from(bytes)),
         limits.clone(),
         None,
-        ParseOptions::default(),
     );
     match (array, parser.parse_object(0)?) {
         (false, CosObject::String(string)) => Ok(vec![string]),
@@ -1138,7 +1142,6 @@ pub(crate) fn parse_content_dictionary(
         SourceStorage::Memory(Arc::from(bytes)),
         limits.clone(),
         None,
-        ParseOptions::default(),
     );
     parser.parse_dictionary(0)
 }
@@ -1151,17 +1154,15 @@ pub(crate) fn parse_content_array(
         SourceStorage::Memory(Arc::from(bytes)),
         limits.clone(),
         None,
-        ParseOptions::default(),
     )
     .parse_array(0)
 }
 
-impl<'a> ByteParser<'a> {
+impl ByteParser {
     fn new(
         source: SourceStorage,
         limits: ResourceLimits,
         decoder_registry: Option<DecoderRegistry>,
-        options: ParseOptions<'a>,
     ) -> Self {
         let end = source.len();
         let revision_probe_budget = end.saturating_mul(2);
@@ -1169,7 +1170,6 @@ impl<'a> ByteParser<'a> {
             source,
             limits,
             decoder_registry,
-            options,
             pos: 0,
             end,
             parse_facts: Vec::new(),
@@ -1182,10 +1182,14 @@ impl<'a> ByteParser<'a> {
             active_trailer_start: None,
             file_offsets: false,
             signed_revision_ends: Vec::new(),
+            decrypted: false,
         }
     }
 
-    fn parse_document(mut self) -> Result<ParsedDocument> {
+    fn parse_document(mut self, options: ParseOptions<'_>) -> Result<ParsedDocument> {
+        #[cfg(not(feature = "decrypt"))]
+        let _ = options;
+
         let (header_offset, version) = self.parse_header()?;
         self.push_fact(ParseFact::Header {
             offset: header_offset,
@@ -1218,7 +1222,7 @@ impl<'a> ByteParser<'a> {
                 return Err(error.into_parse_error().into());
             }
             #[cfg(feature = "decrypt")]
-            if let Some(password) = self.options.password {
+            if let Some(password) = options.password {
                 match encryption::decrypt_document(
                     &mut objects,
                     active_trailers,
@@ -1226,6 +1230,7 @@ impl<'a> ByteParser<'a> {
                     password,
                 ) {
                     Ok(summary) => {
+                        self.decrypted = true;
                         self.push_fact(summary.into_fact(true));
                     }
                     Err(error) if error.is_encrypted_status() => {
@@ -1237,7 +1242,7 @@ impl<'a> ByteParser<'a> {
                     }
                     Err(error) => return Err(error.into_parse_error().into()),
                 }
-            } else if self.options.password.is_none() {
+            } else if options.password.is_none() {
                 self.push_fact(fact);
                 return Ok(self.finish(version, catalog, objects, trailers));
             }
@@ -1272,6 +1277,7 @@ impl<'a> ByteParser<'a> {
             file_syntax: self.file_syntax,
             signed_revision_ends: self.signed_revision_ends,
             active_trailer_start: self.active_trailer_start,
+            decrypted: self.decrypted,
         }
     }
 
@@ -1430,7 +1436,7 @@ impl<'a> ByteParser<'a> {
         }
         let source = self.source.clone();
         let cursor = marker.checked_add(b"startxref".len())?;
-        let mut probe = Self::new(source, self.limits.clone(), None, ParseOptions::default());
+        let mut probe = Self::new(source, self.limits.clone(), None);
         probe.pos = cursor;
         // The integer and EOF must occupy their own lines.
         probe.skip_xref_spaces();
@@ -1512,12 +1518,7 @@ impl<'a> ByteParser<'a> {
         marker: usize,
     ) -> std::result::Result<Option<Dictionary>, ParseError> {
         self.charge_revision_probe(marker.saturating_sub(section))?;
-        let mut probe = Self::new(
-            self.source.clone(),
-            self.limits.clone(),
-            None,
-            ParseOptions::default(),
-        );
+        let mut probe = Self::new(self.source.clone(), self.limits.clone(), None);
         probe.pos = section;
         probe.end = marker;
         let dictionary = if probe.starts_with(b"xref") {
@@ -1774,7 +1775,6 @@ impl<'a> ByteParser<'a> {
             SourceStorage::Memory(Arc::from(decoded.to_vec())),
             self.limits.clone(),
             None,
-            ParseOptions::default(),
         );
         let mut headers = Vec::with_capacity(count);
         for _ in 0..count {
@@ -4127,6 +4127,7 @@ endobj
         Ok(())
     }
 
+    #[cfg(feature = "flate")]
     #[test]
     fn test_should_parse_flate_xref_stream_with_compressed_entry() -> Result<(), Box<dyn Error>> {
         use std::io::Write;
@@ -4531,6 +4532,7 @@ endobj
         Ok(())
     }
 
+    #[cfg(feature = "flate")]
     #[test]
     fn test_should_decode_flate_object_stream_with_limit() -> Result<(), Box<dyn Error>> {
         use std::io::Write;
@@ -4606,6 +4608,7 @@ endobj
         Ok(())
     }
 
+    #[cfg(feature = "flate")]
     #[test]
     fn test_should_apply_flate_png_predictor() -> Result<(), Box<dyn Error>> {
         use std::io::Write;
@@ -4623,6 +4626,19 @@ endobj
         let stream = parsed_stream(&document)?;
 
         assert_eq!(stream.decoded_bytes(&ResourceLimits::default())?, b"abc");
+        Ok(())
+    }
+
+    #[cfg(not(feature = "flate"))]
+    #[test]
+    fn test_should_report_unsupported_flate_when_disabled() -> crate::Result<()> {
+        let document =
+            Parser::default().parse(Cursor::new(single_stream_pdf("FlateDecode", "", b"")))?;
+        let stream = parsed_stream(&document)?;
+        assert!(matches!(
+            stream.decoded_bytes(&ResourceLimits::default()),
+            Err(ParseError::UnsupportedFilter { filter }) if filter.as_str() == "FlateDecode"
+        ));
         Ok(())
     }
 

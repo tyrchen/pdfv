@@ -64,7 +64,9 @@ pub use profile::{
     rule_burn_down_report_from_clusters, unsupported_rule_cluster_report,
     unsupported_rules_parity_report,
 };
-use secrecy::{ExposeSecret, SecretString};
+#[cfg(feature = "decrypt")]
+use secrecy::ExposeSecret;
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use typed_builder::TypedBuilder;
@@ -437,7 +439,6 @@ impl From<Identifier> for String {
 }
 
 /// Redacted PDF password secret.
-#[derive(Clone)]
 pub struct PasswordSecret(SecretString);
 
 impl PasswordSecret {
@@ -476,8 +477,15 @@ impl PasswordSecret {
         Ok(Self(SecretString::from(value)))
     }
 
+    #[cfg(feature = "decrypt")]
     pub(crate) fn expose_secret_bytes(&self) -> &[u8] {
         self.0.expose_secret().as_bytes()
+    }
+}
+
+impl Clone for PasswordSecret {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
@@ -1169,9 +1177,12 @@ impl MetadataRepairer {
     ///
     /// Returns [`PdfvError`] if validation setup or repair options are invalid.
     pub fn new(options: MetadataRepairOptions) -> Result<Self> {
-        let max_file_bytes = options.validation_options.resource_limits.max_file_bytes;
+        let mut validation_options = options.validation_options;
+        let max_file_bytes = validation_options.resource_limits.max_file_bytes;
+        // Repair always refuses inputs whose trailer declares encryption.
+        validation_options.password = None;
         Ok(Self {
-            validator: Validator::new(options.validation_options)?,
+            validator: Validator::new(validation_options)?,
             output_dir: options.output_dir,
             prefix: options.prefix,
             max_file_bytes,
@@ -1433,8 +1444,7 @@ fn repair_refusal_for_validation(validation: &ValidationReport) -> Option<Repair
                 .map_or_else(default_parse_failed_text, ValidationWarning::message_text),
         });
     }
-    if matches!(validation.status, ValidationStatus::Encrypted) || report_has_encryption(validation)
-    {
+    if matches!(validation.status, ValidationStatus::Encrypted) {
         return Some(RepairRefusal::Encrypted);
     }
     let selected_profiles = if validation.flavours.is_empty() {
@@ -1453,18 +1463,6 @@ fn repair_refusal_for_validation(validation: &ValidationReport) -> Option<Repair
         });
     }
     None
-}
-
-fn report_has_encryption(report: &ValidationReport) -> bool {
-    report.parse_facts.iter().any(|fact| {
-        matches!(
-            fact,
-            ParseFact::Encryption {
-                encrypted: true,
-                ..
-            }
-        )
-    })
 }
 
 #[allow(

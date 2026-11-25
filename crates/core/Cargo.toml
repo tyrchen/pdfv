@@ -23,7 +23,7 @@ rc4 = { workspace = true, optional = true }
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = { workspace = true, optional = true }
+sha2.workspace = true
 subtle = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
@@ -55,10 +55,14 @@ harness = false
 name = "content_stream_m6"
 harness = false
 
+[[test]]
+name = "encrypted"
+required-features = ["decrypt"]
+
 [features]
 default = ["json", "flate", "decrypt"]
 json = []
 flate = ["dep:flate2"]
 custom-profiles = []
 bench = []
-decrypt = ["dep:aes", "dep:cbc", "dep:cipher", "dep:md-5", "dep:rc4", "dep:sha2", "dep:subtle"]
+decrypt = ["dep:aes", "dep:cbc", "dep:cipher", "dep:md-5", "dep:rc4", "dep:subtle"]

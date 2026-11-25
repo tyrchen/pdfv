@@ -140,11 +140,17 @@ Unsupported encryption dictionaries produce structured parse errors or encrypted
 | Malformed encryption dictionary | `ValidationStatus::ParseFailed` if required fields are structurally invalid. |
 | Correct password and supported algorithm | decrypted `ParsedDocument`; normal validation status. |
 
+The PDF/A encryption rule reads the original active trailer's `/Encrypt`
+declaration after authentication. Payload availability is independent of
+the cap on retained parser facts. Metadata repair refuses encrypted input
+without attempting authentication.
+
 ## 6. Algorithms
 
 Phase 9 implements PDF Standard security handler revisions 2-4:
 
-- password padding and truncation to 32 bytes for revisions 2-4;
+- password padding and truncation to 32 bytes for revisions 2–4. Append
+  the required prefix of the standard padding string after a short password;
 - Algorithm 2 file encryption key derivation with MD5, `/O`, `/P`, first trailer ID, and `/EncryptMetadata`;
 - Algorithm 4/5 user password authentication for revisions 2-4;
 - owner password attempt followed by user password attempt so either valid password works;

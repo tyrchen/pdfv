@@ -4,12 +4,17 @@ build:
 test:
 	@cargo nextest run --all-features
 
+test-minimal:
+	@cargo test -p pdfv-core --no-default-features
+	@cargo clippy -p pdfv-core --no-default-features --all-targets -- -D warnings -W clippy::pedantic -W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing -W clippy::panic
+
 standard-gates:
 	@cargo build --workspace --all-targets
 	@cargo test --workspace --all-targets
 	@cargo +nightly fmt --all -- --check
 	@cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
 	@cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic -W clippy::unwrap_used -W clippy::expect_used -W clippy::indexing_slicing -W clippy::panic
+	@$(MAKE) test-minimal
 	@RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 	@cargo audit
 	@cargo deny check
@@ -90,4 +95,4 @@ readiness-release-gate: standard-gates
 	@$(MAKE) readiness-gates
 	@PDFV_ORACLE_REQUIRE_T3_RELEASE=1 cargo run -p pdfv-core --example oracle_corpus_summary
 
-.PHONY: build test standard-gates test-conformance-verapdf check-agent-sync release update-submodule generate-profiles sync-adobe-unicode-maps parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down oracle-corpus oracle-corpus-summary oracle-t3-manifest readiness-gates readiness-release-gate
+.PHONY: build test test-minimal standard-gates test-conformance-verapdf check-agent-sync release update-submodule generate-profiles sync-adobe-unicode-maps parity-model-schema parity-profile-report parity-corpus parity-unsupported-clusters parity-burn-down oracle-corpus oracle-corpus-summary oracle-t3-manifest readiness-gates readiness-release-gate

@@ -11,6 +11,34 @@ const NOT_A_PDF: &[u8] = include_bytes!("fixtures/not-a-pdf.pdf");
 const XREF_STREAM_OBJECT_STREAM_VALID: &[u8] =
     include_bytes!("fixtures/xref-stream-object-stream-valid.pdf");
 const UNSUPPORTED_XMP_PART: &[u8] = include_bytes!("fixtures/unknown-xmp-part.pdf");
+const FLATE_FIXTURE_DIAGNOSTIC: &str = if cfg!(feature = "flate") {
+    "stream decode failed"
+} else {
+    "unsupported stream filter: FlateDecode"
+};
+
+#[cfg(not(feature = "decrypt"))]
+#[test]
+fn test_should_report_encrypted_with_password_when_decryption_is_disabled()
+-> Result<(), Box<dyn Error>> {
+    let bytes = include_bytes!("fixtures/legacy-qpdf-r2.pdf");
+    let options = ValidationOptions::builder()
+        .password(Some(pdfv_core::PasswordSecret::new("leaf")?))
+        .build();
+    let report =
+        Validator::new(options)?.validate_reader(Cursor::new(bytes), InputName::memory())?;
+
+    assert_eq!(report.status, ValidationStatus::Encrypted);
+    assert!(report.profile_reports.is_empty());
+    assert!(report.parse_facts.iter().any(|fact| matches!(
+        fact,
+        ParseFact::Encryption {
+            decrypted: false,
+            ..
+        }
+    )));
+    Ok(())
+}
 
 #[test]
 fn test_should_reject_minimal_pdf_without_pdfa_metadata() -> Result<(), Box<dyn Error>> {
@@ -427,7 +455,7 @@ fn test_should_validate_default_profile_when_metadata_stream_cannot_decode()
     assert!(report.parse_facts.iter().any(|fact| matches!(
         fact,
         ParseFact::Xmp { fact: XmpFact::Malformed { reason }, .. }
-            if reason.as_str().contains("stream decode failed")
+            if reason.as_str().contains(FLATE_FIXTURE_DIAGNOSTIC)
     )));
     Ok(())
 }
@@ -444,7 +472,7 @@ fn test_should_keep_decode_warning_when_parse_facts_are_capped() -> Result<(), B
     assert_eq!(report.parse_facts, [] as [ParseFact; 0]);
     assert!(report.warnings.iter().any(|warning| matches!(
         warning,
-        ValidationWarning::AutoDetection { message } if message.as_str().contains("stream decode failed")
+        ValidationWarning::AutoDetection { message } if message.as_str().contains(FLATE_FIXTURE_DIAGNOSTIC)
     )));
     Ok(())
 }

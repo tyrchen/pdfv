@@ -7,8 +7,8 @@ use std::{
 };
 
 use super::{
-    ByteParser, CosObject, IndirectObject, ObjectStore, ParseOptions, StreamObject, Trailer,
-    bounded, checked_u64_len, optional_non_negative_offset,
+    ByteParser, CosObject, IndirectObject, ObjectStore, StreamObject, Trailer, bounded,
+    checked_u64_len, optional_non_negative_offset,
 };
 use crate::{ObjectKey, ObjectLocation, ParseError, ParseFact, StreamFact, XrefFact};
 
@@ -93,7 +93,7 @@ pub(super) fn verify_compressed_entries(
     Ok(())
 }
 
-impl ByteParser<'_> {
+impl ByteParser {
     pub(super) fn resolve_xref(
         &mut self,
         physical: &BTreeMap<u64, IndirectObject>,
@@ -231,12 +231,7 @@ impl ByteParser<'_> {
     }
 
     fn read_classic_entries_at(&self, section: &ClassicXref) -> Result<XrefEntries, ParseError> {
-        let mut probe = ByteParser::new(
-            self.source.clone(),
-            self.limits.clone(),
-            None,
-            ParseOptions::default(),
-        );
+        let mut probe = ByteParser::new(self.source.clone(), self.limits.clone(), None);
         probe.pos = section.entries_range.start;
         probe.end = section.entries_range.end;
         let (_, entries, _) = probe.read_classic_xref_entries()?;

@@ -25,19 +25,17 @@ of the current implementation phase.
   and its companion with an explicit Encoding still exercises the font
   embedding applicability gap. See the
   [font model](../crates/core/src/validation/glyphs/unicode.rs).
-- **P2.** Correct the Standard security handler password padding for revisions
-  2–4. Append the first bytes of the standard padding after a short password.
-  Update the fixture generators and verify both user and owner passwords with
-  independently generated files. See
-  [the password implementation](../crates/core/src/parser/encryption.rs#L1135).
-- **P2.** Support builds with default features disabled. Language validation
-  hashes strings in every build, so its existing `sha2` dependency must be
-  available without `decrypt`. Verify the parser's feature-disabled branch
-  with strict Clippy.
-  [Language validation](../crates/core/src/validation/language.rs#L313)
 
 ## Resolved M9 Findings
 
+- **P2.** Standard security handler revisions 2–4 append the prefix of
+  the password padding sequence. Independent libqpdf fixtures verify both
+  user and owner authentication. Decrypted PDF/A inputs still fail the
+  rule prohibiting the trailer's `/Encrypt` declaration.
+  [Legacy password review](../docs/reviews/m9-live-conformance-review.md#legacy-pdf-passwords-and-minimal-builds)
+- **P2.** Minimal builds retain the SHA-2 dependency used by language
+  validation. The core test and lint gates cover disabled default features.
+  [Core feature flags](./61-crates-and-features.md#4-feature-flags)
 - **P1.** Embedded PDF conformance uses the MIME rule's `/EF` stream
   selection and the attached document's own PDF/A profile. Nested
   validation shares resource limits and preserves undecidable results.

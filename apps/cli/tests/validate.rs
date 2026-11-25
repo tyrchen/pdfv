@@ -1012,10 +1012,12 @@ fn rc4_crypt(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 fn padded_password(password: &[u8]) -> [u8; 32] {
-    let mut padded = PASSWORD_PADDING;
-    let copy_len = password.len().min(32);
-    if let (Some(target), Some(source)) = (padded.get_mut(..copy_len), password.get(..copy_len)) {
-        target.copy_from_slice(source);
+    let mut padded = [0; PASSWORD_PADDING.len()];
+    for (target, byte) in padded
+        .iter_mut()
+        .zip(password.iter().chain(&PASSWORD_PADDING))
+    {
+        *target = *byte;
     }
     padded
 }
