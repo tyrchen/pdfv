@@ -13,7 +13,7 @@ use super::super::{
     cos_integer, resolve_dictionary_value, semantic_names, stream_from_value, unknown_property,
 };
 use crate::{
-    Dictionary, ModelValue, ParsedDocument, PdfvError, PropertyName, ResourceLimits, Result,
+    Dictionary, ModelValue, ParseError, ParsedDocument, PropertyName, ResourceLimits, Result,
     StreamObject,
 };
 
@@ -59,14 +59,38 @@ impl ProgramEvidence {
 }
 
 pub(super) fn decode(stream: &StreamObject, limits: &ResourceLimits) -> Result<Option<Vec<u8>>> {
+    Ok(match read_bytes(stream, limits)? {
+        ProgramBytes::Decoded(bytes) => Some(bytes),
+        ProgramBytes::Malformed | ProgramBytes::Unavailable => None,
+    })
+}
+
+#[derive(Debug)]
+pub(super) enum ProgramBytes {
+    Decoded(Vec<u8>),
+    Malformed,
+    Unavailable,
+}
+
+impl ProgramBytes {
+    pub(super) fn as_slice(&self) -> Option<&[u8]> {
+        match self {
+            Self::Decoded(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn read_bytes(stream: &StreamObject, limits: &ResourceLimits) -> Result<ProgramBytes> {
     let mut limits = limits.clone();
     limits.max_stream_decode_bytes = limits
         .max_stream_decode_bytes
         .min(limits.max_embedded_font_bytes);
-    match stream.decoded_bytes(&limits) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error @ crate::ParseError::LimitExceeded { .. }) => Err(PdfvError::Parse(error)),
-        Err(_) => Ok(None),
+    match stream.fully_decoded_bytes(&limits, None) {
+        Ok(bytes) => Ok(ProgramBytes::Decoded(bytes)),
+        Err(error @ ParseError::LimitExceeded { .. }) => Err(error.into()),
+        Err(ParseError::StreamDecode { .. }) => Ok(ProgramBytes::Malformed),
+        Err(_) => Ok(ProgramBytes::Unavailable),
     }
 }
 

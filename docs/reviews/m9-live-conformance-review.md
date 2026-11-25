@@ -289,12 +289,22 @@ program checks. The expanded public manifest is 13/13 and the checked-in
 manifest is 8/8, with zero incomplete or false-compliant decisions. The
 41 PDF/A font and colour controls also agree on document outcome.
 
-The three targeted PDF/UA-1 rules agree on pass and fail counts in 132 of
-135 comparisons across 45 controls. In two controls, pdfv records a passing
-width assertion in both the page and Form stream. Greenfield counts the
-shared glyph once. The corrupt-font control still produces unavailable
-width evidence in pdfv. Greenfield records a pass with a null font width.
-See [the review backlog](../../specs/93-improvements-review.md#open-m9-findings).
+The embedding, width, and two TrueType program rules agree with Greenfield
+on pass and fail counts in all 212 comparisons across 53 PDF/UA-1
+controls. This includes the 45 original controls and eight additional
+cases for annotated glyphs and malformed font programs. An identical
+glyph reached from a page or a Form gets one width assertion.
+Annotation appearances and distinct inline property dictionaries get
+separate assertions. A demonstrably malformed TrueType or TrueType-based
+OpenType program fails `7.21.4.1-1`. Its absent program width satisfies
+the null-width branch of `7.21.5-1`. An unsupported stream filter
+preserves unavailable evidence.
+
+The original 45 controls still have five incomplete document reports.
+Three lack decisive Unicode evidence for readable TrueType programs.
+Two hit unavailable annotation properties. Three further controls
+differ at document level because of glyph presence or annotation rules.
+[Open findings](../../specs/93-improvements-review.md#open-m9-findings)
 
 ## PDF/A-3 Associated Files and Profile Audit
 
@@ -539,6 +549,38 @@ Independent review matched 131 of 132 rule counts across 37 files.
 One focused PDF/A-1 control differs. When a PDF omits its Encoding entry
 and declares an empty CharSet, pdfv checks the glyph name from the
 embedded encoding and fails its CharSet rule. Greenfield records a pass.
+
+## Font Use and Standard Type 1 Encodings
+
+The embedding check follows text-show operators through page content,
+Forms, appearances and the character procedures selected by Type 3 glyphs.
+It combines rendering modes for the same font across those use sites.
+A mode 3 use is exempt when every use is mode 3. A visible or clipping
+use anywhere requires embedding. PDF/A-1 also applies the effective mode
+to its CIDToGIDMap requirement. The Type 3 traversal follows the PDF
+version used by the profile. PDF 1.4 leaves the outer Type 3 drawing
+unaffected by the rendering mode. ISO 32000 exempts painting of the
+outer Type 3 glyph in mode 3.
+[PDF 1.4 section 5.2.5](https://stuff.mit.edu/afs/sipb/contrib/doc/specs/software/adobe/pdf/PDFReference.pdf)
+[ISO 32000-1 section 9.3.6](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf#page=254)
+
+Without an embedded Type 1 program, the standard Latin fonts use
+StandardEncoding, Symbol uses its Symbol encoding, and ZapfDingbats uses
+its own encoding. Explicit encodings and Differences take precedence.
+PDF/A-1a validates whether each resolved name qualifies for the Latin
+and Symbol exception when no ToUnicode mapping is available. Both
+invisible Helvetica controls validate with zero unsupported assertions
+for embedding and Unicode mapping.
+[ISO 32000-1 Annex D](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)
+
+Of 116 PDF/A-1 font-use and encoding controls, 104 agree on the
+embedding rule count. The other twelve exercise a mixed rendering mode
+that Greenfield drops after its first use or an undisplayed Type 3
+procedure that Greenfield includes. The Unicode rule agrees on 25 of 37
+controls. Its twelve differences exercise the standard font encoding
+tables or an undefined StandardEncoding code. Both public corpus
+manifests agree with Greenfield on all 46 document outcomes, with zero
+unexpected drift.
 
 ## Active Cross-Reference Entries
 

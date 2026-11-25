@@ -1,29 +1,34 @@
 # 93-improvements-review: Deferred Findings Backlog
 
-Status: draft · Owner: pdfv · Last updated: 2026-05-15
+Status: draft · Owner: pdfv · Last updated: 2026-11-24
 
 This backlog records valid review findings that are intentionally deferred out
 of the current implementation phase.
 
 ## Open M9 Findings
 
-- **P2.** Two controls that reuse a font across a page and Form report an
-  extra passing PDF/UA-1 `7.21.5-1` assertion. Audit glyph identity across
-  page, Form, structure-parent, and appearance views before combining
-  equivalent observations. An unreadable font program also produces
-  unavailable width evidence and needs a conformance decision backed by
-  the embedded-font rules. See
-  [the glyph measurement](../crates/core/src/validation/glyphs.rs) and
-  [the live comparisons](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
-- **P2.** Resolve the built-in encodings of nonembedded standard fonts and
-  bind PDF/A-1 font embedding exceptions to the rendering modes of actual
-  text use. An invisible Helvetica control lacks an explicit Encoding,
-  and its companion with an explicit Encoding still exercises the font
-  embedding applicability gap. See the
-  [font model](../crates/core/src/validation/glyphs/unicode.rs).
+- **P2.** PDF/UA-1 `7.21.4.1-2` still needs glyph presence evidence
+  from the selected glyph rather than the font dictionary. Three negative
+  controls also need conclusive Unicode fallback evidence for
+  `7.21.7-1` and `7.21.7-2` in an otherwise readable TrueType program.
+  [Glyph comparison and remaining differences](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths)
+- **P2.** Audit PDF/UA-1 annotation rule applicability in the three
+  `scope-appearance`, `scope-also-appearance`, and `scope-unused-form`
+  controls. Two report unavailable annotation properties. The third
+  fails both `7.18.6.2` checks, which Greenfield leaves untested.
+  [Annotation traversal](../crates/core/src/validation.rs)
 
 ## Resolved M9 Findings
 
+- **P2.** PDF/UA-1 width evidence combines equivalent glyphs across page
+  and Form use sites. Rendering mode, marked content, structure context,
+  and annotation appearance preserve distinct observations. A confirmed
+  corrupt TrueType program fails its embedding check and has no program
+  width. [Glyph comparison](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths)
+- **P2.** PDF/A-1 uses the built-in encoding of each nonembedded
+  standard Type 1 font and applies the mode 3 exemption to actual text
+  use. Both invisible Helvetica controls validate.
+  [Font use and standard encodings](../docs/reviews/m9-live-conformance-review.md#font-use-and-standard-type-1-encodings)
 - **P2.** XPath values use bounded syntax and core function signature checks.
   PDF/A identification uses the original RDF conformance text and detects
   a present empty value. The auto-selection claim remains normalized.

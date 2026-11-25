@@ -1,4 +1,4 @@
-//! Glyph-width and PDF/A-1 `CIDSet` evidence from actual text-show operators.
+//! Font-use and glyph evidence from text-show operators and their graphics state.
 
 mod cff;
 mod sfnt;
@@ -8,29 +8,35 @@ mod unicode;
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     ptr,
     sync::Arc,
 };
 
 pub(crate) use sfnt::PROGRAM as TRUE_TYPE_PROGRAM;
 pub(super) use sfnt::PROGRAM_PROPERTIES as TRUE_TYPE_PROGRAM_PROPERTIES;
+use sfnt::ProgramBytes;
 
 use super::{
-    ContentStreamModel, ContentStreamSummary, EffectiveResources, GenericModel, ModelGraph,
-    ModelObjectRef, OperatorFact, ResourceFamily, array_values,
-    cmap::{self, CMap, CidSelection},
+    ContentStreamModel, ContentStreamSummary, EffectiveResources, GenericModel, GlyphContent,
+    ModelGraph, ModelObjectRef, OperatorFact, ResourceContent, ResourceFamily, array_values,
+    cmap::{self, CMap, CidSelection, Code},
     cos_integer, descendant_font_dictionary, descendant_font_value, font_descriptor_dictionary,
-    font_name, font_program_stream, push_linked, resolve_named_dictionary, resource_value,
+    font_name, font_program_stream, optional_string_model_value, page_dictionary, push_linked,
+    resolve_dictionary_value, resolve_named_dictionary, resource_content_stream, resource_value,
     semantic_names, stream_from_value, tagged_content, unknown_property,
 };
 use crate::{
-    BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ParsedDocument,
-    PdfName, PdfString, PropertyName, ResourceLimits, Result, ValidationError,
+    BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ObjectTypeName,
+    ParsedDocument, PdfName, PdfString, PropertyName, ResourceLimits, Result, ValidationError,
     content::{MarkedContentSpan, TextOperand},
 };
 
 pub(crate) const WIDTH_FAMILY: &str = "glyphWidth";
+pub(crate) const USED_FONT: &str = "usedFont";
+pub(crate) const USED_CID_FONT: &str = "usedCidFont";
+pub(super) const USED_FONT_PROPERTIES: &[&str] = &["Subtype", "renderingMode", "containsFontFile"];
+pub(super) const USED_CID_FONT_PROPERTIES: &[&str] = &["Subtype", "renderingMode", "CIDToGIDMap"];
 pub(crate) const CID_SET_FAMILY: &str = "usedCidSet";
 pub(crate) const CHAR_SET_FAMILY: &str = "usedType1CharSet";
 pub(crate) const UNICODE_FAMILY: &str = unicode::FAMILY;
@@ -62,6 +68,7 @@ impl Coverage {
 
 #[derive(Clone, Debug)]
 pub(super) enum Evidence {
+    FontUse(FontUse),
     Width(WidthEvidence),
     CidSet(CidSet),
     CharSet(CharSet),
@@ -69,6 +76,31 @@ pub(super) enum Evidence {
     Unicode(unicode::Mapping),
     ActualText(Option<bool>),
     TrueTypeProgram(sfnt::ProgramEvidence),
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct FontUse {
+    subtype: Option<String>,
+    mode: Option<u8>,
+    embedded: Option<bool>,
+    cid_map: Option<&'static str>,
+}
+
+impl FontUse {
+    fn accepts_mode(&self, mode: Option<u8>) -> bool {
+        match self.mode {
+            Some(3) => mode != Some(3),
+            None => mode.is_some_and(|mode| mode != 3),
+            Some(_) => false,
+        }
+    }
+
+    fn is_cid(&self) -> bool {
+        matches!(
+            self.subtype.as_deref(),
+            Some("CIDFontType0" | "CIDFontType2")
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -96,7 +128,28 @@ pub(super) struct CharSet {
 impl Evidence {
     pub(super) fn property(&self, name: &PropertyName) -> Result<ModelValue> {
         match (self, name.as_str()) {
-            (Self::Width(evidence), "renderingMode") => evidence.mode.map_or_else(
+            (Self::FontUse(evidence), "Subtype") => {
+                Ok(optional_string_model_value(evidence.subtype.clone()))
+            }
+            (Self::FontUse(evidence), "containsFontFile") => evidence.embedded.map_or_else(
+                || unknown_property(name),
+                |embedded| Ok(ModelValue::Bool(embedded)),
+            ),
+            (Self::FontUse(evidence), "CIDToGIDMap") => Ok(optional_string_model_value(
+                evidence.cid_map.map(str::to_owned),
+            )),
+            (
+                Self::FontUse(FontUse {
+                    mode: None,
+                    embedded: Some(true),
+                    ..
+                }),
+                "renderingMode",
+            ) => Ok(ModelValue::Null),
+            (
+                Self::FontUse(FontUse { mode, .. }) | Self::Width(WidthEvidence { mode, .. }),
+                "renderingMode",
+            ) => mode.map_or_else(
                 || unknown_property(name),
                 |mode| Ok(ModelValue::Number(f64::from(mode))),
             ),
@@ -168,6 +221,12 @@ pub(super) enum ProgramFontId {
     Direct(usize),
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum UsedFontId {
+    Font(ProgramFontId),
+    DirectDescendant(ProgramFontId),
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct FontSelection {
     id: FontId,
@@ -224,15 +283,87 @@ impl TextState {
 
 #[derive(Debug, Default)]
 pub(super) struct CidAudit {
+    used_fonts: BTreeMap<UsedFontId, (FontUse, String)>,
+    measured_ua1_widths: BTreeSet<WidthUse>,
     fonts: BTreeMap<FontId, (CidSet, String)>,
     charsets: BTreeMap<ProgramFontId, (CharSet, String)>,
     modeled_cmaps: BTreeSet<FontId>,
     modeled_true_type: BTreeSet<ProgramFontId>,
     unresolved: Option<String>,
     type3_procedures: u64,
+    used_procedures: u64,
 }
 
 impl CidAudit {
+    fn record_font_use(
+        &mut self,
+        document: &ParsedDocument,
+        id: UsedFontId,
+        font: &Dictionary,
+        samples: &[Sample<'_>],
+        context: &str,
+    ) {
+        // A single visible use invalidates the embedding exception for this font,
+        // even when a different stream uses the font invisibly first.
+        let Some(mode) = samples
+            .iter()
+            .map(|sample| sample.mode)
+            .max_by_key(|mode| match mode {
+                Some(3) => 0,
+                None => 1,
+                Some(_) => 2,
+            })
+        else {
+            return;
+        };
+        match self.used_fonts.entry(id) {
+            Entry::Occupied(mut entry) => {
+                let (record, path) = entry.get_mut();
+                if record.accepts_mode(mode) {
+                    record.mode = mode;
+                    context.clone_into(path);
+                }
+            }
+            Entry::Vacant(entry) => {
+                let subtype = semantic_names::name(document, font.get("Subtype"))
+                    .map(|name| String::from_utf8_lossy(name.as_bytes()).into_owned());
+                let cid_map = match semantic_names::resolve(document, font.get("CIDToGIDMap")) {
+                    Some(CosObject::Name(name)) if name.matches("Identity") => Some("Identity"),
+                    Some(CosObject::Stream(_)) => Some("Custom"),
+                    _ => None,
+                };
+                entry.insert((
+                    FontUse {
+                        subtype,
+                        mode,
+                        embedded: Some(font_program_stream(document, font).is_some()),
+                        cid_map,
+                    },
+                    context.to_owned(),
+                ));
+            }
+        }
+    }
+
+    fn record_sfnt(
+        &mut self,
+        id: UsedFontId,
+        embedded: bool,
+        program: &ProgramBytes,
+        metrics: bool,
+    ) -> bool {
+        // A missing stream or missing required tables in decoded bytes is conclusive.
+        let usable = match (embedded, program) {
+            (false, _) | (_, ProgramBytes::Malformed) => Some(false),
+            (true, ProgramBytes::Decoded(_)) => Some(metrics),
+            (true, ProgramBytes::Unavailable) => None,
+        };
+        if let Some((record, _)) = self.used_fonts.get_mut(&id) {
+            record.embedded = usable;
+        }
+        usable == Some(false)
+    }
+
     fn append_cmaps<'a>(
         &mut self,
         graph: &ModelGraph<'a>,
@@ -379,6 +510,23 @@ impl CidAudit {
         max: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         let mut models = Vec::new();
+        for (record, context) in self.used_fonts.values() {
+            let mut object = model(
+                document,
+                USED_FONT,
+                Evidence::FontUse(record.clone()),
+                models.len(),
+                context,
+            );
+            if record.is_cid()
+                && let ModelObjectRef::Generic(object) = &mut object
+            {
+                object
+                    .supertypes
+                    .push(ObjectTypeName::unchecked(USED_CID_FONT));
+            }
+            push_linked(&mut models, object, max)?;
+        }
         for (ordinal, (record, context)) in self.fonts.values().enumerate() {
             push_linked(
                 &mut models,
@@ -603,9 +751,47 @@ struct Sample<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct WidthScope {
+    real_content: bool,
+    struct_parent: i64,
+    struct_parents: i64,
+}
+
+impl WidthScope {
+    fn read(content: &ContentStreamModel<'_>, document: &ParsedDocument) -> Self {
+        let owner = if content.is_form {
+            Some(&content.stream.dictionary)
+        } else {
+            content
+                .page_key
+                .and_then(|key| page_dictionary(document, key))
+        };
+        let entry = |name| {
+            semantic_names::resolve(document, owner.and_then(|dictionary| dictionary.get(name)))
+                .and_then(cos_integer)
+                .unwrap_or_default()
+        };
+        Self {
+            real_content: content.glyph_content == GlyphContent::Semantic,
+            struct_parent: entry("StructParent"),
+            struct_parents: entry("StructParents"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct WidthUse {
+    font: ProgramFontId,
+    scope: WidthScope,
+    mode: Option<u8>,
+    marked_content: Option<GlyphMark>,
+    code: Code,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum GlyphMark {
     Propertyless,
-    Inline(u64),
+    Inline(ObjectKey, u64),
     // Only equality of borrowed document dictionaries matters within this traversal.
     Resource(*const Dictionary),
 }
@@ -615,9 +801,10 @@ impl GlyphMark {
         span: &MarkedContentSpan,
         document: &ParsedDocument,
         resources: &EffectiveResources<'_>,
+        stream: ObjectKey,
     ) -> Self {
         if let Some(offset) = span.inline_properties_offset {
-            Self::Inline(offset)
+            Self::Inline(stream, offset)
         } else if let Some(dictionary) = tagged_content::property_list(document, resources, span) {
             Self::Resource(ptr::from_ref(dictionary))
         } else {
@@ -660,6 +847,8 @@ pub(super) fn inspect<'a>(
         summary,
         graph.limits,
         if graph.materializes(TRUE_TYPE_PROGRAM)
+            || graph.materializes(USED_FONT)
+            || graph.materializes(USED_CID_FONT)
             || graph.materializes(CHAR_SET_FAMILY)
             || super::unicode_name::enabled(graph)
         {
@@ -674,78 +863,233 @@ pub(super) fn inspect<'a>(
             .unresolved
             .get_or_insert_with(|| content.context_prefix.clone());
     }
-    if let Some(sample) = uses.unresolved.filter(|sample| sample.has_glyphs()) {
+    if !content.font_use_only()
+        && let Some(sample) = uses.unresolved.filter(|sample| sample.has_glyphs())
+    {
         push_unresolved_glyph(content, graph, sample, replacement_offsets, objects, max)?;
     }
-    for (font, samples) in uses.fonts.values() {
-        if let Some(dictionary) = font.dictionary(graph.document) {
-            if super::unicode_name::enabled(graph) && content.page_key.is_some() {
-                super::unicode_name::append_used_font(
-                    graph, font, dictionary, content, objects, max,
-                )?;
-            }
-            let has_glyphs = samples.iter().any(|sample| sample.has_glyphs());
-            let check_char_set = !scoped_only && graph.materializes(CHAR_SET_FAMILY);
-            let inspect_font_program = check_char_set
-                || (has_glyphs
-                    && (graph.materializes(PUA_FAMILY)
-                        || (!scoped_only
-                            && (graph.materializes(UNICODE_FAMILY)
-                                || graph.materializes(WIDTH_FAMILY)))));
-            let simple_program = if inspect_font_program {
-                SimpleProgram::read(graph, dictionary)?
-            } else {
-                SimpleProgram::Unavailable
-            };
-            if (graph.materializes(PUA_FAMILY)
-                || (!scoped_only && graph.materializes(UNICODE_FAMILY)))
-                && has_glyphs
-            {
-                unicode::inspect(
-                    content,
-                    graph,
-                    dictionary,
-                    &simple_program,
-                    samples,
-                    replacement_offsets,
-                    objects,
-                    max,
-                )?;
-            }
-            if !scoped_only && has_glyphs {
-                cid_audit.append_cmaps(
-                    graph,
-                    font,
-                    dictionary,
-                    &content.context_prefix,
-                    objects,
-                    max,
-                )?;
-            }
-            if !scoped_only
-                && (check_char_set
-                    || graph.materializes(TRUE_TYPE_PROGRAM)
-                    || (has_glyphs
-                        && (graph.materializes(WIDTH_FAMILY)
-                            || graph.materializes(CID_SET_FAMILY))))
-            {
-                inspect_font(
-                    content,
-                    graph,
-                    font,
-                    dictionary,
-                    &simple_program,
-                    samples,
-                    &mut cid_audit,
-                    objects,
-                    max,
-                )?;
-            }
-        } else if let Some(sample) = samples.iter().copied().find(|sample| sample.has_glyphs()) {
+    for (selection, samples) in uses.fonts.values() {
+        if let Some(font) = selection.dictionary(graph.document) {
+            inspect_selected_font(
+                content,
+                graph,
+                selection,
+                font,
+                samples,
+                replacement_offsets,
+                &mut cid_audit,
+                objects,
+                max,
+            )?;
+        } else if !content.font_use_only()
+            && let Some(sample) = samples.iter().copied().find(|sample| sample.has_glyphs())
+        {
             push_unresolved_glyph(content, graph, sample, replacement_offsets, objects, max)?;
         }
     }
     Ok(uses.invocations)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "selected font evidence shares content, glyph samples, and traversal budget"
+)]
+fn inspect_selected_font<'a>(
+    content: &ContentStreamModel<'_>,
+    graph: &ModelGraph<'a>,
+    selection: &FontSelection,
+    font: &Dictionary,
+    samples: &[Sample<'_>],
+    replacement_offsets: &BTreeSet<u64>,
+    audit: &mut CidAudit,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max: usize,
+) -> Result<()> {
+    let scoped_only = content.object_type.as_str() == super::language::CONTENT_FAMILY;
+    let used_fonts = graph.materializes(USED_FONT) || graph.materializes(USED_CID_FONT);
+    if (!scoped_only || content.font_use_only()) && used_fonts {
+        append_used_type3_procedures(
+            content, graph, selection, font, samples, audit, objects, max,
+        )?;
+    }
+    if content.font_use_only() {
+        inspect_font(
+            content,
+            graph,
+            selection,
+            font,
+            &SimpleProgram::Unavailable,
+            samples,
+            audit,
+            objects,
+            max,
+        )?;
+        return Ok(());
+    }
+    if super::unicode_name::enabled(graph) && content.page_key.is_some() {
+        super::unicode_name::append_used_font(graph, selection, font, content, objects, max)?;
+    }
+    let has_glyphs = samples.iter().any(|sample| sample.has_glyphs());
+    let check_char_set = !scoped_only && graph.materializes(CHAR_SET_FAMILY);
+    let check_unicode =
+        graph.materializes(PUA_FAMILY) || (!scoped_only && graph.materializes(UNICODE_FAMILY));
+    let check_widths = !scoped_only && graph.materializes(WIDTH_FAMILY);
+    let simple_program = if check_char_set || (has_glyphs && (check_unicode || check_widths)) {
+        SimpleProgram::read(graph, font)?
+    } else {
+        SimpleProgram::Unavailable
+    };
+    if !scoped_only && has_glyphs {
+        audit.append_cmaps(
+            graph,
+            selection,
+            font,
+            &content.context_prefix,
+            objects,
+            max,
+        )?;
+    }
+    let program_rejected = if !scoped_only
+        && (check_char_set
+            || used_fonts
+            || graph.materializes(TRUE_TYPE_PROGRAM)
+            || (has_glyphs && (check_widths || graph.materializes(CID_SET_FAMILY))))
+    {
+        inspect_font(
+            content,
+            graph,
+            selection,
+            font,
+            &simple_program,
+            samples,
+            audit,
+            objects,
+            max,
+        )?
+    } else {
+        false
+    };
+    if check_unicode && has_glyphs {
+        unicode::inspect(
+            content,
+            graph,
+            font,
+            &simple_program,
+            program_rejected,
+            samples,
+            replacement_offsets,
+            objects,
+            max,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "used character procedures share the current font, text samples, and graph budget"
+)]
+fn append_used_type3_procedures<'a>(
+    content: &ContentStreamModel<'_>,
+    graph: &ModelGraph<'a>,
+    selection: &FontSelection,
+    font: &Dictionary,
+    samples: &[Sample<'_>],
+    audit: &mut CidAudit,
+    objects: &mut Vec<ModelObjectRef<'a>>,
+    max: usize,
+) -> Result<()> {
+    let document = graph.document;
+    if !semantic_names::name(document, font.get("Subtype"))
+        .is_some_and(|name| name.matches("Type3"))
+    {
+        return Ok(());
+    }
+    let (Some(procedures), Some(encoding)) = (
+        resolve_dictionary_value(document, font.get("CharProcs")),
+        simple::Encoding::read(document, font),
+    ) else {
+        return Ok(());
+    };
+    // PDF 1.4 does not apply Tr to the outer Type 3 glyph. ISO 32000
+    // suppresses its painting in mode 3 before executing its CharProc.
+    let pdfa1 = graph
+        .active_flavour
+        .as_ref()
+        .is_some_and(|flavour| flavour.family.as_str() == "pdfa" && flavour.part.get() == 1);
+    let codes: BTreeSet<_> = samples
+        .iter()
+        .filter(|sample| pdfa1 || sample.mode != Some(3))
+        .flat_map(|sample| {
+            sample.text.into_iter().flat_map(|text| {
+                text.0
+                    .iter()
+                    .flat_map(|string| string.as_bytes().iter().map(|code| (*code, sample.mode)))
+            })
+        })
+        .collect();
+    if codes.is_empty() {
+        return Ok(());
+    }
+    let identity = selection.identity();
+    let resources = graph
+        .character_resources
+        .try_borrow_mut()
+        .map_err(|_| ValidationError::SubsystemUnavailable {
+            subsystem: "characterResources",
+        })?
+        .entry(identity.clone())
+        .or_insert_with(|| {
+            resolve_dictionary_value(document, font.get("Resources"))
+                .map(|resources| Arc::new(resources.clone()))
+        })
+        .clone();
+    let resources = super::language::CharacterResources {
+        font: identity,
+        dictionary: resources,
+    };
+    for (code, mode) in codes {
+        let name = PdfName::new(
+            encoding.name(code).unwrap_or(b".notdef").to_vec(),
+            graph.limits,
+        )?;
+        let Some((Some(key), CosObject::Stream(_))) = semantic_names::resolve_reference(
+            document,
+            procedures.get_name(&name),
+            graph.limits.max_object_depth,
+        )?
+        else {
+            continue;
+        };
+        if audit.used_procedures >= graph.limits.max_type3_charproc_streams {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_type3_charproc_streams",
+            }
+            .into());
+        }
+        let path = format!(
+            "root/page[{}]/type3CharProc[{}]",
+            content.page_ordinal,
+            super::object_key_text(key)
+        );
+        if let Some(mut procedure) = resource_content_stream(
+            graph,
+            key,
+            content.page_key,
+            content.page_ordinal,
+            path,
+            ResourceContent::CharProc(resources.clone()),
+        )? {
+            audit.used_procedures = audit.used_procedures.saturating_add(1);
+            procedure.glyph_content = GlyphContent::FontUseOnly;
+            procedure.initial_text_state = Some(TextState {
+                mode,
+                font: Some(selection.clone()),
+            });
+            push_linked(objects, ModelObjectRef::ContentStream(procedure), max)?;
+        }
+    }
+    Ok(())
 }
 
 fn push_unresolved_glyph<'a>(
@@ -855,7 +1199,7 @@ fn collect_uses<'a>(
             }
             OperatorFact::MarkedContent { op, .. } if matches!(op.as_str(), "BMC" | "BDC") => {
                 if let Some(span) = spans.next() {
-                    marked.push(GlyphMark::new(span, document, resources));
+                    marked.push(GlyphMark::new(span, document, resources, content.key));
                 }
             }
             OperatorFact::MarkedContent { op, .. } if op.as_str() == "EMC" => {
@@ -1447,6 +1791,14 @@ fn cid_set_bytes(graph: &ModelGraph<'_>, font: &Dictionary) -> Result<Option<Vec
     font_bytes(stream, graph.materializes(CID_SET_FAMILY), graph.limits)
 }
 
+fn font_declares_program(document: &ParsedDocument, font: &Dictionary) -> bool {
+    font_descriptor_dictionary(document, font).is_some_and(|descriptor| {
+        ["FontFile", "FontFile2", "FontFile3"]
+            .iter()
+            .any(|name| descriptor.get(name).is_some())
+    })
+}
+
 fn unavailable_program(
     document: &ParsedDocument,
     font: &Dictionary,
@@ -1454,16 +1806,28 @@ fn unavailable_program(
 ) -> Measurement {
     let type3 = semantic_names::name(document, font.get("Subtype"))
         .is_some_and(|name| name.matches("Type3"));
-    let declares_program = font_descriptor_dictionary(document, font).is_some_and(|descriptor| {
-        ["FontFile", "FontFile2", "FontFile3"]
-            .iter()
-            .any(|name| descriptor.get(name).is_some())
-    });
-    if sample.text.is_some() && !type3 && !declares_program {
+    if sample.text.is_some() && !type3 && !font_declares_program(document, font) {
         Measurement::Absent
     } else {
         Measurement::Unavailable
     }
+}
+
+fn selected_descendant<'a>(
+    document: &'a ParsedDocument,
+    font: &'a Dictionary,
+    id: ProgramFontId,
+) -> Option<(UsedFontId, &'a Dictionary)> {
+    let subtype = semantic_names::name(document, font.get("Subtype"))?;
+    if !subtype.matches("Type0") {
+        return None;
+    }
+    let (key, _, descendant) =
+        resolve_named_dictionary(document, descendant_font_value(document, font)?)?;
+    let id = key.map_or(UsedFontId::DirectDescendant(id), |key| {
+        UsedFontId::Font(ProgramFontId::Indirect(key))
+    });
+    Some((id, descendant))
 }
 
 #[allow(
@@ -1480,9 +1844,17 @@ fn inspect_font<'a>(
     audit: &mut CidAudit,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
-) -> Result<()> {
+) -> Result<bool> {
     let document = graph.document;
-    if graph.materializes(CHAR_SET_FAMILY) {
+    let id = UsedFontId::Font(selection.program_id);
+    let descendant = selected_descendant(document, font, selection.program_id);
+    if graph.materializes(USED_FONT) || graph.materializes(USED_CID_FONT) {
+        audit.record_font_use(document, id, font, samples, &content.context_prefix);
+        if let Some((id, dictionary)) = descendant {
+            audit.record_font_use(document, id, dictionary, samples, &content.context_prefix);
+        }
+    }
+    if !content.font_use_only() && graph.materializes(CHAR_SET_FAMILY) {
         audit.record_char_set(
             graph,
             selection.program_id,
@@ -1492,43 +1864,59 @@ fn inspect_font<'a>(
             &content.context_prefix,
         )?;
     }
-    let metric_font = descendant_font_dictionary(document, font).unwrap_or(font);
+    let (metric_id, metric_font) = descendant.unwrap_or((id, font));
     let is_true_type = semantic_names::name(document, font.get("Subtype"))
         .is_some_and(|name| name.matches("TrueType"));
-    let descriptor = font_descriptor_dictionary(document, font);
-    let embedded = if is_true_type {
+    let expects_sfnt = is_true_type
+        || semantic_names::name(document, metric_font.get("Subtype"))
+            .is_some_and(|name| name.matches("CIDFontType2"));
+    let descriptor = font_descriptor_dictionary(document, metric_font);
+    let embedded = if expects_sfnt {
         descriptor.and_then(|descriptor| sfnt::program_stream(document, descriptor))
     } else {
         font_program_stream(document, font)
     };
-    let program = graph.materializes(TRUE_TYPE_PROGRAM) && is_true_type && embedded.is_some();
-    let compare_glyphs = (graph.materializes(WIDTH_FAMILY) || graph.materializes(CID_SET_FAMILY))
+    let program = !content.font_use_only()
+        && graph.materializes(TRUE_TYPE_PROGRAM)
+        && is_true_type
+        && embedded.is_some();
+    let check_sfnt = expects_sfnt && graph.materializes(USED_FONT);
+    let compare_glyphs = !content.font_use_only()
+        && (graph.materializes(WIDTH_FAMILY) || graph.materializes(CID_SET_FAMILY))
         && samples.iter().any(|sample| sample.has_glyphs());
-    if !(program || compare_glyphs) {
-        return Ok(());
+    if !(program || compare_glyphs || check_sfnt) {
+        return Ok(false);
     }
     let encoding = if compare_glyphs {
         encoding(document, font, metric_font, graph.limits)?
     } else {
         Encoding::Unsupported
     };
-    let bytes = font_bytes(
-        embedded,
-        program
-            || !matches!(
-                encoding,
-                Encoding::Unsupported | Encoding::CffSimple(_) | Encoding::Type1(_)
-            ),
-        graph.limits,
-    )?;
+    let read_program = program
+        || check_sfnt
+        || !matches!(
+            encoding,
+            Encoding::Unsupported | Encoding::CffSimple(_) | Encoding::Type1(_)
+        );
+    let bytes = match embedded.filter(|_| read_program) {
+        Some(stream) => sfnt::read_bytes(stream, graph.limits)?,
+        None => ProgramBytes::Unavailable,
+    };
     let measurements = FontMetrics::read(
         document,
         font,
         metric_font,
         &encoding,
-        bytes.as_deref(),
+        bytes.as_slice(),
         simple_program,
     );
+    let rejected_program = check_sfnt
+        && audit.record_sfnt(
+            metric_id,
+            embedded.is_some(),
+            &bytes,
+            measurements.sfnt.is_some(),
+        );
     if program
         && let Some(metrics) = &measurements.sfnt
         && let Some(model) = audit.true_type_model(
@@ -1546,7 +1934,8 @@ fn inspect_font<'a>(
         measure_used_glyphs(
             content,
             graph,
-            selection.id,
+            selection,
+            rejected_program,
             &measurements,
             samples,
             audit,
@@ -1554,7 +1943,7 @@ fn inspect_font<'a>(
             max,
         )?;
     }
-    Ok(())
+    Ok(rejected_program)
 }
 
 #[allow(
@@ -1564,7 +1953,8 @@ fn inspect_font<'a>(
 fn measure_used_glyphs<'a>(
     content: &ContentStreamModel<'_>,
     graph: &ModelGraph<'a>,
-    id: FontId,
+    selection: &FontSelection,
+    rejected_program: bool,
     measurements: &FontMetrics<'_, '_>,
     samples: &[Sample<'_>],
     audit: &mut CidAudit,
@@ -1579,81 +1969,88 @@ fn measure_used_glyphs<'a>(
     let mut coverage = Coverage::Verified;
     let mut seen_widths = BTreeSet::new();
     let mut seen_cids = BTreeSet::new();
+    let ua1_scope = graph
+        .active_flavour
+        .as_ref()
+        .is_some_and(|flavour| flavour.family.as_str() == "pdfua" && flavour.part.get() == 1)
+        .then(|| WidthScope::read(content, document));
+    let check_widths = graph.materializes(WIDTH_FAMILY);
+    let missing_width = if rejected_program {
+        Measurement::Absent
+    } else {
+        Measurement::Unavailable
+    };
     for sample in samples.iter().filter(|sample| sample.has_glyphs()) {
-        if let Some(text) = sample.text
-            && !matches!(encoding, Encoding::Unsupported)
-        {
-            for string in &text.0 {
-                let data = string.as_bytes();
-                for decoded in character_codes(data, encoding.cid_encoding()) {
-                    let Some((code, gid, exact)) =
-                        decoded.and_then(|code| measurements.select(code))
-                    else {
-                        coverage = coverage.include(Coverage::Unavailable);
-                        if graph.materializes(WIDTH_FAMILY)
-                            && seen_widths.insert((sample.mode, sample.marked_content, 0, false))
-                        {
-                            push_width(
-                                objects,
-                                document,
-                                *sample,
-                                Measurement::Unavailable,
-                                Measurement::Unavailable,
-                                content,
-                                max,
-                            )?;
-                        }
-                        continue;
-                    };
-                    if encoding.cid_encoding().is_some() && seen_cids.insert((code, exact)) {
-                        coverage = coverage.include(check_cid(
-                            code,
-                            measurements.contains_gid(gid),
-                            cid_bits.as_deref(),
-                        ));
-                    }
-                    if graph.materializes(WIDTH_FAMILY)
-                        && seen_widths.insert((sample.mode, sample.marked_content, code, exact))
-                    {
-                        push_width(
-                            objects,
-                            document,
-                            *sample,
-                            if exact {
-                                measurements.width(code, gid, audit, graph.limits)?
-                            } else {
-                                Measurement::Unavailable
-                            },
-                            if exact {
-                                measurements.expected(code)
-                            } else {
-                                Measurement::Unavailable
-                            },
-                            content,
-                            max,
-                        )?;
-                    }
-                }
-            }
-        } else {
+        let text = sample
+            .text
+            .filter(|_| !matches!(encoding, Encoding::Unsupported));
+        let Some(text) = text else {
             coverage = coverage.include(Coverage::Unavailable);
-            if graph.materializes(WIDTH_FAMILY)
-                && seen_widths.insert((sample.mode, sample.marked_content, 0, false))
-            {
+            if check_widths && seen_widths.insert((sample.mode, sample.marked_content, 0, false)) {
+                let width = if sample.text.is_some() && rejected_program {
+                    Measurement::Absent
+                } else {
+                    unavailable_program(document, font, *sample)
+                };
                 push_width(
                     objects,
                     document,
                     *sample,
-                    unavailable_program(document, font, *sample),
+                    width,
                     Measurement::Unavailable,
                     content,
                     max,
                 )?;
             }
+            continue;
+        };
+        for decoded in text
+            .0
+            .iter()
+            .flat_map(|string| character_codes(string.as_bytes(), encoding.cid_encoding()))
+        {
+            let selection_result = decoded.and_then(|(_, code)| measurements.select(code));
+            let (code, gid, exact) = selection_result.unwrap_or((0, None, false));
+            if selection_result.is_none() {
+                coverage = coverage.include(Coverage::Unavailable);
+            } else if encoding.cid_encoding().is_some() && seen_cids.insert((code, exact)) {
+                coverage = coverage.include(check_cid(
+                    code,
+                    measurements.contains_gid(gid),
+                    cid_bits.as_deref(),
+                ));
+            }
+            if !check_widths {
+                continue;
+            }
+            let first_observation = if let (Some(scope), Some((code, _))) = (ua1_scope, decoded) {
+                audit.measured_ua1_widths.insert(WidthUse {
+                    font: selection.program_id,
+                    scope,
+                    mode: sample.mode,
+                    marked_content: sample.marked_content,
+                    code,
+                })
+            } else {
+                seen_widths.insert((sample.mode, sample.marked_content, code, exact))
+            };
+            if first_observation {
+                let width = if exact && !rejected_program {
+                    measurements.width(code, gid, audit, graph.limits)?
+                } else {
+                    missing_width
+                };
+                let expected = if exact {
+                    measurements.expected(code)
+                } else {
+                    Measurement::Unavailable
+                };
+                push_width(objects, document, *sample, width, expected, content, max)?;
+            }
         }
     }
     if graph.materializes(CID_SET_FAMILY)
-        && let Some(record) = audit.record(id, document, font, &content.context_prefix)
+        && let Some(record) = audit.record(selection.id, document, font, &content.context_prefix)
     {
         record.coverage = record.coverage.include(coverage);
     }
@@ -1669,23 +2066,32 @@ enum CharacterCode {
 fn character_codes<'a>(
     mut bytes: &'a [u8],
     encoding: Option<&'a CidEncoding>,
-) -> impl Iterator<Item = Option<CharacterCode>> + 'a {
+) -> impl Iterator<Item = Option<(Code, CharacterCode)>> + 'a {
     std::iter::from_fn(move || {
         if bytes.is_empty() {
             return None;
         }
         let code = match encoding {
-            Some(CidEncoding::Embedded(cmap)) => cmap.next_cid(&mut bytes).map(CharacterCode::Cid),
+            Some(CidEncoding::Embedded(cmap)) => cmap
+                .next_character_code(&mut bytes)
+                .map(|(code, cid)| (code, CharacterCode::Cid(cid))),
             Some(CidEncoding::Identity) => bytes.split_at_checked(2).and_then(|(code, rest)| {
                 bytes = rest;
-                Some(CharacterCode::Cid(CidSelection {
-                    preferred: Some(u32::from(u16::from_be_bytes(code.try_into().ok()?))),
-                    fallback: 0,
-                }))
+                let raw = Code::from_slice(code)?;
+                Some((
+                    raw,
+                    CharacterCode::Cid(CidSelection {
+                        preferred: Some(u32::from(u16::from_be_bytes(code.try_into().ok()?))),
+                        fallback: 0,
+                    }),
+                ))
             }),
-            None => bytes.split_first().map(|(code, rest)| {
+            None => bytes.split_first().and_then(|(code, rest)| {
                 bytes = rest;
-                CharacterCode::Direct(u16::from(*code))
+                Some((
+                    Code::from_slice(&[*code])?,
+                    CharacterCode::Direct(u16::from(*code)),
+                ))
             }),
         };
         if code.is_none() {

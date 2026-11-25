@@ -115,6 +115,7 @@ struct SimpleMap<'a> {
     cff: Option<cff::Metrics<'a>>,
     type1: Option<&'a type1::Program>,
     require_listed_name: bool,
+    no_builtin_names: bool,
 }
 
 impl<'a> SimpleMap<'a> {
@@ -123,12 +124,16 @@ impl<'a> SimpleMap<'a> {
         font: &Dictionary,
         program: &'a SimpleProgram,
         require_listed_name: bool,
+        program_rejected: bool,
     ) -> Self {
         Self {
             encoding: simple::Encoding::read(document, font),
             cff: program.cff(),
             type1: program.type1(),
             require_listed_name,
+            no_builtin_names: program_rejected
+                || (super::is_type1(document, font)
+                    && !super::font_declares_program(document, font)),
         }
     }
 
@@ -150,7 +155,12 @@ impl<'a> SimpleMap<'a> {
                     glyph_name(name, self.require_listed_name)
                 });
         }
-        self.cff.as_ref().map_or(UnicodeLookup::Unavailable, |cff| {
+        let missing = if self.no_builtin_names {
+            UnicodeLookup::Missing
+        } else {
+            UnicodeLookup::Unavailable
+        };
+        self.cff.as_ref().map_or(missing, |cff| {
             cff.embedded_name(code)
                 .map_or(UnicodeLookup::Missing, |name| {
                     glyph_name(name, self.require_listed_name)
@@ -194,7 +204,12 @@ struct GlyphMap<'a> {
 }
 
 impl<'a> GlyphMap<'a> {
-    fn read(graph: &ModelGraph<'_>, font: &Dictionary, program: &'a SimpleProgram) -> Result<Self> {
+    fn read(
+        graph: &ModelGraph<'_>,
+        font: &Dictionary,
+        program: &'a SimpleProgram,
+        program_rejected: bool,
+    ) -> Result<Self> {
         let document = graph.document;
         let direct = DirectMap::read(graph, font)?;
         let subtype = semantic_names::name(document, font.get("Subtype"));
@@ -235,6 +250,7 @@ impl<'a> GlyphMap<'a> {
                         font,
                         program,
                         pdfa1 && super::is_type1(document, font),
+                        program_rejected,
                     )
                 }),
             )
@@ -300,13 +316,14 @@ pub(super) fn inspect<'a>(
     graph: &ModelGraph<'a>,
     font: &Dictionary,
     program: &SimpleProgram,
+    program_rejected: bool,
     samples: &[Sample<'_>],
     replacement_offsets: &BTreeSet<u64>,
     objects: &mut Vec<ModelObjectRef<'a>>,
     max: usize,
 ) -> Result<()> {
     let document = graph.document;
-    let map = GlyphMap::read(graph, font, program)?;
+    let map = GlyphMap::read(graph, font, program, program_rejected)?;
     let check_unicode = graph.materializes(FAMILY)
         && content.object_type.as_str() != crate::validation::language::CONTENT_FAMILY;
     let keep_marked_context = graph

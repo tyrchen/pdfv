@@ -1888,20 +1888,9 @@ impl ValidationSession {
             file_spec::association::finalize(&graph, &mut object)?;
             state.apply_rule(&object, rule, &mut evaluator)?;
         }
-        if graph.materializes(glyphs::CID_SET_FAMILY) || graph.materializes(glyphs::CHAR_SET_FAMILY)
-        {
-            let budget = remaining_object_budget(&self.limits, visited.len(), 0)?;
-            for object in graph
-                .cid_audit
-                .try_borrow()
-                .map_err(|_| ValidationError::SubsystemUnavailable {
-                    subsystem: "glyphAudit",
-                })?
-                .models(graph.document, budget)?
-            {
-                for rule in index.rules_for(&object) {
-                    state.apply_rule(&object, rule, &mut evaluator)?;
-                }
+        for object in graph.cid_audit_mut()?.models(graph.document, budget)? {
+            for rule in index.rules_for(&object) {
+                state.apply_rule(&object, rule, &mut evaluator)?;
             }
         }
         Ok(state.finish())
@@ -2502,6 +2491,16 @@ impl ModelRegistry {
             family("colorSpace", COLOR_SPACE_PROPERTIES, EMPTY_LINK_NAMES),
             family(device_n::FAMILY, device_n::PROPERTIES, EMPTY_LINK_NAMES),
             family(
+                glyphs::USED_FONT,
+                glyphs::USED_FONT_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
+                glyphs::USED_CID_FONT,
+                glyphs::USED_CID_FONT_PROPERTIES,
+                EMPTY_LINK_NAMES,
+            ),
+            family(
                 glyphs::WIDTH_FAMILY,
                 &[
                     "renderingMode",
@@ -2721,6 +2720,8 @@ impl ModelRegistry {
             && !matches!(
                 family.as_str(),
                 "pageBox"
+                    | glyphs::USED_FONT
+                    | glyphs::USED_CID_FONT
                     | glyphs::WIDTH_FAMILY
                     | glyphs::CID_SET_FAMILY
                     | glyphs::CHAR_SET_FAMILY
@@ -3530,7 +3531,10 @@ impl<'a> ModelObjectRef<'a> {
             Self::OutputIntent(model) => model.linked_objects(graph, max_objects),
             Self::ContentStream(model) => {
                 let mut objects = model.linked_objects(graph, max_objects)?;
-                if graph.needs_scoped_text_glyph_evidence() && model.page_key.is_some() {
+                if !model.font_use_only()
+                    && graph.needs_scoped_text_glyph_evidence()
+                    && model.page_key.is_some()
+                {
                     language::append_type3_streams(
                         graph,
                         model,
@@ -3680,7 +3684,9 @@ impl<'a> ModelGraph<'a> {
                     || family.as_str() == "resourceUse"
                     || matches!(
                         family.as_str(),
-                        glyphs::WIDTH_FAMILY
+                        glyphs::USED_FONT
+                            | glyphs::USED_CID_FONT
+                            | glyphs::WIDTH_FAMILY
                             | glyphs::CID_SET_FAMILY
                             | glyphs::CHAR_SET_FAMILY
                             | glyphs::UNICODE_FAMILY
@@ -3756,7 +3762,9 @@ impl<'a> ModelGraph<'a> {
 
     fn needs_glyph_evidence(&self) -> bool {
         self.active_flavour.is_some()
-            && (self.materializes(glyphs::WIDTH_FAMILY)
+            && (self.materializes(glyphs::USED_FONT)
+                || self.materializes(glyphs::USED_CID_FONT)
+                || self.materializes(glyphs::WIDTH_FAMILY)
                 || self.materializes(glyphs::TRUE_TYPE_PROGRAM)
                 || self.materializes(glyphs::CID_SET_FAMILY)
                 || self.materializes(glyphs::CHAR_SET_FAMILY)
@@ -6526,6 +6534,13 @@ impl ModelObject for OutputIntentModel<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlyphContent {
+    Semantic,
+    Auxiliary,
+    FontUseOnly,
+}
+
 /// Page content stream model wrapper.
 #[derive(Clone, Debug)]
 pub struct ContentStreamModel<'a> {
@@ -6533,6 +6548,7 @@ pub struct ContentStreamModel<'a> {
     limits: &'a ResourceLimits,
     page_key: Option<ObjectKey>,
     is_form: bool,
+    glyph_content: GlyphContent,
     language_view: language::StreamView,
     initial_color_state: Option<device_color::GraphicsState>,
     initial_text_state: Option<glyphs::TextState>,
@@ -6554,7 +6570,24 @@ pub struct ContentStreamModel<'a> {
 }
 
 impl<'a> ContentStreamModel<'a> {
+    fn font_use_only(&self) -> bool {
+        self.glyph_content == GlyphContent::FontUseOnly
+    }
+
     fn identity_key(&self) -> String {
+        if self.font_use_only() {
+            return format!(
+                "fontUseContent:{:?}:{:?}:{:?}:{:?}",
+                self.page_key,
+                self.key,
+                self.character_resources
+                    .as_ref()
+                    .map(|resources| &resources.font),
+                self.initial_text_state
+                    .as_ref()
+                    .map(glyphs::TextState::identity),
+            );
+        }
         if self.object_type.as_str() == language::CONTENT_FAMILY {
             let resources = self
                 .character_resources
@@ -6567,7 +6600,7 @@ impl<'a> ContentStreamModel<'a> {
         }
         match self.page_key {
             Some(page) => format!(
-                "contentStream:{}:{}:{}:{}:{:?}:{:?}:{:?}:{:?}",
+                "contentStream:{}:{}:{}:{}:{:?}:{:?}:{:?}:{:?}:{:?}",
                 page.number,
                 page.generation,
                 self.key.number,
@@ -6578,6 +6611,7 @@ impl<'a> ContentStreamModel<'a> {
                     .map(glyphs::TextState::identity),
                 self.initial_tag_context,
                 self.language_view,
+                self.glyph_content,
             ),
             None => format!(
                 "contentStream:detached:{}:{}:{}",
@@ -6661,6 +6695,75 @@ impl<'a> ContentStreamModel<'a> {
             dictionaries: nearest.into_iter().chain(local).collect(),
             cyclic: page.is_some_and(|page| page.cyclic),
         })
+    }
+
+    fn font_use_links<'doc>(
+        &self,
+        graph: &ModelGraph<'doc>,
+        summary: &ContentStreamSummary,
+        max_objects: usize,
+    ) -> Result<Vec<ModelObjectRef<'doc>>> {
+        let mut objects = Vec::new();
+        let color = if graph.needs_pattern_invocations() {
+            device_color::append(self, graph, summary, &mut objects, max_objects)?
+        } else {
+            BTreeMap::new()
+        };
+        let text = glyphs::inspect(
+            self,
+            graph,
+            summary,
+            &BTreeSet::new(),
+            &mut objects,
+            max_objects,
+        )?;
+        append_content_resources(
+            self,
+            graph,
+            &summary.resource_uses,
+            ContentInvocationStates {
+                color: &color,
+                text: &text,
+                tags: &BTreeMap::new(),
+            },
+            &mut objects,
+            max_objects,
+        )?;
+        Ok(objects)
+    }
+
+    fn check_summary_limits(
+        &self,
+        graph: &ModelGraph<'_>,
+        summary: &ContentStreamSummary,
+    ) -> Result<()> {
+        if self.language_view == language::StreamView::CharacterProcedure
+            && summary.operators_seen > self.limits.max_type3_charproc_ops
+        {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_type3_charproc_ops",
+            }
+            .into());
+        }
+        if summary.truncated
+            && graph.active_flavour.is_some()
+            && graph.materializes("contentStream")
+        {
+            return Err(ValidationError::LimitExceeded {
+                limit: "max_content_stream_ops",
+            }
+            .into());
+        }
+        if image_mask::enabled(graph)
+            && self.page_key.is_some()
+            && summary.scoped_operands_truncated
+        {
+            return Err(ValidationError::LimitExceeded {
+                limit: "image_resource_operands",
+            }
+            .into());
+        }
+        Ok(())
     }
 }
 
@@ -6755,23 +6858,9 @@ impl ModelObject for ContentStreamModel<'_> {
         max_objects: usize,
     ) -> Result<Vec<ModelObjectRef<'a>>> {
         let summary = self.summary()?;
-        if summary.truncated
-            && graph.active_flavour.is_some()
-            && graph.materializes("contentStream")
-        {
-            return Err(ValidationError::LimitExceeded {
-                limit: "max_content_stream_ops",
-            }
-            .into());
-        }
-        if image_mask::enabled(graph)
-            && self.page_key.is_some()
-            && summary.scoped_operands_truncated
-        {
-            return Err(ValidationError::LimitExceeded {
-                limit: "image_resource_operands",
-            }
-            .into());
+        self.check_summary_limits(graph, &summary)?;
+        if self.font_use_only() {
+            return self.font_use_links(graph, &summary, max_objects);
         }
         let mut objects = Vec::new();
         append_scoped_content_models(self, graph, &summary, &mut objects, max_objects)?;
@@ -10189,6 +10278,7 @@ fn push_content_stream<'a>(
         limits: page.limits,
         page_key: Some(page.key),
         is_form: false,
+        glyph_content: GlyphContent::Semantic,
         language_view: language::StreamView::Ordinary,
         initial_color_state: None,
         initial_text_state: None,
@@ -11583,14 +11673,6 @@ fn append_scoped_content_models<'a>(
     objects: &mut Vec<ModelObjectRef<'a>>,
     max_objects: usize,
 ) -> Result<()> {
-    if model.language_view == language::StreamView::CharacterProcedure
-        && summary.operators_seen > graph.limits.max_type3_charproc_ops
-    {
-        return Err(ValidationError::LimitExceeded {
-            limit: "max_type3_charproc_ops",
-        }
-        .into());
-    }
     if language::enabled(graph) && model.page_key.is_some() {
         language::append_content(graph, model, summary, objects, max_objects)?;
     }
@@ -11746,6 +11828,7 @@ fn append_content_resources<'a>(
 ) -> Result<()> {
     let language_only = model.object_type.as_str() == language::CONTENT_FAMILY;
     let check_graphics_states = !language_only
+        && !model.font_use_only()
         && (graph.materializes(semantic_names::INTENT)
             || graph.materializes(semantic_names::BLEND_MODE)
             || graph.materializes("halftone"));
@@ -11778,7 +11861,8 @@ fn append_content_resources<'a>(
             .path
             .as_ref()
             .map_or(model.context_prefix.as_str(), BoundedText::as_str);
-        if used.family == ResourceFamily::XObject
+        if !model.font_use_only()
+            && used.family == ResourceFamily::XObject
             && image_mask::enabled(graph)
             && model.page_key.is_some()
             && inspected_images.insert(&used.name)
@@ -11807,38 +11891,47 @@ fn append_content_resources<'a>(
                 ResourceContent::Resource,
             )?
         {
-            form.initial_color_state = used
-                .location
-                .offset
-                .and_then(|offset| states.color.get(&offset).copied());
-            form.initial_text_state = used
-                .location
-                .offset
-                .and_then(|offset| states.text.get(&offset).cloned());
-            form.initial_tag_context = used
-                .location
-                .offset
-                .and_then(|offset| states.tags.get(&offset).cloned());
-            if language_only {
-                form.object_type = ObjectTypeName::unchecked(language::CONTENT_FAMILY);
-                form.supertypes.clear();
-            } else if language::semantic_content_enabled(graph)
-                && used.family == ResourceFamily::XObject
-                && (model.language_view == language::StreamView::Semantic || !model.is_form)
-            {
-                form.language_view = language::StreamView::Semantic;
-            }
-            if form.initial_tag_context.is_some()
-                || (form.initial_text_state.is_some()
-                    && (graph.materializes(glyphs::UNICODE_FAMILY)
-                        || graph.materializes(glyphs::PUA_FAMILY)))
-            {
-                form.context_prefix = format!("{path}/form[{}]", object_key_text(key));
-            }
+            apply_content_invocation(&mut form, model, used, &states, graph, path);
             push_linked(objects, ModelObjectRef::ContentStream(form), max_objects)?;
         }
     }
     Ok(())
+}
+
+fn apply_content_invocation(
+    form: &mut ContentStreamModel<'_>,
+    caller: &ContentStreamModel<'_>,
+    used: &ResourceUse,
+    states: &ContentInvocationStates<'_>,
+    graph: &ModelGraph<'_>,
+    path: &str,
+) {
+    let offset = used.location.offset;
+    let xobject = used.family == ResourceFamily::XObject;
+    form.glyph_content = match caller.glyph_content {
+        GlyphContent::FontUseOnly => GlyphContent::FontUseOnly,
+        GlyphContent::Semantic if xobject => GlyphContent::Semantic,
+        _ => GlyphContent::Auxiliary,
+    };
+    form.initial_color_state = offset.and_then(|offset| states.color.get(&offset).copied());
+    form.initial_text_state = offset.and_then(|offset| states.text.get(&offset).cloned());
+    form.initial_tag_context = offset.and_then(|offset| states.tags.get(&offset).cloned());
+    if caller.object_type.as_str() == language::CONTENT_FAMILY {
+        form.object_type = ObjectTypeName::unchecked(language::CONTENT_FAMILY);
+        form.supertypes.clear();
+    } else if language::semantic_content_enabled(graph)
+        && xobject
+        && (caller.language_view == language::StreamView::Semantic || !caller.is_form)
+    {
+        form.language_view = language::StreamView::Semantic;
+    }
+    if form.initial_tag_context.is_some()
+        || (form.initial_text_state.is_some()
+            && (graph.materializes(glyphs::UNICODE_FAMILY)
+                || graph.materializes(glyphs::PUA_FAMILY)))
+    {
+        form.context_prefix = format!("{path}/form[{}]", object_key_text(form.key));
+    }
 }
 
 fn append_graphics_state_names<'a>(
@@ -12032,6 +12125,7 @@ fn resource_content_stream<'a>(
         limits: graph.limits,
         page_key,
         is_form: true,
+        glyph_content: GlyphContent::Auxiliary,
         language_view: if is_type3_charproc {
             language::StreamView::CharacterProcedure
         } else {
@@ -14287,6 +14381,249 @@ endobj
         let profile =
             validate_test_profile(&pdf, ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)?;
         assert_distinct_test_rule(&profile, "iso-19005-1-6-3-6-1", passes, failures);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("BT /F 12 Tf ET", 0, 0)]
+    #[case("BT /F 12 Tf (A) Tj ET", 0, 1)]
+    #[case("BT /F 12 Tf 3 Tr (A) Tj ET", 1, 0)]
+    #[case("BT /F 12 Tf 7 Tr (A) Tj ET", 0, 1)]
+    #[case("BT /F 12 Tf 3 Tr ET /Fm Do", 1, 0)]
+    #[case("BT /F 12 Tf 3 Tr ET /Fm Do BT 7 Tr ET /Fm Do", 0, 1)]
+    #[case("BT /F 12 Tf 7 Tr ET /Fm Do BT 3 Tr ET /Fm Do", 0, 1)]
+    #[case("BT /F 12 Tf 3 Tr ET q BT 7 Tr ET Q /Fm Do", 1, 0)]
+    #[case("BT /F 12 Tf [100 ()] TJ ET", 0, 1)]
+    fn test_should_evaluate_font_embedding_using_effective_text_rendering_modes(
+        #[case] body: &str,
+        #[case] passed: usize,
+        #[case] failed: usize,
+    ) -> crate::Result<()> {
+        let profile = validate_test_profile(
+            &test_type1_font_pdf("Helvetica", "", body, b"BT (A) Tj ET"),
+            ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-3-4-1", passed, failed);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("Helvetica", "", "(A)", 1, 0)]
+    #[case("Helvetica", "", "<80>", 0, 1)]
+    #[case("Helvetica", "/Encoding /WinAnsiEncoding", "<80>", 1, 0)]
+    #[case("ArialMT", "", "(A)", 0, 1)]
+    #[case(
+        "Helvetica",
+        "/Encoding << /Differences [65 /unlistedGlyph] >>",
+        "(AB)",
+        1,
+        1
+    )]
+    #[case("Symbol", "", "(A)", 1, 0)]
+    #[case("ZapfDingbats", "", "<20>", 1, 0)]
+    #[case("ZapfDingbats", "", "<21>", 0, 1)]
+    fn test_should_validate_standard_type1_unicode_using_the_effective_encoding(
+        #[case] name: &str,
+        #[case] entries: &str,
+        #[case] operand: &str,
+        #[case] passed: usize,
+        #[case] failed: usize,
+    ) -> crate::Result<()> {
+        let body = format!("BT /F 12 Tf 3 Tr {operand} Tj ET");
+        let profile = validate_test_profile(
+            &test_type1_font_pdf(name, entries, &body, b""),
+            ValidationFlavour::new("pdfa", NonZeroU32::MIN, "a")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-3-8-1", passed, failed);
+        Ok(())
+    }
+
+    fn test_type1_font_pdf(name: &str, entries: &str, body: &str, form: &[u8]) -> Vec<u8> {
+        let mut pdf = format!(
+            "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type \
+             /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R \
+             /Contents 4 0 R /Resources\n<< /XObject << /Fm 5 0 R >> /Font << /F 6 0 R >> >> \
+             >>\nendobj\n6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /{name} {entries} \
+             >>\nendobj\n"
+        )
+        .into_bytes();
+        append_test_stream(&mut pdf, "4 0 obj", "", body.as_bytes());
+        append_test_stream(&mut pdf, "5 0 obj", "/Type /XObject /Subtype /Form", form);
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        pdf
+    }
+
+    #[rstest]
+    #[case("(A)", 0, "", 1, 1)]
+    #[case("(A)", 3, "", 2, 0)]
+    #[case("(A)", 3, "7 Tr", 1, 1)]
+    #[case("()", 0, "7 Tr", 1, 0)]
+    fn test_should_check_fonts_used_inside_selected_type3_charprocs(
+        #[case] operand: &str,
+        #[case] outer_mode: u8,
+        #[case] inner_mode: &str,
+        #[case] passed: usize,
+        #[case] failed: usize,
+    ) -> crate::Result<()> {
+        let mut pdf = b"%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F 6 0 R >> >> >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type3 /FirstChar 65 /LastChar 66 /Widths [600 600]
+/Resources << /Font << /Inner 7 0 R >> >>
+/Encoding << /Differences [65 /A /B] >> /CharProcs << /A 5 0 R /B 8 0 R >> >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+"
+        .to_vec();
+        let text = format!("BT /F 12 Tf {outer_mode} Tr {operand} Tj ET");
+        append_test_stream(&mut pdf, "4 0 obj", "", text.as_bytes());
+        let procedure = format!("600 0 d0 BT /Inner 10 Tf {inner_mode} (A) Tj ET");
+        append_test_stream(&mut pdf, "5 0 obj", "", procedure.as_bytes());
+        append_test_stream(
+            &mut pdf,
+            "8 0 obj",
+            "",
+            b"600 0 d0 BT /Inner 10 Tf 0 Tr (A) Tj ET",
+        );
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile =
+            validate_test_profile(&pdf, ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?)?;
+        assert_distinct_test_rule(&profile, "iso-19005-1-6-3-4-1", passed, failed);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("", 0, 1)]
+    #[case("/CIDToGIDMap /Identity", 1, 0)]
+    #[case("/CIDToGIDMap /Other", 0, 1)]
+    fn test_should_check_cid_to_gid_map_in_the_descendant_use_scope(
+        #[case] entries: &str,
+        #[case] expected: usize,
+        #[case] failures: usize,
+    ) -> crate::Result<()> {
+        let pdf = format!(
+            "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type \
+             /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R \
+             /Contents 4 0 R /Resources\n<< /Font << /F 5 0 R >> >> >>\nendobj\n5 0 obj\n<< /Type \
+             /Font /Subtype /Type0 /Encoding /Identity-H /DescendantFonts [6 0 R] >>\nendobj\n6 0 \
+             obj\n<< /Type /Font /Subtype /CIDFontType2 {entries} >>\nendobj\n"
+        )
+        .into_bytes();
+        for mode in [0, 3] {
+            let mut document = pdf.clone();
+            let body = format!("BT /F 12 Tf {mode} Tr <0001> Tj ET");
+            append_test_stream(&mut document, "4 0 obj", "", body.as_bytes());
+            document.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+            let profile = validate_test_profile(
+                &document,
+                ValidationFlavour::new("pdfa", NonZeroU32::MIN, "b")?,
+            )?;
+            let (passed, failed) = if mode == 3 {
+                (1, 0)
+            } else {
+                (expected, failures)
+            };
+            assert_distinct_test_rule(&profile, "iso-19005-1-6-3-3-2-1", passed, failed);
+            let (passed, failed) = if mode == 3 { (2, 0) } else { (1, 1) };
+            assert_distinct_test_rule(&profile, "iso-19005-1-6-3-4-1", passed, failed);
+        }
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("", "BT (A) Tj ET", 1, 0)]
+    #[case("/StructParents 1", "BT (A) Tj ET", 2, 0)]
+    #[case("", "BT 3 Tr (A) Tj ET", 2, 0)]
+    #[case("", "BT (B) Tj ET", 1, 1)]
+    fn test_should_share_pdfua_width_evidence_only_for_the_same_glyph_scope(
+        #[case] form_entries: &str,
+        #[case] form_text: &str,
+        #[case] passed: usize,
+        #[case] failed: usize,
+    ) -> crate::Result<()> {
+        let mut pdf = b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources
+<< /XObject << /Fm 5 0 R >> /Font << /F 6 0 R >> >> >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type3 /FirstChar 65 /LastChar 66 /Widths [600 500]
+/Encoding << /Differences [65 /A /B] >> /CharProcs << /A 7 0 R /B 7 0 R >> >>
+endobj
+"
+        .to_vec();
+        append_test_stream(&mut pdf, "4 0 obj", "", b"BT /F 12 Tf (A) Tj ET /Fm Do");
+        append_test_stream(
+            &mut pdf,
+            "5 0 obj",
+            &format!("/Type /XObject /Subtype /Form {form_entries}"),
+            form_text.as_bytes(),
+        );
+        append_test_stream(&mut pdf, "7 0 obj", "", b"600 0 d0");
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new("pdfua", NonZeroU32::MIN, "none")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-14289-1-7-21-5-1", passed, failed);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("FontFile2", "", b"not a TrueType font")]
+    #[case("FontFile2", "", b"\0\x01\0\0\0\0\0\0\0\0\0\0")]
+    #[case("FontFile3", "/Subtype /OpenType", b"not an OpenType font")]
+    fn test_should_reject_a_confirmed_corrupt_truetype_program_at_embedding_check(
+        #[case] slot: &str,
+        #[case] entries: &str,
+        #[case] font_bytes: &[u8],
+    ) -> crate::Result<()> {
+        let mut pdf = format!(
+            "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F 5 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /TrueType /BaseFont /Test /FirstChar 65 /LastChar 65
+/Widths [500] /FontDescriptor 6 0 R >>
+endobj
+6 0 obj
+<< /Type /FontDescriptor /FontName /Test /Flags 4 /{slot} 7 0 R >>
+endobj
+"
+        )
+        .into_bytes();
+        append_test_stream(&mut pdf, "4 0 obj", "", b"BT /F 12 Tf (A) Tj ET");
+        append_test_stream(&mut pdf, "7 0 obj", entries, font_bytes);
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new("pdfua", NonZeroU32::MIN, "none")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-14289-1-7-21-4-1-1", 0, 1);
+        assert_distinct_test_rule(&profile, "iso-14289-1-7-21-5-1", 1, 0);
         Ok(())
     }
 

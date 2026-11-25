@@ -135,7 +135,8 @@ impl CMap {
         !self.unicode && !self.inherits && !self.spaces.is_empty()
     }
 
-    pub(super) fn next_cid(&self, input: &mut &[u8]) -> Option<CidSelection> {
+    #[cfg(test)]
+    fn next_cid(&self, input: &mut &[u8]) -> Option<CidSelection> {
         self.next_character_code(input).map(|(_, cid)| cid)
     }
 

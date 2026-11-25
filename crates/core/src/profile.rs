@@ -2896,6 +2896,20 @@ impl XmlRuleBuilder {
 }
 
 fn imported_rule_family(object: &str, test: &str) -> Option<&'static str> {
+    match (object, test) {
+        (
+            "font",
+            "Subtype == \"Type3\" || Subtype == \"Type0\" || renderingMode == 3 || \
+             containsFontFile == true",
+        ) => return Some(crate::validation::glyphs::USED_FONT),
+        (
+            "cidFont",
+            r#"Subtype != "CIDFontType2" || CIDToGIDMap != null || renderingMode == 3"#,
+        ) => {
+            return Some(crate::validation::glyphs::USED_CID_FONT);
+        }
+        _ => {}
+    }
     if object == "type1Font" && test.contains("charSetListsAllGlyphs") {
         return Some(crate::validation::glyphs::CHAR_SET_FAMILY);
     }
