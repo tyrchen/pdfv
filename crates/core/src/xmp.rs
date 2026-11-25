@@ -2,6 +2,7 @@
 
 pub(crate) mod property;
 mod rdf;
+mod xpath;
 
 use std::{
     char,
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     BoundedText, CosObject, Identifier, ObjectKey, ParseError, ParseFact, ParsedDocument,
     PdfvError, ProfileRepository, ResourceLimits, Result, StreamObject, ValidationFlavour,
-    ValidationProfile, ValidationWarning, XmpFact, display_flavour,
+    ValidationProfile, ValidationWarning, XmpConformanceValue, XmpFact, display_flavour,
 };
 
 const PDF_A_ID_NS: &str = "http://www.aiim.org/pdfa/ns/id/";
@@ -887,10 +888,21 @@ impl<'a> PacketBuilder<'a> {
             claims: checked_u64_len(identification.len(), "XMP claim count")?,
         });
         for claim in &identification {
+            let conformance_value = if claim.kind == XmpIdentificationKind::PdfA {
+                self.pdfa_conformance().and_then(|value| match value {
+                    rdf::Value::Text(text) => (claim.conformance.as_ref().map(Identifier::as_str)
+                        != Some(text.as_str()))
+                    .then(|| XmpConformanceValue::Text(text.clone())),
+                    _ => Some(XmpConformanceValue::NonScalar),
+                })
+            } else {
+                None
+            };
             self.facts.push(XmpFact::FlavourClaim {
                 family: claim.flavour.family.clone(),
                 part: claim.part.get(),
                 conformance: claim.conformance.clone(),
+                conformance_value,
                 part_prefix: claim.part_prefix.clone(),
                 display_flavour: claim.display_flavour.clone(),
                 namespace_uri: claim.namespace_uri.clone(),
@@ -1271,11 +1283,15 @@ impl<'a> PacketBuilder<'a> {
         };
         let part_number = parse_nonzero_part(part.value.as_str(), "PDF/A part")?;
         let conformance = self.property(PDF_A_ID_NS, "conformance");
-        let flavour_conformance = conformance.map_or_else(
-            || String::from("none"),
-            |property| property.value.as_str().to_ascii_lowercase(),
-        );
-        let flavour = ValidationFlavour::new("pdfa", part_number, flavour_conformance)?;
+        let level = self
+            .pdfa_conformance()
+            .and_then(rdf::Value::text)
+            .and_then(|text| Identifier::new(text.trim().to_ascii_lowercase()).ok());
+        let flavour = ValidationFlavour::new(
+            "pdfa",
+            part_number,
+            level.as_ref().map_or("none", Identifier::as_str),
+        )?;
         Ok(Some(claim_from_property(
             XmpIdentificationKind::PdfA,
             &flavour,
@@ -1283,6 +1299,13 @@ impl<'a> PacketBuilder<'a> {
             conformance,
             self.property(PDF_A_ID_NS, "rev"),
         )?))
+    }
+
+    fn pdfa_conformance(&self) -> Option<&rdf::Value> {
+        self.rdf_properties
+            .iter()
+            .find(|node| node.matches(PDF_A_ID_NS, "conformance"))
+            .map(|node| &node.value)
     }
 
     fn pdfua_claim(&self) -> Result<Option<FlavourClaim>> {
@@ -1643,9 +1666,9 @@ fn claim_from_property(
         kind,
         flavour: flavour.clone(),
         part: flavour.part,
-        conformance: conformance
-            .map(|property| Identifier::new(property.value.as_str().to_ascii_uppercase()))
-            .transpose()?,
+        conformance: (kind == XmpIdentificationKind::PdfA
+            && flavour.conformance.as_str() != "none")
+            .then(|| Identifier::unchecked(flavour.conformance.as_str().to_ascii_uppercase())),
         part_prefix: property.prefix.clone(),
         display_flavour: display_flavour(flavour)?,
         namespace_uri: property.namespace.clone(),

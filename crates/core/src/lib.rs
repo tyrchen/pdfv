@@ -1999,6 +1999,22 @@ pub enum StreamFact {
     },
 }
 
+/// RDF conformance evidence beyond the normalized PDF/A identification claim.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    tag = "kind",
+    content = "value"
+)]
+pub enum XmpConformanceValue {
+    /// Original scalar text.
+    Text(BoundedText),
+    /// The property is present with a non-scalar value.
+    NonScalar,
+}
+
 /// XMP metadata parser fact.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
@@ -2026,6 +2042,13 @@ pub enum XmpFact {
         /// Claimed conformance level when present.
         #[serde(skip_serializing_if = "Option::is_none")]
         conformance: Option<Identifier>,
+        /// RDF value evidence when the conformance claim alone cannot represent it.
+        #[serde(
+            rename = "conformanceValue",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        conformance_value: Option<XmpConformanceValue>,
         /// Namespace prefix used by the part property.
         part_prefix: Identifier,
         /// Profile display spelling.
@@ -3671,25 +3694,37 @@ fn xmp_fact_text(fact: &XmpFact) -> String {
             family,
             part,
             conformance,
+            conformance_value,
             part_prefix,
             display_flavour,
             namespace_uri,
             rev,
             rev_prefix,
             conformance_prefix,
-        } => format!(
-            "flavourClaim family={} part={} conformance={} partPrefix={} displayFlavour={} \
-             namespaceUri={} rev={} revPrefix={} conformancePrefix={}",
-            family.as_str(),
-            part,
-            conformance.as_ref().map_or("", Identifier::as_str),
-            part_prefix.as_str(),
-            display_flavour.as_str(),
-            namespace_uri.as_str(),
-            rev.as_ref().map_or("", BoundedText::as_str),
-            rev_prefix.as_ref().map_or("", Identifier::as_str),
-            conformance_prefix.as_ref().map_or("", Identifier::as_str)
-        ),
+        } => {
+            let description = format!(
+                "flavourClaim family={} part={} conformance={} partPrefix={} displayFlavour={} \
+                 namespaceUri={} rev={} revPrefix={} conformancePrefix={}",
+                family.as_str(),
+                part,
+                conformance.as_ref().map_or("", Identifier::as_str),
+                part_prefix.as_str(),
+                display_flavour.as_str(),
+                namespace_uri.as_str(),
+                rev.as_ref().map_or("", BoundedText::as_str),
+                rev_prefix.as_ref().map_or("", Identifier::as_str),
+                conformance_prefix.as_ref().map_or("", Identifier::as_str)
+            );
+            match conformance_value {
+                Some(XmpConformanceValue::Text(text)) => {
+                    format!("{description} conformanceText={}", text.as_str())
+                }
+                Some(XmpConformanceValue::NonScalar) => {
+                    format!("{description} conformanceNonScalar=true")
+                }
+                None => description,
+            }
+        }
         XmpFact::PacketHeader {
             bytes,
             encoding,

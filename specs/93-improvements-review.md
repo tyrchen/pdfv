@@ -15,10 +15,6 @@ of the current implementation phase.
   the embedded-font rules. See
   [the glyph measurement](../crates/core/src/validation/glyphs.rs) and
   [the live comparisons](../docs/reviews/m9-live-conformance-review.md#built-in-truetype-encoding-and-glyph-widths).
-- **P2.** Resolve XPath 1.0 core function names and arity at validation time
-  within the existing syntax budget. Feed the exact RDF value to PDF/A
-  `conformance` checks alongside the normalized claim used for detection.
-  See [the XMP audit](../docs/reviews/m9-live-conformance-review.md#qualified-xmp-property-validation).
 - **P2.** Resolve the built-in encodings of nonembedded standard fonts and
   bind PDF/A-1 font embedding exceptions to the rendering modes of actual
   text use. An invisible Helvetica control lacks an explicit Encoding,
@@ -28,6 +24,10 @@ of the current implementation phase.
 
 ## Resolved M9 Findings
 
+- **P2.** XPath values use bounded syntax and core function signature checks.
+  PDF/A identification uses the original RDF conformance text and detects
+  a present empty value. The auto-selection claim remains normalized.
+  [XPath and identification review](../docs/reviews/m9-live-conformance-review.md#xpath-functions-and-pdfa-identification)
 - **P2.** Standard security handler revisions 2–4 append the prefix of
   the password padding sequence. Independent libqpdf fixtures verify both
   user and owner authentication. Decrypted PDF/A inputs still fail the

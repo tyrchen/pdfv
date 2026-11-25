@@ -223,6 +223,116 @@ fn test_should_auto_select_profile_from_pdfa_xmp_claim() -> Result<(), Box<dyn E
 }
 
 #[test]
+fn test_should_validate_original_pdfa_conformance_and_keep_auto_detection()
+-> Result<(), Box<dyn Error>> {
+    let options = ValidationOptions::builder()
+        .flavour(FlavourSelection::Auto { default: None })
+        .record_passed_assertions(true)
+        .build();
+    let validator = Validator::new(options)?;
+    let rule = "iso-19005-2-6-6-4-3";
+
+    for (text, fails) in [("B", false), ("&#66;", false), ("b", true), (" B ", true)] {
+        for as_element in [false, true] {
+            let mut xmp = pdfa_xmp("2", text);
+            if as_element {
+                xmp = xmp.replace(
+                    &format!("pdfaid:conformance=\"{text}\"/>"),
+                    &format!("><pdfaid:conformance>{text}</pdfaid:conformance></rdf:Description>"),
+                );
+            }
+            let report = validator
+                .validate_reader(Cursor::new(pdf_with_metadata(xmp)), InputName::memory())?;
+            let profile = report
+                .profile_reports
+                .first()
+                .ok_or("expected a detected PDF/A-2b profile")?;
+            assert_eq!(profile.profile.id.as_str(), "verapdf-pdfa-2b");
+            assert_eq!(
+                profile
+                    .failed_assertions
+                    .iter()
+                    .any(|assertion| assertion.rule_id.0.as_str() == rule),
+                fails,
+                "{text:?} as element {as_element}"
+            );
+            assert_eq!(
+                profile
+                    .passed_assertions
+                    .iter()
+                    .any(|assertion| assertion.rule_id.0.as_str() == rule),
+                !fails
+            );
+        }
+    }
+    Ok(())
+}
+
+#[rstest::rstest]
+#[case(4)]
+#[case(100_000)]
+fn test_should_distinguish_absent_and_present_conformance_in_pdfa4(
+    #[case] fact_cap: usize,
+) -> Result<(), Box<dyn Error>> {
+    let part = NonZeroU32::new(4).ok_or("invalid fixture part")?;
+    let mut limits = ResourceLimits::default();
+    limits.max_parse_facts = fact_cap;
+    let options = ValidationOptions::builder()
+        .flavour(FlavourSelection::Explicit {
+            flavour: ValidationFlavour::new("pdfa", part, "none")?,
+        })
+        .resource_limits(limits)
+        .record_passed_assertions(true)
+        .build();
+    let validator = Validator::new(options)?;
+    let rule = "iso-19005-4-6-7-3-3";
+
+    for (property, passes) in [
+        ("", true),
+        ("<pdfaid:conformance/>", false),
+        ("<pdfaid:conformance> </pdfaid:conformance>", false),
+        (
+            "<pdfaid:conformance>two letters!</pdfaid:conformance>",
+            false,
+        ),
+        (
+            "<pdfaid:conformance><rdf:Bag><rdf:li>B</rdf:li></rdf:Bag></pdfaid:conformance>",
+            false,
+        ),
+    ] {
+        let xmp = pdfa_xmp("4", "B").replace(
+            "pdfaid:conformance=\"B\"/>",
+            &format!("pdfaid:rev=\"2020\">{property}</rdf:Description>"),
+        );
+        let xmp = format!(
+            "<?xpacket begin=\"\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n{xmp}\n<?xpacket end=\"w\"?>"
+        );
+        let report =
+            validator.validate_reader(Cursor::new(pdf_with_metadata(xmp)), InputName::memory())?;
+        let profile = report
+            .profile_reports
+            .first()
+            .ok_or("expected PDF/A-4 report")?;
+        assert_eq!(
+            profile
+                .passed_assertions
+                .iter()
+                .any(|a| a.rule_id.0.as_str() == rule),
+            passes,
+            "{property:?}"
+        );
+        assert_eq!(
+            profile
+                .failed_assertions
+                .iter()
+                .any(|a| a.rule_id.0.as_str() == rule),
+            !passes
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn test_should_auto_select_multiple_profiles_from_xmp_claims() -> Result<(), Box<dyn Error>> {
     let report = Validator::new(
         ValidationOptions::builder()

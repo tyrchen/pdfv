@@ -414,13 +414,10 @@ specialized corpora show zero unsupported evaluations. The PDF/A-2b XMP
 rules match in 1,717 of 1,725 comparisons. The eight differences across
 three fixtures come from object-level metadata packets.
 
-Focused controls retain differences outside these corpora. pdfv requires a
-language qualifier on each language-alternative item. XPath function
-resolution and arity checks remain open. The PDF/A identification rule
-still uses the normalized conformance claim. These
-differences affect, respectively, mixed language arrays, syntactically
-correct XPath with invalid function calls, and whitespace around
-`pdfaid:conformance`.
+Focused controls outside these corpora found differences in mixed language
+arrays. pdfv requires a language qualifier on each language-alternative item.
+The later XPath and identification follow-up covers function calls and
+whitespace in `pdfaid:conformance`.
 
 ## Object-Level XMP Packets
 
@@ -627,10 +624,34 @@ The `test-minimal` target verifies the feature-disabled core library, including
 the `Encrypted` status without decryption support and the unsupported-filter
 diagnostic without Flate.
 
+## XPath Functions and PDF/A Identification
+
+The XPath check enforces core function names and argument counts before
+bounded syntax compilation. It handles XML whitespace, XPath node tests,
+and namespaced extension calls. The 1,024-byte and 64-operator limits apply
+before compilation.
+[XPath 1.0 core function library](https://www.w3.org/TR/1999/REC-xpath-19991116/#corelib)
+
+PDF/A profile selection uses the normalized claim. The identification rule
+uses the RDF scalar with XML character references resolved and its case and
+whitespace preserved. A present empty property fails the base PDF/A-4
+absence requirement. Present non-scalar values also fail that requirement
+when the identification fact is retained under a reduced diagnostic cap.
+Greenfield treats the non-scalar property as absent in the focused
+base PDF/A-4 controls.
+
+The optional `conformanceValue` field on `XmpFact::FlavourClaim` retains
+lexical or non-scalar evidence. Earlier JSON facts still deserialize using
+their normalized claim. Rust callers that destructure this variant
+exhaustively now account for the added field.
+
+All 144 identification controls match Greenfield 1.30.4 in rule counts and
+document outcome. The XPath controls agree in 123 of 126 cases. The three
+differences are the XSLT calls `current()` and `function-available()`, and
+the malformed QName `a:b:c()`. Greenfield accepts these expressions.
+
 ## Release Blockers
 
-- The focused XPath function and identification cases still need
-  rule-level evidence.
 - The current workspace has zero private T3 release documents. Qualification
   requires the corpus and acceptance evidence specified in the
   [oracle verification plan](../../specs/27-oracle-corpus-verification-plan.md).

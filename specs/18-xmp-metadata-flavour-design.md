@@ -61,6 +61,10 @@ Auto mode:
 
 Explicit profile selection bypasses auto detection but metadata facts remain available to rules.
 
+PDF/A profile selection uses the normalized conformance identifier. The
+identification rule uses the original RDF scalar, including its case and
+whitespace. Base PDF/A-4 requires the conformance property to be absent.
+
 ## 5. Security and Resource Limits
 
 XMP is hostile input:
@@ -71,6 +75,12 @@ XMP is hostile input:
 - no DTD processing
 - no network or filesystem access
 - reject or report invalid UTF-8 according to XML parser policy
+
+XPath values are compiled under a 1,024-byte and 64-operator or delimiter
+budget. Unprefixed calls must match a core XPath 1.0 function and its arity.
+Namespaced calls are checked for syntax in the packet. Their definitions
+belong to the context that evaluates the XPath.
+[XPath 1.0 lexical grammar and core function library](https://www.w3.org/TR/1999/REC-xpath-19991116/#corelib)
 
 If an XML crate is added, its latest stable version and security posture must be checked before implementation per AGENTS.md dependency policy. The design does not pin a crate here because this spec is crate-agnostic.
 

@@ -7,13 +7,13 @@ use std::{
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use sxd_xpath_nounsafe::Factory;
 
 use super::{
     PDFA_EXTENSION_NS, PDFA_SCHEMA_NS, PDFA_TYPE_NS,
     rdf::{ArrayKind, Node, Value},
+    xpath,
 };
-use crate::{BoundedText, Identifier, ParseError, Result, ValidationError};
+use crate::{BoundedText, Identifier, Result, ValidationError};
 
 const PROPERTY_NS: &str = "http://www.aiim.org/pdfa/ns/property#";
 const FIELD_NS: &str = "http://www.aiim.org/pdfa/ns/field#";
@@ -523,7 +523,7 @@ fn validate_primitive(value: &Value, kind: &str, pdfa1: bool) -> Result<bool> {
             .split_once('/')
             .is_some_and(|(left, right)| mime_token(left) && mime_token(right))),
         "gpscoordinate" => gps_pattern(pdfa1).map(|pattern| pattern.is_match(text)),
-        "xpath" => validate_xpath(text),
+        "xpath" => xpath::validate(text),
         _ => Ok(true),
     }
 }
@@ -581,53 +581,4 @@ fn gps_pattern(pdfa1: bool) -> Result<&'static Regex> {
         }
         .into()
     })
-}
-
-fn validate_xpath(value: &str) -> Result<bool> {
-    // Bound the compiler's recursive-descent grammar and the shape of the resulting AST.
-    if value.len() > 1024 {
-        return Err(ParseError::LimitExceeded {
-            limit: "max_xmp_xpath_bytes",
-        }
-        .into());
-    }
-    let mut quote = None;
-    let mut operators = 0_u32;
-    for byte in value.bytes() {
-        if let Some(terminator) = quote {
-            if byte == terminator {
-                quote = None;
-            }
-        } else if matches!(byte, b'\'' | b'"') {
-            quote = Some(byte);
-        } else if b"([=-+*/<>,|".contains(&byte) {
-            operators = operators.saturating_add(1);
-        }
-        if operators > 64 {
-            return Err(ParseError::LimitExceeded {
-                limit: "max_xmp_xpath_operators",
-            }
-            .into());
-        }
-    }
-    Ok(Factory::new().build(value).is_ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_xpath;
-    use crate::{ParseError, PdfvError, Result};
-
-    #[test]
-    fn test_should_compile_bounded_xpath_syntax() -> Result<()> {
-        assert!(validate_xpath("//item[@value = '1']")?);
-        assert!(!validate_xpath("[")?);
-        assert!(matches!(
-            validate_xpath(&format!("{}1", "-".repeat(65))),
-            Err(PdfvError::Parse(ParseError::LimitExceeded {
-                limit: "max_xmp_xpath_operators",
-            }))
-        ));
-        Ok(())
-    }
 }

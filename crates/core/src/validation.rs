@@ -5279,10 +5279,7 @@ impl ModelObject for MetadataModel<'_> {
             .map_or(ModelValue::Null, |prefix| {
                 ModelValue::String(BoundedText::unchecked(prefix))
             })),
-            "conformance" => Ok(xmp_conformance(self.document, Some(self.key), family)
-                .map_or(ModelValue::Null, |value| {
-                    ModelValue::String(BoundedText::unchecked(value))
-                })),
+            "conformance" => Ok(xmp_conformance(self.document, self.key, family)),
             "conformancePrefix" => Ok(xmp_prefix(
                 self.document,
                 Some(self.key),
@@ -13532,6 +13529,7 @@ struct XmpClaimView<'a> {
     family: &'a Identifier,
     part: u32,
     conformance: Option<&'a Identifier>,
+    conformance_value: Option<&'a crate::XmpConformanceValue>,
     part_prefix: &'a Identifier,
     rev: Option<&'a BoundedText>,
     rev_prefix: Option<&'a Identifier>,
@@ -13551,6 +13549,7 @@ fn xmp_identification_claim<'a>(
                     family,
                     part,
                     conformance,
+                    conformance_value,
                     part_prefix,
                     display_flavour: _,
                     rev,
@@ -13577,6 +13576,7 @@ fn xmp_identification_claim<'a>(
             family,
             part: *part,
             conformance: conformance.as_ref(),
+            conformance_value: conformance_value.as_ref(),
             part_prefix,
             rev: rev.as_ref(),
             rev_prefix: rev_prefix.as_ref(),
@@ -13610,18 +13610,21 @@ fn xmp_prefix(
 
 fn xmp_conformance(
     document: &ParsedDocument,
-    object: Option<ObjectKey>,
+    object: ObjectKey,
     family: Option<&str>,
-) -> Option<String> {
-    xmp_identification_claim(document, object, family).and_then(|claim| {
-        if claim.family.as_str() == "pdfa" {
-            claim
-                .conformance
-                .map(|conformance| conformance.as_str().to_owned())
-        } else {
-            None
-        }
-    })
+) -> ModelValue {
+    let Some(claim) = xmp_identification_claim(document, Some(object), family)
+        .filter(|claim| claim.family.as_str() == "pdfa")
+    else {
+        return ModelValue::Null;
+    };
+    match claim.conformance_value {
+        Some(crate::XmpConformanceValue::Text(text)) => ModelValue::String(text.clone()),
+        Some(crate::XmpConformanceValue::NonScalar) => ModelValue::List(Vec::new()),
+        None => claim.conformance.map_or(ModelValue::Null, |level| {
+            ModelValue::String(BoundedText::unchecked(level.as_str()))
+        }),
+    }
 }
 
 fn xmp_rev(

@@ -134,6 +134,11 @@ declared PDF/A profile within a shared nesting and decoding budget. The
 twelve upstream attachment cases match Greenfield 1.30.4.
 [Embedded PDF review](../docs/reviews/m9-live-conformance-review.md#embedded-pdf-conformance)
 
+Bounded XPath compilation checks core function names and arity. PDF/A
+identification checks the original RDF conformance value. All 144
+identification cases and 123 of 126 XPath cases agree with Greenfield.
+[XPath and identification review](../docs/reviews/m9-live-conformance-review.md#xpath-functions-and-pdfa-identification)
+
 ## Implementation constraints
 
 Use a family for each rule scope and preserve context in assertions. A shared
