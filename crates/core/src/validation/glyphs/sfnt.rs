@@ -132,6 +132,10 @@ impl<'data> Metrics<'data> {
         })
     }
 
+    pub(super) fn num_glyphs(&self) -> u16 {
+        self.glyphs
+    }
+
     pub(super) fn has_glyph(&self, gid: u16) -> bool {
         gid < self.glyphs
     }

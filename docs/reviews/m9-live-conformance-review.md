@@ -348,11 +348,43 @@ streams with Filter and V entries from the permission check.
 [ISO 32000-1 sections 7.6 and 13.2](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)
 
 All 624 annotation and annotation-language rule-count comparisons agree
-across 48 pinned upstream PDF/UA-1 fixtures. The whole-document result
-agrees on 46 of the 48. The remaining cases involve heading order and
-CIDSet evidence. The three original annotation reproducers agree on
-all 39 targeted counts and on each document outcome.
+across 48 pinned upstream PDF/UA-1 fixtures. The whole-document result agrees
+on all 48 after the heading and CIDSet fixes. The three original annotation
+reproducers agree on all 39 targeted counts and on each document outcome.
 [Upstream annotation fixtures](https://github.com/veraPDF/veraPDF-corpus/tree/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_UA-1)
+
+## Heading Styles and CIDSet Coverage
+
+PDF/UA-1 rule `7.4.2-1` visits standard numbered headings in structure-tree
+order after role mapping. The first heading must be H1. Later headings can
+repeat a level, return to a higher level, or descend one level. Rules
+`7.4.4-2` and `7.4.4-3` use document-wide heading styles to detect a mixture
+of H and numbered heading tags. The imported error template for `7.4.2-1`
+still lacks the argument for the skipped level.
+[Matterhorn Protocol checkpoint 14](https://pdfa.org/download-area/publications/Matterhorn-Protocol-1-1.pdf)
+
+All 176 count and failure-location comparisons across four heading rules
+and 44 documents agree with Greenfield. This includes 15 official controls
+whose whole-document outcomes also agree.
+
+PDF/UA-1 `7.21.4.2-2` and PDF/A-2 and PDF/A-3 `6.2.11.4.2-2` compare a
+present CIDSet with the full embedded subset inventory. The comparison
+includes unused glyphs, makes CID 0 optional, and evaluates each used
+CIDFont once. TrueType uses the `maxp` glyph count and `CIDToGIDMap`. CFF
+uses the CID charset or direct glyph indices for a name-keyed program.
+PDF/A-1 `6.3.5-3` checks CIDs selected for rendering and requires a CIDSet
+when the subset is referenced by an empty text-show operator.
+[ISO 32000-1 section 9.7.4 and table 124](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)
+
+The format probes distinguish CID aliases, GID 0 holes, shared TrueType
+horizontal metrics, and the CFF charset from glyph indices. They also
+exercise a malformed `CIDToGIDMap` with an incomplete two-byte entry. A
+confirmed corrupt TrueType or CFF program fails the embedding rule, while
+unreadable program data leaves the coverage decision open. All 39 CIDSet
+probes give a conclusive result. Eight differ from Greenfield on name-keyed
+CFF, shared horizontal metrics, GID 0, or odd-length mappings. The 18
+cross-profile comparisons covering PDF/A-1b, PDF/A-2b, and PDF/A-3b agree
+on the CIDSet counts.
 
 ## PDF/A-3 Associated Files and Profile Audit
 
@@ -379,7 +411,7 @@ decisions. These are the representative gaps for the next rule-scope work.
 
 | Profile | Representative control | Rules needing evidence or scope |
 | --- | --- | --- |
-| PDF/A-1a | `6-3-8-t01-pass-a`, `6-3-8-t01-fail-a` | Font width `6.3.6-1`, Unicode `6.3.8-1`, and CIDSet `6.3.5-2` |
+| PDF/A-1a | `6-3-8-t01-pass-a`, `6-3-8-t01-fail-a` | Font width `6.3.6-1`, Unicode `6.3.8-1`, and CIDSet `6.3.5-3` |
 | PDF/A-2a | `6-2-11-7-3-t01-pass-a`, `6-2-11-7-3-t01-fail-a` | UTF-8 names `6.1.8-1` |
 | PDF/A-2b | `6-1-12-t01-pass-a` | Digital signature applicability `6.4.3-1` through `6.4.3-3` |
 | PDF/A-2u | `6-2-11-7-2-t01-pass-a`, `6-2-11-7-2-t01-fail-a` | Width, Unicode, and CMap rules `6.2.11.5-1`, `6.2.11.7.2-1/-2`, `6.2.11.4.2-1` |

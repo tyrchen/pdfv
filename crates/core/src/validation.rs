@@ -44,7 +44,7 @@ use crate::{
     accessibility::{
         AccessibilityArtifact, AccessibilityContentItem, AccessibilityGraph,
         AccessibilityMarkedContent, AccessibilityNode, AccessibilityNodeId,
-        AccessibilityObjectReference,
+        AccessibilityObjectReference, numbered_heading_level,
     },
     content::{ContentStreamSummary, MarkedContentSpan, OperatorFact, ResourceFamily, ResourceUse},
     profile::DefaultRuleEvaluator,
@@ -2524,7 +2524,12 @@ impl ModelRegistry {
             ),
             family(
                 glyphs::CID_SET_FAMILY,
-                &["fontName", "containsCIDSet", "cidSetListsAllGlyphs"],
+                &[
+                    "fontName",
+                    "containsFontFile",
+                    "containsCIDSet",
+                    "cidSetListsAllGlyphs",
+                ],
                 EMPTY_LINK_NAMES,
             ),
             family(
@@ -2687,8 +2692,15 @@ impl ModelRegistry {
         let mut by_name: BTreeMap<ObjectTypeName, Arc<dyn ModelFamily + Send + Sync>> =
             BTreeMap::new();
         let mut all_properties = BTreeSet::new();
-        let role_families = structure_roles::families()
-            .map(|role| family(role, STRUCTURE_ELEMENT_PROPERTIES, STRUCTURE_ELEMENT_LINKS));
+        let role_families = structure_roles::families().map(|role| {
+            let mut model = family(role, STRUCTURE_ELEMENT_PROPERTIES, STRUCTURE_ELEMENT_LINKS);
+            if matches!(role, "SEH" | "SEHn") {
+                model
+                    .properties
+                    .push(PropertySpec::new(role, "hasConsistentHeadingStyles"));
+            }
+            model
+        });
         let annotation_families = annotation::families()
             .map(|name| family(name, ANNOTATION_PROPERTIES, ANNOTATION_LINKS));
         for family in families
@@ -8236,7 +8248,8 @@ fn structure_element_pdfua_property(
         }
         "usesH" => Ok(ModelValue::Bool(node.normalized_role == "H")),
         "usesHn" => Ok(ModelValue::Bool(heading_level(&node.normalized_role) > 0.0)),
-        "hasCorrectNestingLevel" => Ok(ModelValue::Bool(has_correct_heading_nesting(graph, node))),
+        "hasCorrectNestingLevel" => Ok(ModelValue::Bool(node.heading_in_sequence)),
+        "hasConsistentHeadingStyles" => Ok(ModelValue::Bool(graph.has_consistent_heading_styles())),
         "hasDuplicateNoteID" => Ok(ModelValue::Bool(has_duplicate_note_id(graph, node))),
         "hasConnectedHeader" => Ok(ModelValue::Bool(has_connected_table_header(graph, node))),
         "unknownHeaders" => Ok(ModelValue::String(BoundedText::unchecked(unknown_headers(
@@ -8603,25 +8616,6 @@ fn annotation_struct_parent(dictionary: &crate::Dictionary) -> Option<i64> {
     }
 }
 
-fn has_correct_heading_nesting(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
-    let level = heading_level(&node.normalized_role);
-    if level <= 1.0 {
-        return true;
-    }
-    let mut current = node.parent;
-    while let Some(parent) = current {
-        let Some(parent_node) = graph.node(parent) else {
-            return false;
-        };
-        let parent_level = heading_level(&parent_node.normalized_role);
-        if parent_level > 0.0 {
-            return parent_level < level;
-        }
-        current = parent_node.parent;
-    }
-    false
-}
-
 fn has_duplicate_note_id(graph: &AccessibilityGraph, node: &AccessibilityNode) -> bool {
     node.normalized_role == "Note"
         && node.id_text.as_ref().is_some_and(|note_id| {
@@ -8923,15 +8917,7 @@ fn semantic_node_family(role: &str) -> Option<&'static str> {
 }
 
 fn heading_level(role: &str) -> f64 {
-    match role {
-        "H1" => 1.0,
-        "H2" => 2.0,
-        "H3" => 3.0,
-        "H4" => 4.0,
-        "H5" => 5.0,
-        "H6" => 6.0,
-        _ => 0.0,
-    }
+    numbered_heading_level(role).map_or(0.0, f64::from)
 }
 
 fn optional_i64_model_value(value: Option<i64>) -> Result<ModelValue> {
@@ -14758,6 +14744,72 @@ endobj
         Ok(())
     }
 
+    #[rstest]
+    #[case("pdfa", "b", "", "", "iso-19005-1-6-3-5-3", (0, 0), false)]
+    #[case("pdfa", "b", "() Tj", "", "iso-19005-1-6-3-5-3", (0, 1), false)]
+    #[case("pdfa", "b", "() Tj", " /CIDSet 8 0 R", "iso-19005-1-6-3-5-3", (1, 0), false)]
+    #[case("pdfua", "none", "<0001> Tj", " /CIDSet 8 0 R", "iso-14289-1-7-21-4-2-2", (1, 0), false)]
+    #[case("pdfua", "none", "<0001> Tj", " /CIDSet 8 0 R", "iso-14289-1-7-21-4-2-2", (1, 0), true)]
+    fn test_should_scope_cid_set_to_active_text_shows_and_embedded_fonts(
+        #[case] family: &str,
+        #[case] level: &str,
+        #[case] show: &str,
+        #[case] cid_set_entry: &str,
+        #[case] rule: &str,
+        #[case] (passed, failed): (usize, usize),
+        #[case] cff: bool,
+    ) -> crate::Result<()> {
+        let (cid_subtype, file_slot, file_entries) = if cff {
+            ("CIDFontType0", "FontFile3", "/Subtype /CIDFontType0C")
+        } else {
+            ("CIDFontType2", "FontFile2", "")
+        };
+        let mut pdf = format!(
+            "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F 5 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /ABCDEF+Test /Encoding /Identity-H
+/DescendantFonts [6 0 R] >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /{cid_subtype} /BaseFont /ABCDEF+Test /CIDToGIDMap /Identity
+/FontDescriptor 7 0 R /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>
+endobj
+7 0 obj
+<< /Type /FontDescriptor /FontName /ABCDEF+Test /Flags 4 /{file_slot} 9 0 R{cid_set_entry} >>
+endobj
+"
+        )
+        .into_bytes();
+        append_test_stream(
+            &mut pdf,
+            "4 0 obj",
+            "",
+            format!("BT /F 12 Tf {show} ET").as_bytes(),
+        );
+        append_test_stream(&mut pdf, "8 0 obj", "", &[0x80]);
+        append_test_stream(&mut pdf, "9 0 obj", file_entries, b"corrupt font program");
+        pdf.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
+        let profile = validate_test_profile(
+            &pdf,
+            ValidationFlavour::new(family, NonZeroU32::MIN, level)?,
+        )?;
+        assert_distinct_test_rule(&profile, rule, passed, failed);
+        if family == "pdfua" {
+            assert_distinct_test_rule(&profile, "iso-14289-1-7-21-4-1-1", 1, 1);
+            assert_distinct_test_rule(&profile, "iso-14289-1-7-21-4-1-2", 1, 0);
+        }
+        Ok(())
+    }
+
     #[test]
     fn test_should_check_icc_profile_header_in_non_pdfa_output_intent() -> crate::Result<()> {
         let mut pdf = b"%PDF-2.0
@@ -14901,6 +14953,84 @@ endobj
         let profile =
             validate_test_profile(&pdf, ValidationFlavour::new("pdfua", part, "iso32005")?)?;
         assert_distinct_test_rule(&profile, "iso-14289-2-8-2-2-1", passed, failed);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case("8 0 R 7 0 R 5 0 R 9 0 R 11 0 R", 5, 0, 0)]
+    #[case("7 0 R 9 0 R", 1, 1, 0)]
+    #[case("8 0 R 9 0 R 10 0 R", 2, 1, 0)]
+    #[case("8 0 R 5 0 R 10 0 R", 2, 1, 0)]
+    #[case("8 0 R 7 0 R 9 0 R 11 0 R", 4, 0, 0)]
+    #[case("8 0 R 12 0 R 7 0 R", 2, 0, 1)]
+    #[case("12 0 R", 0, 0, 1)]
+    fn test_should_validate_numbered_headings_in_structure_order(
+        #[case] children: &str,
+        #[case] passed: usize,
+        #[case] failed: usize,
+        #[case] generic_headings: usize,
+    ) -> crate::Result<()> {
+        let pdf = format!(
+            "%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 3 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [] /Count 0 >>
+endobj
+3 0 obj
+<< /Type /StructTreeRoot /K 4 0 R /RoleMap << /LocalHeading /H2 /LocalGenericHeading /H >> >>
+endobj
+4 0 obj
+<< /Type /StructElem /S /Document /P 3 0 R /K [{children}] >>
+endobj
+5 0 obj
+<< /Type /StructElem /S /Div /P 4 0 R /K [6 0 R] >>
+endobj
+6 0 obj
+<< /Type /StructElem /S /LocalHeading /P 5 0 R >>
+endobj
+7 0 obj
+<< /Type /StructElem /S /H2 /P 4 0 R >>
+endobj
+8 0 obj
+<< /Type /StructElem /S /H1 /P 4 0 R >>
+endobj
+9 0 obj
+<< /Type /StructElem /S /H3 /P 4 0 R >>
+endobj
+10 0 obj
+<< /Type /StructElem /S /H4 /P 4 0 R >>
+endobj
+11 0 obj
+<< /Type /StructElem /S /H1 /P 4 0 R >>
+endobj
+12 0 obj
+<< /Type /StructElem /S /LocalGenericHeading /P 4 0 R >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+"
+        );
+        let profile = validate_test_profile(
+            pdf.as_bytes(),
+            ValidationFlavour::new("pdfua", NonZeroU32::MIN, "none")?,
+        )?;
+        assert_distinct_test_rule(&profile, "iso-14289-1-7-4-2-1", passed, failed);
+        let numbered = passed + failed;
+        let mixed = numbered != 0 && generic_headings != 0;
+        let counts = if mixed {
+            [(0, generic_headings), (0, numbered)]
+        } else {
+            [(generic_headings, 0), (numbered, 0)]
+        };
+        for (rule, (passed, failed)) in ["iso-14289-1-7-4-4-2", "iso-14289-1-7-4-4-3"]
+            .into_iter()
+            .zip(counts)
+        {
+            assert_distinct_test_rule(&profile, rule, passed, failed);
+        }
         Ok(())
     }
 

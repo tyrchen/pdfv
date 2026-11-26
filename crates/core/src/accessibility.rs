@@ -138,10 +138,36 @@ pub(crate) struct AccessibilityGraph {
     /// Whether construction stopped at a configured cap.
     pub truncated: bool,
     content_parents: NumberTree,
+    heading_usage: HeadingUsage,
     nodes_by_key: BTreeMap<ObjectKey, AccessibilityNodeId>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct HeadingUsage {
+    generic: bool,
+    previous_level: u8,
+}
+
+impl HeadingUsage {
+    fn observe(&mut self, role: &ResolvedRole) -> bool {
+        if !role.is_standard || role.standard_namespace_url.as_deref() == Some(MATH_NAMESPACE) {
+            return true;
+        }
+        self.generic |= role.name == "H";
+        let Some(level) = numbered_heading_level(&role.name) else {
+            return true;
+        };
+        let in_sequence = level <= self.previous_level.saturating_add(1);
+        self.previous_level = level;
+        in_sequence
+    }
+}
+
 impl AccessibilityGraph {
+    pub(crate) fn has_consistent_heading_styles(&self) -> bool {
+        !self.heading_usage.generic || self.heading_usage.previous_level == 0
+    }
+
     pub(crate) fn node_from_key(&self, key: ObjectKey) -> Option<&AccessibilityNode> {
         self.node(*self.nodes_by_key.get(&key)?)
     }
@@ -187,6 +213,8 @@ pub(crate) struct AccessibilityNode {
     pub(crate) role_is_utf8: Option<bool>,
     /// Role after deterministic `/RoleMap` normalization.
     pub normalized_role: String,
+    /// Whether this numbered heading follows the preceding heading in structure order.
+    pub(crate) heading_in_sequence: bool,
     /// Parent node when known from traversal.
     pub parent: Option<AccessibilityNodeId>,
     /// Structure namespace URL from `/NS` when declared.
@@ -442,6 +470,7 @@ pub(crate) fn build_accessibility_graph(
             warnings: Vec::new(),
             truncated: false,
             content_parents: NumberTree::default(),
+            heading_usage: HeadingUsage::default(),
             nodes_by_key: BTreeMap::new(),
         });
     };
@@ -482,6 +511,7 @@ pub(crate) fn build_accessibility_graph(
         warnings,
         truncated: false,
         content_parents: NumberTree::default(),
+        heading_usage: HeadingUsage::default(),
         nodes_by_key: BTreeMap::new(),
     };
 
@@ -588,6 +618,7 @@ fn traverse_structure_tree(
             continue;
         }
         let mapped = resolve_role(document, struct_tree, dictionary, &role);
+        let heading_in_sequence = graph.heading_usage.observe(&mapped);
         let page = dictionary
             .get("Pg")
             .and_then(object_ref)
@@ -604,6 +635,7 @@ fn traverse_structure_tree(
             role,
             role_is_utf8,
             normalized_role: mapped.name,
+            heading_in_sequence,
             parent: item.parent,
             namespace_url: namespace_url(document, dictionary),
             standard_namespace_url: mapped.standard_namespace_url,
@@ -667,6 +699,18 @@ fn traverse_structure_tree(
         graph.nodes.push(node);
     }
     Ok(())
+}
+
+pub(crate) fn numbered_heading_level(role: &str) -> Option<u8> {
+    match role {
+        "H1" => Some(1),
+        "H2" => Some(2),
+        "H3" => Some(3),
+        "H4" => Some(4),
+        "H5" => Some(5),
+        "H6" => Some(6),
+        _ => None,
+    }
 }
 
 fn root_has_content_items(document: &ParsedDocument, root: &Dictionary) -> bool {

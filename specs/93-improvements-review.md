@@ -7,20 +7,29 @@ of the current implementation phase.
 
 ## Open M9 Findings
 
-- **P2.** Resolve the two whole-document differences in the official
-  PDF/UA-1 annotation corpus. Heading nesting `7.4.2-1` needs heading
-  order across sibling structure elements. CIDSet `7.21.4.2-2` needs the
-  embedded CIDFont subset inventory.
-  [Annotation corpus results](../docs/reviews/m9-live-conformance-review.md#pdfua-1-annotations-and-media)
 - **P2.** Use the selected glyph for the separate `.notdef` prohibition,
   including explicit `.notdef` in invisible text. Audit the assertion
   identity for the PDF/UA-1 Unicode rules across marked content, pages,
   and Forms. Seven controls still differ on counts for both Unicode
   rules while agreeing on pass or fail.
   [Glyph and Unicode comparisons](../docs/reviews/m9-live-conformance-review.md#used-glyph-presence-and-truetype-unicode)
+- **P2.** Use the OpenType CFF table for glyph presence and the OpenType
+  horizontal metrics for glyph advances in CID fonts. The CFF inventory
+  and embedding checks already read these wrapped programs.
+  [CIDSet format probes](../docs/reviews/m9-live-conformance-review.md#heading-styles-and-cidset-coverage)
+- **P3.** Import and evaluate error template arguments in built-in profiles.
+  For numbered-heading failures, the profile message still displays `%1`
+  where the skipped heading level belongs.
+  [Heading review](../docs/reviews/m9-live-conformance-review.md#heading-styles-and-cidset-coverage)
 
 ## Resolved M9 Findings
 
+- **P2.** PDF/UA-1 heading checks follow the structure tree's reading order
+  and catch documents that mix numbered and unnumbered headings. PDF/UA-1
+  and PDF/A-2 and PDF/A-3 CIDSet checks compare the bitmap with the complete
+  embedded CID inventory. All 48 upstream annotation documents agree with
+  Greenfield on the validation outcome.
+  [Heading and CIDSet review](../docs/reviews/m9-live-conformance-review.md#heading-styles-and-cidset-coverage)
 - **P2.** PDF/UA-1 annotation rules distinguish subtypes and resolve
   effective visibility, the enclosing structure element, and the
   form field's tooltip. Rendition actions supply media clip data.

@@ -1,6 +1,7 @@
 //! Font-use and glyph evidence from text-show operators and their graphics state.
 
 mod cff;
+mod cid_set;
 mod sfnt;
 mod simple;
 mod type1;
@@ -21,10 +22,10 @@ use super::{
     ContentStreamModel, ContentStreamSummary, EffectiveResources, GenericModel, GlyphContent,
     ModelGraph, ModelObjectRef, OperatorFact, ResourceContent, ResourceFamily, array_values,
     cmap::{self, CMap, CidSelection, Code},
-    cos_integer, descendant_font_dictionary, descendant_font_value, font_descriptor_dictionary,
-    font_name, font_program_stream, optional_string_model_value, page_dictionary, push_linked,
-    resolve_dictionary_value, resolve_named_dictionary, resource_content_stream, resource_value,
-    semantic_names, stream_from_value, tagged_content, unknown_property,
+    cos_integer, descendant_font_value, font_descriptor_dictionary, font_name, font_program_stream,
+    optional_string_model_value, page_dictionary, push_linked, resolve_dictionary_value,
+    resolve_named_dictionary, resource_content_stream, resource_value, semantic_names,
+    stream_from_value, strip_subset_font_prefix, tagged_content, unknown_property,
 };
 use crate::{
     BoundedText, CosObject, Dictionary, ModelValue, ObjectKey, ObjectLocation, ObjectTypeName,
@@ -149,6 +150,7 @@ impl WidthEvidence {
 #[derive(Clone, Debug)]
 pub(super) struct CidSet {
     name: Option<String>,
+    embedded: bool,
     present: bool,
     coverage: Coverage,
 }
@@ -202,6 +204,7 @@ impl Evidence {
             (Self::CidSet(evidence), "fontName") => {
                 Ok(super::optional_string_model_value(evidence.name.clone()))
             }
+            (Self::CidSet(evidence), "containsFontFile") => Ok(ModelValue::Bool(evidence.embedded)),
             (Self::CidSet(evidence), "containsCIDSet") => Ok(ModelValue::Bool(evidence.present)),
             (Self::CidSet(evidence), "cidSetListsAllGlyphs") => match evidence.coverage {
                 Coverage::Verified => Ok(ModelValue::Bool(true)),
@@ -327,7 +330,7 @@ impl TextState {
 pub(super) struct CidAudit {
     used_fonts: BTreeMap<UsedFontId, (FontUse, String)>,
     measured_ua1_widths: BTreeSet<WidthUse>,
-    fonts: BTreeMap<FontId, (CidSet, String)>,
+    cidsets: BTreeMap<UsedFontId, (CidSet, String)>,
     charsets: BTreeMap<ProgramFontId, (CharSet, String)>,
     modeled_cmaps: BTreeSet<FontId>,
     modeled_true_type: BTreeSet<ProgramFontId>,
@@ -387,14 +390,37 @@ impl CidAudit {
         }
     }
 
-    fn record_sfnt(
+    fn record_font_properties(
+        &mut self,
+        graph: &ModelGraph<'_>,
+        selection: (ProgramFontId, &Dictionary),
+        descendant: Option<(UsedFontId, &Dictionary)>,
+        simple_program: &SimpleProgram,
+        samples: &[Sample<'_>],
+        content: &ContentStreamModel<'_>,
+    ) -> Result<()> {
+        let (id, font) = selection;
+        let path = &content.context_prefix;
+        if graph.materializes(USED_FONT) || graph.materializes(USED_CID_FONT) {
+            self.record_font_use(graph.document, UsedFontId::Font(id), font, samples, path);
+            if let Some((id, font)) = descendant {
+                self.record_font_use(graph.document, id, font, samples, path);
+            }
+        }
+        if !content.font_use_only() && graph.materializes(CHAR_SET_FAMILY) {
+            self.record_char_set(graph, id, font, simple_program, samples, path)?;
+        }
+        Ok(())
+    }
+
+    fn record_embedded_program(
         &mut self,
         id: UsedFontId,
         embedded: bool,
         program: &ProgramBytes,
         metrics: bool,
     ) -> bool {
-        // A missing stream or missing required tables in decoded bytes is conclusive.
+        // A missing stream or confirmed program corruption is conclusive.
         let usable = match (embedded, program) {
             (false, _) | (_, ProgramBytes::Malformed) => Some(false),
             (true, ProgramBytes::Decoded(_)) => Some(metrics),
@@ -512,38 +538,84 @@ impl CidAudit {
         })
     }
 
-    fn record(
+    fn record_cid_set(
         &mut self,
-        id: FontId,
-        document: &ParsedDocument,
+        graph: &ModelGraph<'_>,
+        id: UsedFontId,
         font: &Dictionary,
         context: &str,
-    ) -> Option<&mut CidSet> {
-        let cid = descendant_font_dictionary(document, font).unwrap_or(font);
-        if !matches!(semantic_names::name(document, cid.get("Subtype")), Some(name) if name.matches("CIDFontType0") || name.matches("CIDFontType2"))
+        used_coverage: Option<Coverage>,
+    ) -> Result<()> {
+        let document = graph.document;
+        if !semantic_names::name(document, font.get("Subtype"))
+            .is_some_and(|name| name.matches("CIDFontType0") || name.matches("CIDFontType2"))
         {
-            return None;
+            return Ok(());
         }
-        let id = cid_font_id(document, font, id);
-        if let std::collections::btree_map::Entry::Vacant(entry) = self.fonts.entry(id) {
-            let cid_set = font_descriptor_dictionary(document, cid)
-                .and_then(|descriptor| descriptor.get("CIDSet"));
-            let present = stream_from_value(document, cid_set).is_some();
-            let coverage = if present {
-                Coverage::Verified
-            } else {
-                Coverage::Missing
-            };
-            entry.insert((
-                CidSet {
-                    name: font_name(document, cid),
-                    present,
-                    coverage,
-                },
-                context.to_owned(),
-            ));
+        match self.cidsets.entry(id) {
+            Entry::Occupied(mut entry) => {
+                if let Some(coverage) = used_coverage {
+                    let evidence = &mut entry.get_mut().0;
+                    evidence.coverage = evidence.coverage.include(coverage);
+                }
+            }
+            Entry::Vacant(entry) => {
+                let stream = cid_set_stream(document, font);
+                let name = font_name(document, font);
+                let mut embedded = font_program_stream(document, font).is_some();
+                let subset = name
+                    .as_deref()
+                    .is_some_and(|name| strip_subset_font_prefix(name) != name);
+                let coverage = if let Some(coverage) = used_coverage {
+                    if stream.is_some() {
+                        coverage
+                    } else {
+                        Coverage::Missing
+                    }
+                } else if let Some(stream) = stream.filter(|_| subset) {
+                    match cid_set::complete(document, font, stream, graph.limits)? {
+                        cid_set::Evaluation::Compared(coverage) => coverage,
+                        cid_set::Evaluation::RejectedProgram => {
+                            embedded = false;
+                            Coverage::Missing
+                        }
+                    }
+                } else {
+                    Coverage::Missing
+                };
+                entry.insert((
+                    CidSet {
+                        name,
+                        embedded,
+                        present: stream.is_some(),
+                        coverage,
+                    },
+                    context.to_owned(),
+                ));
+            }
         }
-        self.fonts.get_mut(&id).map(|(record, _)| record)
+        Ok(())
+    }
+
+    fn record_unmeasured_cid_set(
+        &mut self,
+        graph: &ModelGraph<'_>,
+        selection: &FontSelection,
+        font: &Dictionary,
+        samples: &[Sample<'_>],
+        context: &str,
+    ) -> Result<()> {
+        let coverage = if rendered_cids_only(graph) {
+            if samples.iter().any(|sample| sample.has_glyphs()) {
+                return Ok(());
+            }
+            Some(Coverage::Verified)
+        } else {
+            None
+        };
+        let (id, cid_font) = selected_descendant(graph.document, font, selection.program_id)
+            .unwrap_or((UsedFontId::Font(selection.program_id), font));
+        self.record_cid_set(graph, id, cid_font, context, coverage)
     }
 
     pub(super) fn models<'a>(
@@ -569,7 +641,7 @@ impl CidAudit {
             }
             push_linked(&mut models, object, max)?;
         }
-        for (ordinal, (record, context)) in self.fonts.values().enumerate() {
+        for (ordinal, (record, context)) in self.cidsets.values().enumerate() {
             push_linked(
                 &mut models,
                 model(
@@ -776,14 +848,6 @@ fn is_type1(document: &ParsedDocument, font: &Dictionary) -> bool {
         .is_some_and(|name| name.matches("Type1") || name.matches("MMType1"))
 }
 
-fn cid_font_id(document: &ParsedDocument, font: &Dictionary, fallback: FontId) -> FontId {
-    if let Some(CosObject::Reference(key)) = descendant_font_value(document, font) {
-        FontId::Indirect(*key)
-    } else {
-        fallback
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Sample<'a> {
     text: Option<&'a TextOperand>,
@@ -892,6 +956,7 @@ pub(super) fn inspect<'a>(
             || graph.materializes(USED_FONT)
             || graph.materializes(USED_CID_FONT)
             || graph.materializes(CHAR_SET_FAMILY)
+            || graph.materializes(CID_SET_FAMILY)
             || super::unicode_name::enabled(graph)
         {
             ShowScope::Operators
@@ -900,7 +965,7 @@ pub(super) fn inspect<'a>(
         },
     )?;
     let mut cid_audit = graph.cid_audit_mut()?;
-    if !scoped_only && graph.materializes(CID_SET_FAMILY) && uses.unresolved.is_some() {
+    if !scoped_only && rendered_cids_only(graph) && uses.unresolved.is_some() {
         cid_audit
             .unresolved
             .get_or_insert_with(|| content.context_prefix.clone());
@@ -912,6 +977,15 @@ pub(super) fn inspect<'a>(
     }
     for (selection, samples) in uses.fonts.values() {
         if let Some(font) = selection.dictionary(graph.document) {
+            if (!scoped_only || content.font_use_only()) && graph.materializes(CID_SET_FAMILY) {
+                cid_audit.record_unmeasured_cid_set(
+                    graph,
+                    selection,
+                    font,
+                    samples,
+                    &content.context_prefix,
+                )?;
+            }
             inspect_selected_font(
                 content,
                 graph,
@@ -996,7 +1070,7 @@ fn inspect_selected_font<'a>(
         && (check_char_set
             || used_fonts
             || graph.materializes(TRUE_TYPE_PROGRAM)
-            || (has_glyphs && (check_widths || graph.materializes(CID_SET_FAMILY))))
+            || (has_glyphs && (check_widths || rendered_cids_only(graph))))
     {
         inspect_font(
             content,
@@ -1475,6 +1549,38 @@ enum CidToGid {
     Map(Vec<u8>),
 }
 
+#[derive(Debug)]
+enum CidMap {
+    Available(CidToGid),
+    Malformed,
+    Unavailable,
+}
+
+impl CidMap {
+    fn read(document: &ParsedDocument, font: &Dictionary, limits: &ResourceLimits) -> Result<Self> {
+        const MAX_BYTES: usize = (u16::MAX as usize + 1) * 2;
+        let entry = font.get("CIDToGIDMap");
+        Ok(match semantic_names::resolve(document, entry) {
+            None if entry.is_none() => Self::Available(CidToGid::Identity),
+            Some(CosObject::Null) => Self::Available(CidToGid::Identity),
+            Some(CosObject::Name(name)) if name.matches("Identity") => {
+                Self::Available(CidToGid::Identity)
+            }
+            Some(CosObject::Stream(stream)) => match sfnt::read_bytes(stream, limits)? {
+                ProgramBytes::Decoded(bytes)
+                    if bytes.len().is_multiple_of(2) && bytes.len() <= MAX_BYTES =>
+                {
+                    Self::Available(CidToGid::Map(bytes))
+                }
+                ProgramBytes::Decoded(_) | ProgramBytes::Malformed => Self::Malformed,
+                ProgramBytes::Unavailable => Self::Unavailable,
+            },
+            None => Self::Unavailable,
+            _ => Self::Malformed,
+        })
+    }
+}
+
 impl CidToGid {
     fn gid(&self, cid: u16) -> Option<u16> {
         match self {
@@ -1547,23 +1653,10 @@ fn encoding(
     let Some(cmap) = cid_encoding(document, font, limits)? else {
         return Ok(Encoding::Unsupported);
     };
-    Ok(
-        match semantic_names::resolve(document, metric_font.get("CIDToGIDMap")) {
-            None if metric_font.get("CIDToGIDMap").is_none() => {
-                Encoding::CidTrueType(cmap, CidToGid::Identity)
-            }
-            Some(CosObject::Name(name)) if name.matches("Identity") => {
-                Encoding::CidTrueType(cmap, CidToGid::Identity)
-            }
-            Some(CosObject::Stream(stream)) => match sfnt::decode(stream, limits)? {
-                Some(bytes) if bytes.len() % 2 == 0 => {
-                    Encoding::CidTrueType(cmap, CidToGid::Map(bytes))
-                }
-                _ => Encoding::Unsupported,
-            },
-            _ => Encoding::Unsupported,
-        },
-    )
+    Ok(match CidMap::read(document, metric_font, limits)? {
+        CidMap::Available(map) => Encoding::CidTrueType(cmap, map),
+        CidMap::Malformed | CidMap::Unavailable => Encoding::Unsupported,
+    })
 }
 
 fn cid_encoding(
@@ -1923,10 +2016,20 @@ fn font_bytes(
     }
 }
 
-fn cid_set_bytes(graph: &ModelGraph<'_>, font: &Dictionary) -> Result<Option<Vec<u8>>> {
-    let stream = font_descriptor_dictionary(graph.document, font)
-        .and_then(|descriptor| stream_from_value(graph.document, descriptor.get("CIDSet")));
-    font_bytes(stream, graph.materializes(CID_SET_FAMILY), graph.limits)
+fn cid_set_stream<'a>(
+    document: &'a ParsedDocument,
+    font: &'a Dictionary,
+) -> Option<&'a StreamObject> {
+    let value = font_descriptor_dictionary(document, font)?.get("CIDSet");
+    stream_from_value(document, value)
+}
+
+fn rendered_cids_only(graph: &ModelGraph<'_>) -> bool {
+    graph.materializes(CID_SET_FAMILY)
+        && graph
+            .active_flavour
+            .as_ref()
+            .is_some_and(|flavour| flavour.family.as_str() == "pdfa" && flavour.part.get() == 1)
 }
 
 fn font_declares_program(document: &ParsedDocument, font: &Dictionary) -> bool {
@@ -1982,42 +2085,34 @@ fn inspect_font<'a>(
     let document = graph.document;
     let id = UsedFontId::Font(selection.program_id);
     let descendant = selected_descendant(document, font, selection.program_id);
-    if graph.materializes(USED_FONT) || graph.materializes(USED_CID_FONT) {
-        audit.record_font_use(document, id, font, samples, &content.context_prefix);
-        if let Some((id, dictionary)) = descendant {
-            audit.record_font_use(document, id, dictionary, samples, &content.context_prefix);
-        }
-    }
-    if !content.font_use_only() && graph.materializes(CHAR_SET_FAMILY) {
-        audit.record_char_set(
-            graph,
-            selection.program_id,
-            font,
-            simple_program,
-            samples,
-            &content.context_prefix,
-        )?;
-    }
+    audit.record_font_properties(
+        graph,
+        (selection.program_id, font),
+        descendant,
+        simple_program,
+        samples,
+        content,
+    )?;
     let (metric_id, metric_font) = descendant.unwrap_or((id, font));
     let is_true_type = semantic_names::name(document, font.get("Subtype"))
         .is_some_and(|name| name.matches("TrueType"));
-    let expects_sfnt = is_true_type
-        || semantic_names::name(document, metric_font.get("Subtype"))
-            .is_some_and(|name| name.matches("CIDFontType2"));
+    let subtype = semantic_names::name(document, metric_font.get("Subtype"));
+    let expects_sfnt = is_true_type || subtype.is_some_and(|name| name.matches("CIDFontType2"));
+    let expects_cff = subtype.is_some_and(|name| name.matches("CIDFontType0"));
     let descriptor = font_descriptor_dictionary(document, metric_font);
     let embedded = if expects_sfnt {
         descriptor.and_then(|descriptor| sfnt::program_stream(document, descriptor))
     } else {
-        font_program_stream(document, font)
+        font_program_stream(document, metric_font)
     };
     let program = !content.font_use_only()
         && graph.materializes(TRUE_TYPE_PROGRAM)
         && is_true_type
         && embedded.is_some();
-    let check_sfnt = expects_sfnt && graph.materializes(USED_FONT);
-    let compare_glyphs = (graph.materializes(WIDTH_FAMILY) || graph.materializes(CID_SET_FAMILY))
+    let check_embedding = (expects_sfnt || expects_cff) && graph.materializes(USED_FONT);
+    let compare_glyphs = (graph.materializes(WIDTH_FAMILY) || rendered_cids_only(graph))
         && samples.iter().any(|sample| sample.has_glyphs());
-    if !(program || compare_glyphs || check_sfnt) {
+    if !(program || compare_glyphs || check_embedding) {
         return Ok(false);
     }
     let encoding = if compare_glyphs {
@@ -2026,7 +2121,7 @@ fn inspect_font<'a>(
         Encoding::Unsupported
     };
     let read_program = program
-        || check_sfnt
+        || check_embedding
         || !matches!(
             encoding,
             Encoding::Unsupported | Encoding::CffSimple(_) | Encoding::Type1(_)
@@ -2043,12 +2138,20 @@ fn inspect_font<'a>(
         bytes.as_slice(),
         simple_program,
     );
-    let rejected_program = check_sfnt
-        && audit.record_sfnt(
+    let rejected_program = check_embedding
+        && audit.record_embedded_program(
             metric_id,
             embedded.is_some(),
             &bytes,
-            measurements.sfnt.is_some(),
+            if expects_cff {
+                embedded
+                    .zip(bytes.as_slice())
+                    .is_some_and(|(stream, bytes)| {
+                        cff::embedded_cid_font(document, stream, bytes).is_some()
+                    })
+            } else {
+                measurements.sfnt.is_some()
+            },
         );
     if program
         && let Some(metrics) = &measurements.sfnt
@@ -2097,8 +2200,14 @@ fn measure_used_glyphs<'a>(
     let document = graph.document;
     let font = measurements.dictionary;
     let encoding = measurements.encoding;
-    let metric_font = descendant_font_dictionary(document, font).unwrap_or(font);
-    let cid_bits = cid_set_bytes(graph, metric_font)?;
+    let (metric_id, metric_font) = selected_descendant(document, font, selection.program_id)
+        .unwrap_or((UsedFontId::Font(selection.program_id), font));
+    let check_cids = rendered_cids_only(graph);
+    let cid_bits = font_bytes(
+        cid_set_stream(document, metric_font),
+        check_cids,
+        graph.limits,
+    )?;
     let mut coverage = Coverage::Verified;
     let mut seen_widths = BTreeSet::new();
     let mut seen_cids = BTreeSet::new();
@@ -2136,7 +2245,10 @@ fn measure_used_glyphs<'a>(
             let (code, gid, exact) = selection_result.unwrap_or((0, None, false));
             if selection_result.is_none() {
                 coverage = coverage.include(Coverage::Unavailable);
-            } else if encoding.cid_encoding().is_some() && seen_cids.insert((code, exact)) {
+            } else if check_cids
+                && encoding.cid_encoding().is_some()
+                && seen_cids.insert((code, exact))
+            {
                 coverage = coverage.include(check_cid(
                     code,
                     measurements.contains_gid(gid),
@@ -2158,20 +2270,10 @@ fn measure_used_glyphs<'a>(
                 seen_widths.insert((sample.mode, sample.marked_content, code, exact))
             };
             if first_observation {
-                let has_fallback = matches!(
-                    decoded,
-                    Some((
-                        _,
-                        CharacterCode::Cid(CidSelection {
-                            preferred: None,
-                            fallback: 1..
-                        })
-                    ))
-                );
                 let evidence = measurements.observe(
                     *sample,
                     selection_result,
-                    has_fallback && code != 0,
+                    code != 0 && decoded.is_some_and(|(_, character)| character.has_cid_fallback()),
                     unavailable,
                     audit,
                     graph.limits,
@@ -2180,10 +2282,14 @@ fn measure_used_glyphs<'a>(
             }
         }
     }
-    if graph.materializes(CID_SET_FAMILY)
-        && let Some(record) = audit.record(selection.id, document, font, &content.context_prefix)
-    {
-        record.coverage = record.coverage.include(coverage);
+    if check_cids {
+        audit.record_cid_set(
+            graph,
+            metric_id,
+            metric_font,
+            &content.context_prefix,
+            Some(coverage),
+        )?;
     }
     Ok(())
 }
@@ -2192,6 +2298,18 @@ fn measure_used_glyphs<'a>(
 enum CharacterCode {
     Direct(u16),
     Cid(CidSelection),
+}
+
+impl CharacterCode {
+    fn has_cid_fallback(self) -> bool {
+        matches!(
+            self,
+            Self::Cid(CidSelection {
+                preferred: None,
+                fallback: 1..
+            })
+        )
+    }
 }
 
 fn character_codes<'a>(

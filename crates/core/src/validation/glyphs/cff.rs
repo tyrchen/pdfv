@@ -3,12 +3,38 @@
 use std::{collections::BTreeMap, fmt};
 
 use read_fonts::{
+    FontRef,
     model::glyph::outline::NullSink,
     ps::{Sid, cff::CffFontRef},
-    types::GlyphId,
+    types::{GlyphId, Tag},
 };
 
-use super::simple::Encoding;
+use super::{semantic_names, simple::Encoding};
+use crate::{ParsedDocument, StreamObject};
+
+pub(super) fn embedded_cid_font<'a>(
+    document: &ParsedDocument,
+    program: &StreamObject,
+    bytes: &'a [u8],
+) -> Option<CffFontRef<'a>> {
+    let open_type = semantic_names::name(document, program.dictionary.get("Subtype"))
+        .is_some_and(|name| name.matches("OpenType"));
+    let data = if open_type {
+        FontRef::new(bytes)
+            .ok()?
+            .table_data(Tag::new(b"CFF "))?
+            .as_bytes()
+    } else {
+        bytes
+    };
+    if data.first() != Some(&1) {
+        return None;
+    }
+    let font = CffFontRef::new_cff(data, 0, Some(1000)).ok()?;
+    (1..=u32::from(u16::MAX))
+        .contains(&font.num_glyphs())
+        .then_some(font)
+}
 
 pub(super) struct Metrics<'data> {
     font: CffFontRef<'data>,

@@ -2814,10 +2814,7 @@ impl XmlRuleBuilder {
         {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::PUA_FAMILY);
         }
-        if self.source_is_cid_font
-            && id.0.as_str().starts_with("iso-19005-1-")
-            && source_test.as_str().contains("cidSetListsAllGlyphs")
-        {
+        if self.source_is_cid_font && source_test.as_str().contains("cidSetListsAllGlyphs") {
             object_type = ObjectTypeName::unchecked(crate::validation::glyphs::CID_SET_FAMILY);
         }
         let unicode_test = if self.source_is_glyph {
@@ -2882,6 +2879,10 @@ impl XmlRuleBuilder {
             _ => {}
         }
         lower_annotation_checks(&id, &mut test)?;
+        if matches!(id.0.as_str(), "iso-14289-1-7-4-4-2" | "iso-14289-1-7-4-4-3") {
+            // Both deferred rules depend on the heading styles used across the document.
+            test = property_expr("hasConsistentHeadingStyles")?;
+        }
         let message = self.message.unwrap_or_else(|| description.clone());
         Ok(Rule {
             id,
